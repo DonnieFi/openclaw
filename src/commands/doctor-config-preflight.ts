@@ -29,6 +29,7 @@ import { createSubsystemLogger } from "../logging/subsystem.js";
 import { resolveInstalledPluginIndexPolicyHash } from "../plugins/installed-plugin-index-policy.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
+import { withArtifactPreservingStateReads } from "../state/openclaw-state-db-readonly.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { assertOpenClawStateWriteAllowedAtPath } from "../state/openclaw-state-ownership.js";
 import { noteIncludeConfinementWarning } from "./doctor-config-analysis.js";
@@ -308,7 +309,7 @@ export async function runDoctorConfigPreflight(
       !stateMigrationsRequested ||
       options.beforeStateMigrations === undefined ||
       (await measurePreflightStep("state-migration-guard", () =>
-        options.beforeStateMigrations?.(),
+        withArtifactPreservingStateReads(() => options.beforeStateMigrations?.()),
       ));
     if (gatewayStartupCheckpointRequired && !stateMigrationsAllowed) {
       throwStartupMigrationGuardRejected();
@@ -754,9 +755,7 @@ export async function runDoctorConfigPreflight(
       ...(postSessionPluginMigrationPlanBound ? { postSessionPluginMigrationPlanBound: true } : {}),
     };
   } finally {
-    if (startupMigrationHeartbeat) {
-      clearInterval(startupMigrationHeartbeat);
-    }
+    clearInterval(startupMigrationHeartbeat);
     startupMigrationLease?.release();
   }
 }
