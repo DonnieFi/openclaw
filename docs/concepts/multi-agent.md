@@ -114,13 +114,18 @@ openclaw agents team create --non-interactive
 openclaw agent --agent coordinator --message "Research the options and draft a recommendation."
 ```
 
-The preset creates `coordinator`, `researcher`, `writer`, and `reviewer`, each
-with its own workspace and completed identity. The coordinator remains the
+The preset creates a chief of staff (`coordinator`), researcher, writer, and
+reviewer, each with its own workspace and completed identity. The chief of staff remains the
 human's point of contact: it discovers matching specialists, assigns bounded
 work, checks their artifacts, and reports a coherent result. Specialists return
 artifacts and evidence to the coordinator without delegating further. Their
 operating programs live in `AGENTS.md`, so they also apply in spawned sessions
 that do not load `SOUL.md` or `IDENTITY.md`.
+
+You can also create the chief of staff or the full team from the Control UI:
+choose **New agent** in the sidebar or Agents home, then select the role or
+small-team recommendation in the custodian chat. Creation uses the same role
+templates and waits for your approval.
 
 The relevant per-agent delegation fragment is:
 
