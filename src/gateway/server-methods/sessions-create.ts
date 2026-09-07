@@ -532,7 +532,7 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
               explicitSessionLabel ??
               preparedDisplayName ??
               title ??
-              resolveExplicitSessionName(lifecycleTarget.entry) ??
+              resolveExplicitSessionName(lifecycleTarget.entry, lifecycleTarget.key) ??
               source,
             runSetupScript: clientScopes.includes(ADMIN_SCOPE),
             commitGuard,
