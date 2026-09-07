@@ -7,13 +7,13 @@ import {
   prepareSqliteQuerySync,
 } from "../infra/kysely-sync.js";
 import { readSqliteUserVersion } from "../infra/sqlite-user-version.js";
+import { ABANDONED_UPDATE_RUN_MS } from "../infra/update-run-timeouts.js";
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "./openclaw-state-db-contract.js";
 import { tableExists } from "./openclaw-state-db-schema-helpers.js";
 import type { DB } from "./openclaw-state-db.generated.js";
 
 const CONTENT_VERSION_KEY = "state.schema.contentVersion";
 const TERMINAL_GRACE_MS = 5 * 60_000;
-const ABANDONED_RUN_MS = 30 * 60_000;
 type PublicationDatabase = Pick<DB, "config_machine_state" | "update_runs">;
 // Admission also runs on cached reads. Retain the SQL, never the content version.
 const contentVersionQueries = new WeakMap<
@@ -81,7 +81,7 @@ export function readStateSchemaPublicationBlocker(
         eb.or([
           eb.and([
             eb("status", "=", "running"),
-            eb("updated_at_ms", ">=", nowMs - ABANDONED_RUN_MS),
+            eb("updated_at_ms", ">=", nowMs - ABANDONED_UPDATE_RUN_MS),
           ]),
           eb.and([
             eb("status", "!=", "running"),
@@ -106,7 +106,7 @@ export function readStateSchemaPublicationBlocker(
     }
     const deadline =
       row.status === "running"
-        ? row.updated_at_ms + ABANDONED_RUN_MS + 1
+        ? row.updated_at_ms + ABANDONED_UPDATE_RUN_MS + 1
         : row.finished_at_ms === null
           ? null
           : row.finished_at_ms + TERMINAL_GRACE_MS;
