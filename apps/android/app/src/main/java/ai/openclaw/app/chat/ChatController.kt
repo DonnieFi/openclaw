@@ -2398,8 +2398,8 @@ class ChatController internal constructor(
       } catch (_: Throwable) {
         when {
           archived -> emptyList()
-          query == null -> _sessions.value
-          else -> filterSessionEntries(_sessions.value, query)
+          query == null -> sessions.value
+          else -> filterSessionEntries(sessions.value, query)
         }
       }
     return synchronized(gatewayScopeApplyLock) {

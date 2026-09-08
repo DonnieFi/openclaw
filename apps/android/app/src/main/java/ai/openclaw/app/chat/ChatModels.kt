@@ -517,7 +517,7 @@ data class ChatSessionAgentStatus(
   val attention: String? = null,
 )
 
-/** Local fallback for server-side `sessions.list` search over cached entries. */
+/** Local fallback for server-side `sessions.list` search over presented entries. */
 fun filterSessionEntries(
   sessions: List<ChatSessionEntry>,
   search: String,
@@ -525,7 +525,7 @@ fun filterSessionEntries(
   val query = search.trim().lowercase()
   if (query.isEmpty()) return sessions
   return sessions.filter { session ->
-    listOfNotNull(session.displayName, session.label, session.category, session.key)
+    listOfNotNull(session.displayName, session.label, session.autoLabel, session.localFallbackTitle, session.category, session.key)
       .any { it.lowercase().contains(query) }
   }
 }
