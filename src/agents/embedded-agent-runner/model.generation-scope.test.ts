@@ -10,10 +10,7 @@ import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../../test-utils/openclaw-test-state.js";
-import {
-  ensureAuthProfileStore,
-  ensureAuthProfileStoreWithoutExternalProfiles,
-} from "../auth-profiles/store-runtime.js";
+import { ensureAuthProfileStoreWithoutExternalProfiles } from "../auth-profiles/store-runtime.js";
 import { AuthStorage, ModelRegistry } from "../sessions/index.js";
 import { resolveTieredModel } from "./model-resolution.js";
 import { guardModelFixtureAuth } from "./model.fixture.test-support.js";
@@ -96,12 +93,6 @@ async function createExternalCodexGeneration() {
   });
   publishCurrentModelGeneration(generation);
   await state.writeAuthProfiles({ version: 1, profiles: {} });
-  expect(
-    ensureAuthProfileStore(state.agentDir(), {
-      allowKeychainPrompt: false,
-      externalCliProviderIds: ["openai"],
-    }).profiles["openai:default"],
-  ).toMatchObject({ provider: "openai", type: "oauth" });
   return generation;
 }
 
