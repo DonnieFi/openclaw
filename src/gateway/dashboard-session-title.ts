@@ -14,7 +14,6 @@ import { parseAgentSessionKey } from "../sessions/session-key-utils.js";
 import { getOrCreatePromise } from "../shared/lazy-promise.js";
 import { isValidAttachmentBase64, type ChatAttachment } from "./chat-attachments.js";
 import { deriveGoalSessionTitle } from "./derive-goal-session-title.js";
-import { isPlatformAutoSessionLabel } from "./platform-session-label.js";
 import { resolveStoredSessionKeyForAgentStore } from "./session-store-key.js";
 import { readSessionTitleFieldsFromTranscript } from "./session-transcript-title-reader.js";
 
@@ -100,25 +99,19 @@ type SessionTitleAttempt =
   | { kind: "skipped" }
   | { kind: "in-flight"; settled: Promise<boolean> };
 
-export function resolveExplicitSessionName(
-  entry: SessionEntry | undefined,
-  sessionKey?: string,
-): string | undefined {
+export function resolveExplicitSessionName(entry: SessionEntry | undefined): string | undefined {
   const label = entry?.label?.trim();
-  if (label && !isPlatformAutoSessionLabel(label, sessionKey)) {
+  if (label) {
     return label;
   }
-  // Platform auto-labels must not block generated displayName titles.
+  // autoLabel is device metadata and must not block generated displayName titles.
   return [entry?.displayName, entry?.subject, entry?.groupChannel, entry?.space]
     .map((value) => value?.trim())
     .find(Boolean);
 }
 
-export function hasExplicitSessionName(
-  entry: SessionEntry | undefined,
-  sessionKey?: string,
-): boolean {
-  return Boolean(resolveExplicitSessionName(entry, sessionKey));
+export function hasExplicitSessionName(entry: SessionEntry | undefined): boolean {
+  return Boolean(resolveExplicitSessionName(entry));
 }
 
 function isAutoTitleSessionKey(sessionKey: string): boolean {
@@ -298,7 +291,7 @@ export async function generateWorktreeSessionTitle(
   if (current?.sessionId !== params.sessionId) {
     throw new Error("Session changed while naming its worktree; retry from the current session.");
   }
-  return resolveExplicitSessionName(current, resolveStoredSessionKeyForAgentStore(params));
+  return resolveExplicitSessionName(current);
 }
 
 export async function maybeGenerateDashboardSessionTitle(params: {
@@ -341,7 +334,7 @@ export async function maybeGenerateSessionTitle(params: {
   const sessionKey = resolveStoredSessionKeyForAgentStore(params);
   const scope = { agentId: params.agentId, sessionKey, storePath: params.storePath };
   const entry = loadSessionEntry(scope);
-  if (hasExplicitSessionName(entry, sessionKey) || entry?.sessionId !== params.sessionId) {
+  if (hasExplicitSessionName(entry) || entry?.sessionId !== params.sessionId) {
     return { kind: "skipped" };
   }
 
@@ -397,10 +390,7 @@ export async function maybeGenerateSessionTitle(params: {
         await patchSessionEntryCore(
           scope,
           (current) => {
-            if (
-              current.sessionId !== params.sessionId ||
-              hasExplicitSessionName(current, sessionKey)
-            ) {
+            if (current.sessionId !== params.sessionId || hasExplicitSessionName(current)) {
               return null;
             }
             persisted = true;

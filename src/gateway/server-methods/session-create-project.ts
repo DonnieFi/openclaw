@@ -297,7 +297,7 @@ export async function prepareSessionWorkspace(params: {
       assertRunOwnership();
       emitAgentRunStatusEvent({ runId: clientRunId, sessionKey, agentId, phase });
     };
-    const needsTitle = pending && !pending.name && !hasExplicitSessionName(saved, sessionKey);
+    const needsTitle = pending && !pending.name && !hasExplicitSessionName(saved);
     if (needsTitle) {
       status("naming_worktree");
     }
@@ -367,7 +367,7 @@ export async function prepareSessionWorkspace(params: {
         name: pending.name,
         baseRef: pending.baseRef,
         checkoutCommit: pending.baseCommit,
-        label: title ?? resolveExplicitSessionName(saved, sessionKey) ?? pending.titleSource,
+        label: title ?? resolveExplicitSessionName(saved) ?? pending.titleSource,
         runSetupScript: client?.connect?.scopes?.includes(ADMIN_SCOPE) === true,
         signal,
         commitGuard: assertRunOwnership,

@@ -45,7 +45,7 @@ class SessionsScreenGroupingTest {
         ChatSessionEntry(
           key = "agent:main:node-1234567890ab",
           updatedAtMs = null,
-          label = "OpenClaw App · Pixel · 1234567890ab",
+          autoLabel = "OpenClaw App · Pixel · 1234567890ab",
           displayName = "Generated title",
         ),
       ) { "Main thread" },
@@ -56,10 +56,31 @@ class SessionsScreenGroupingTest {
         ChatSessionEntry(
           key = "agent:main:node-1234567890ab",
           updatedAtMs = null,
-          label = "OpenClaw App · Pixel · 1234567890ab",
+          autoLabel = "OpenClaw App · Pixel · 1234567890ab",
         ),
       ) { "Main thread" },
     )
+    val manualLabels =
+      listOf(
+        "OpenClaw App",
+        "OpenClaw App · 1234567890ab",
+        "OpenClaw App · Pixel · 1234567890ab",
+        "OpenClaw App · Release planning · 1234567890ab",
+      )
+    for (manualLabel in manualLabels) {
+      assertEquals(
+        manualLabel,
+        sessionPresentationTitle(
+          ChatSessionEntry(
+            key = "agent:main:node-1234567890ab",
+            updatedAtMs = null,
+            label = manualLabel,
+            autoLabel = "OpenClaw App · Pixel · 1234567890ab",
+            displayName = "Generated title",
+          ),
+        ) { "Main thread" },
+      )
+    }
     assertEquals(
       "New chat",
       sessionPresentationTitle(ChatSessionEntry(key = dashboardKey, updatedAtMs = null)) { "Main thread" },

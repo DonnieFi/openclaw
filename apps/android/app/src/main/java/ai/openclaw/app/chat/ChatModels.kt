@@ -433,6 +433,8 @@ data class ChatSessionEntry(
   val displayName: String? = null,
   val derivedTitle: String? = null,
   val label: String? = null,
+  /** Automatic device label; explicit labels and generated display names take precedence. */
+  val autoLabel: String? = null,
   val category: String? = null,
   val color: String? = null,
   val hasColorMetadata: Boolean = color != null,

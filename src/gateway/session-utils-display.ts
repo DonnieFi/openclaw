@@ -17,7 +17,6 @@ import {
 import { parseAgentSessionKey } from "../routing/session-key.js";
 import { classifySessionKind } from "../sessions/classify-session-kind.js";
 import { sessionDeliveryChannel, sessionDeliveryOrigin } from "../utils/delivery-context.shared.js";
-import { isPlatformAutoSessionLabel } from "./platform-session-label.js";
 import type {
   SessionListActiveRunProjector,
   SessionListRowContext,
@@ -79,13 +78,12 @@ export function resolveGatewaySessionDisplayName(key: string, entry?: SessionEnt
   // channel-derived display names or renames silently vanish on refresh.
   // Group sessions prefer the human chat title (subject/#channel) over the
   // stored compact token displayName (e.g. "slack:g-general").
-  const explicitLabel = entry?.label?.trim();
-  const renameLabel =
-    explicitLabel && !isPlatformAutoSessionLabel(explicitLabel, key) ? explicitLabel : undefined;
+  const explicitLabel = normalizeOptionalString(entry?.label);
   const displayName =
-    renameLabel ??
+    explicitLabel ??
     groupTitle ??
     storedDisplayName ??
+    entry?.autoLabel ??
     (channel === "imessage" ? undefined : compactGroupFallback) ??
     // Dashboard origin labels identify the authenticated sender. Using them as
     // titles leaks account names into the sidebar while the generated title is pending.

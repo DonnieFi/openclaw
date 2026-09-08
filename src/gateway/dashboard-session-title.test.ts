@@ -269,6 +269,13 @@ describe("maybeGenerateDashboardSessionTitle", () => {
     ["slash command", { userMessage: "/status" }],
     ["manual label", { entry: { ...baseEntry, label: "My release" } }],
     [
+      "manual rename shaped like its Android device stamp",
+      {
+        sessionKey: "agent:main:node-1234567890ab",
+        entry: { ...baseEntry, label: "OpenClaw App · Release planning · 1234567890ab" },
+      },
+    ],
+    [
       "manual prefix-containing label",
       { entry: { ...baseEntry, label: "OpenClaw App · Release planning" } },
     ],
@@ -300,7 +307,7 @@ describe("maybeGenerateDashboardSessionTitle", () => {
   it("titles over an Android platform auto-label without treating it as a rename", async () => {
     const entry = {
       ...baseEntry,
-      label: "OpenClaw App · Pixel · 1234567890ab",
+      autoLabel: "OpenClaw App · Pixel · 1234567890ab",
     };
     mockSessionUpdate(entry);
 
@@ -561,31 +568,26 @@ describe("buildDashboardSessionTitleSource", () => {
 
 describe("hasExplicitSessionName", () => {
   const androidStamp = "OpenClaw App · Pixel · 1234567890ab";
-  const androidKey = "agent:main:node-1234567890ab";
-  const dashboardKey = "agent:main:dashboard:chat-1";
-
-  it("treats a matching Android node stamp as unnamed", () => {
-    const entry = { ...baseEntry, label: androidStamp };
-    expect(hasExplicitSessionName(entry, androidKey)).toBe(false);
-    expect(resolveExplicitSessionName({ ...entry, displayName: "Generated" }, androidKey)).toBe(
-      "Generated",
-    );
+  it("treats automatic device metadata as unnamed", () => {
+    const entry = { ...baseEntry, autoLabel: androidStamp };
+    expect(hasExplicitSessionName(entry)).toBe(false);
+    expect(resolveExplicitSessionName({ ...entry, displayName: "Generated" })).toBe("Generated");
   });
 
   it.each([
-    ["without a session key", androidStamp, undefined],
-    ["on a dashboard session", "OpenClaw App · Release planning", dashboardKey],
-    ["on an iOS session", "OpenClaw App · Release planning", "agent:main:ios-abc123"],
-  ] as const)("keeps a prefix-containing manual name %s", (_name, label, sessionKey) => {
+    androidStamp,
+    "OpenClaw App · Release planning",
+    "OpenClaw App · Release planning · 1234567890ab",
+  ])("keeps a prefix-containing manual name %j", (label) => {
     const entry = { ...baseEntry, label, displayName: "Generated" };
-    expect(hasExplicitSessionName(entry, sessionKey)).toBe(true);
-    expect(resolveExplicitSessionName(entry, sessionKey)).toBe(label);
+    expect(hasExplicitSessionName(entry)).toBe(true);
+    expect(resolveExplicitSessionName(entry)).toBe(label);
   });
 
   it.each(["OpenClaw App", "OpenClaw App · 1234567890ab"])(
-    "treats builder stamp %j on the matching node session as unnamed",
+    "preserves ambiguous legacy label %j as an explicit name",
     (label) => {
-      expect(hasExplicitSessionName({ ...baseEntry, label }, androidKey)).toBe(false);
+      expect(hasExplicitSessionName({ ...baseEntry, label })).toBe(true);
     },
   );
 });

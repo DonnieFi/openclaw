@@ -141,7 +141,7 @@ private fun normalizedChatCacheScope(scope: ChatCacheScope?): ChatCacheScope? {
 
 internal data class MainSessionBinding(
   val key: String,
-  val label: String,
+  val autoLabel: String,
 )
 
 internal data class ChatSessionDeletion(
@@ -952,19 +952,19 @@ class ChatController internal constructor(
             try {
               val existingSession = fetchSessionDescription(requestScope.gatewayId, mainSession.key)
               if (desiredMainSessions[requestScope.gatewayId] != mainSession) return@withLock
-              val existingLabel =
+              val existingAutoLabel =
                 existingSession
-                  ?.get("label")
+                  ?.get("autoLabel")
                   .asStringOrNull()
                   ?.trim()
                   ?.takeIf { it.isNotEmpty() }
-              if (existingLabel == null) {
-                // Label-only sessions.patch is operator.write-scoped and atomically upserts the row,
+              if (existingAutoLabel != mainSession.autoLabel) {
+                // Automatic display metadata atomically upserts the operator.write-scoped row,
                 // avoiding the concurrent-session identity race in sessions.create.
                 val patchParams =
                   buildJsonObject {
                     put("key", JsonPrimitive(mainSession.key))
-                    put("label", JsonPrimitive(mainSession.label))
+                    put("autoLabel", JsonPrimitive(mainSession.autoLabel))
                   }
                 requestGatewayBound(requestScope.gatewayId, "sessions.patch", patchParams.toString())
               }
@@ -972,6 +972,7 @@ class ChatController internal constructor(
               throw err
             } catch (_: Throwable) {
               // History remains usable under the already-bound key when adoption cannot be verified.
+              // Older gateways may reject autoLabel; label must remain reserved for manual renames.
             }
           }
         } finally {
@@ -6807,11 +6808,13 @@ class ChatController internal constructor(
           (it["sessionKey"].asStringOrNull() != null && "permissionMode" in it && "permissionModePending" in it)
       }
 
-  // The gateway sends explicit JSON null for cleared label/category on session
+  // The gateway sends explicit JSON null for cleared display metadata on session
   // events; the merge must apply those clears instead of preserving stale values.
   private fun parseExplicitSessionClears(obj: JsonObject): Set<String> =
     buildSet {
       if (obj["label"] is JsonNull) add("label")
+      if (obj["autoLabel"] is JsonNull) add("autoLabel")
+      if (obj["displayName"] is JsonNull) add("displayName")
       if (obj["category"] is JsonNull) add("category")
     }
 
@@ -7812,6 +7815,7 @@ class ChatController internal constructor(
       displayName = obj["displayName"].asStringOrNull()?.trim(),
       derivedTitle = obj["derivedTitle"].asStringOrNull()?.trim(),
       label = obj["label"].asStringOrNull()?.trim(),
+      autoLabel = obj["autoLabel"].asStringOrNull()?.trim(),
       category = obj["category"].asStringOrNull()?.trim(),
       color =
         obj["color"]
@@ -8155,6 +8159,8 @@ class ChatController internal constructor(
       applied =
         applied.copy(
           label = if ("label" in clearedFields) null else applied.label,
+          autoLabel = if ("autoLabel" in clearedFields) null else applied.autoLabel,
+          displayName = if ("displayName" in clearedFields) null else applied.displayName,
           category = if ("category" in clearedFields) null else applied.category,
         )
     }
@@ -8985,6 +8991,7 @@ internal fun mergeChatSessionEntry(
     hasClassificationMetadata = existing.hasClassificationMetadata || next.hasClassificationMetadata,
     displayName = next.displayName ?: existing.displayName,
     label = next.label ?: existing.label,
+    autoLabel = next.autoLabel ?: existing.autoLabel,
     category = next.category ?: existing.category,
     // Omitted metadata preserves the tint; explicit null from another client clears it.
     color = if (next.hasColorMetadata) next.color else existing.color,

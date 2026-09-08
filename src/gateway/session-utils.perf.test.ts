@@ -487,7 +487,7 @@ describe("session list resolver cache", () => {
           lastMessagePreview: "last 0",
         });
         expect(sessionsByKey.get(`agent:main:title-batch-${scenario.sharedTail}`)).toMatchObject({
-          derivedTitle: `title ${scenario.sharedTail}`,
+          derivedTitle: `Title ${scenario.sharedTail}`,
           lastMessagePreview: `last ${scenario.sharedTail}`,
         });
 

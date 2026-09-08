@@ -408,6 +408,7 @@ export function buildGatewaySessionRow(params: {
     previousSessionId: entry?.previousSessionId,
     kind: gatewayKind,
     label: entry?.label,
+    autoLabel: entry?.autoLabel,
     icon: entry?.icon,
     color: entry?.color,
     channelAvatarUrl,

@@ -44,7 +44,8 @@ struct CommandCenterTabSessionFilterTests {
         func entry(
             key: String,
             displayName: String? = nil,
-            label: String? = nil) -> OpenClawChatSessionEntry
+            label: String? = nil,
+            autoLabel: String? = nil) -> OpenClawChatSessionEntry
         {
             OpenClawChatSessionEntry(
                 key: key,
@@ -66,7 +67,8 @@ struct CommandCenterTabSessionFilterTests {
                 modelProvider: nil,
                 model: nil,
                 contextTokens: nil,
-                label: label)
+                label: label,
+                autoLabel: autoLabel)
         }
 
         #expect(
@@ -81,5 +83,18 @@ struct CommandCenterTabSessionFilterTests {
                     displayName: "Compare session naming",
                     label: "My thread"))
                 == "My thread")
+
+        let nodeKey = "agent:main:node-1234567890ab"
+        let autoLabel = "OpenClaw App · Pixel · 1234567890ab"
+        #expect(CommandCenterTab.sessionTitle(entry(key: nodeKey, autoLabel: autoLabel)) == autoLabel)
+        #expect(
+            CommandCenterTab.sessionTitle(
+                entry(key: nodeKey, displayName: "Compare session naming", autoLabel: autoLabel))
+                == "Compare session naming")
+        let manualLabel = "OpenClaw App · Release planning · 1234567890ab"
+        #expect(
+            CommandCenterTab.sessionTitle(
+                entry(key: nodeKey, displayName: "Compare session naming", label: manualLabel, autoLabel: autoLabel))
+                == manualLabel)
     }
 }

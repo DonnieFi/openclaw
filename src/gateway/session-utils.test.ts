@@ -2708,7 +2708,7 @@ describe("gateway session utils", () => {
     const entry = {
       sessionId: "node-1",
       updatedAt: 1,
-      label: stamp,
+      autoLabel: stamp,
       displayName: "Release Planning",
     } as SessionEntry;
     const row = buildGatewaySessionRow({
@@ -2718,21 +2718,22 @@ describe("gateway session utils", () => {
       key,
       entry,
     });
-    expect(row.label).toBe(stamp);
+    expect(row.autoLabel).toBe(stamp);
+    expect(row.label).toBeUndefined();
     expect(row.displayName).toBe("Release Planning");
 
     const manualPrefix = {
       ...entry,
-      label: "OpenClaw App · Release planning",
+      label: "OpenClaw App · Release planning · 1234567890ab",
     } as SessionEntry;
     const manualRow = buildGatewaySessionRow({
       cfg,
       storePath: "",
-      store: { "agent:main:dashboard:chat-1": manualPrefix },
-      key: "agent:main:dashboard:chat-1",
+      store: { [key]: manualPrefix },
+      key,
       entry: manualPrefix,
     });
-    expect(manualRow.displayName).toBe("OpenClaw App · Release planning");
+    expect(manualRow.displayName).toBe("OpenClaw App · Release planning · 1234567890ab");
   });
 
   test("buildGatewaySessionRow displayName prefers the human chat title for group sessions", () => {
