@@ -552,7 +552,28 @@ class ChatController internal constructor(
   @Volatile private var progressCardScopeKey: String? = null
 
   private val _sessions = MutableStateFlow<List<ChatSessionEntry>>(emptyList())
-  val sessions: StateFlow<List<ChatSessionEntry>> = _sessions.asStateFlow()
+  private val presentedSessions = MutableStateFlow<List<ChatSessionEntry>>(emptyList())
+  val sessions: StateFlow<List<ChatSessionEntry>> = presentedSessions.asStateFlow()
+
+  private fun projectLocalSessionTitles(
+    entries: List<ChatSessionEntry>,
+    binding: MainSessionBinding?,
+  ): List<ChatSessionEntry> {
+    if (binding == null) return entries
+    return entries.map { entry ->
+      if (entry.key == binding.key) entry.copy(localFallbackTitle = binding.autoLabel) else entry
+    }
+  }
+
+  private fun publishSessions(entries: List<ChatSessionEntry>) {
+    synchronized(gatewayScopeApplyLock) {
+      // Keep rejected device metadata out of raw entries/cache; all native title consumers
+      // share a local fallback bound to this gateway and exact session key.
+      _sessions.value = entries
+      val binding = currentCacheScope()?.let { desiredMainSessions[it.gatewayId] }
+      presentedSessions.value = projectLocalSessionTitles(entries, binding)
+    }
+  }
 
   private val _swarmGroups = MutableStateFlow<List<ChatSwarmGroup>>(emptyList())
   val swarmGroups: StateFlow<List<ChatSwarmGroup>> = _swarmGroups.asStateFlow()
@@ -936,7 +957,11 @@ class ChatController internal constructor(
       refreshConnectedGateway()
       return
     }
-    desiredMainSessions[requestScope.gatewayId] = mainSession
+    synchronized(gatewayScopeApplyLock) {
+      if (requestScope != currentCacheScope()) return
+      desiredMainSessions[requestScope.gatewayId] = mainSession
+      publishSessions(_sessions.value)
+    }
     val readiness =
       MainSessionReadiness(
         gatewayScope = requestScope,
@@ -1029,7 +1054,7 @@ class ChatController internal constructor(
       clearProgressCard()
       clearSubagentActivities()
       clearLiveHistoryMarker()
-      _sessions.value = emptyList()
+      publishSessions(emptyList())
       publishRunPresentation()
       clearQuestions()
       applyThinkingMetadata(null)
@@ -1199,7 +1224,7 @@ class ChatController internal constructor(
     if (previousAgentId == verifiedAgentId) return
     // Session titles and model metadata are scoped to the default agent even when the visible
     // session alias stays unchanged. Empty first so offline bootstrap cannot reuse the old owner.
-    _sessions.value = emptyList()
+    publishSessions(emptyList())
     sessionsListArchived = false
     sessionsListLimit = null
     val generation = beginHistoryLoad(key, ownerAgentId = null)
@@ -2342,8 +2367,8 @@ class ChatController internal constructor(
       resolveAgentIdForSessionKey(requestSessionKey)
         ?: return when {
           archived -> emptyList()
-          query == null -> _sessions.value
-          else -> filterSessionEntries(_sessions.value, query)
+          query == null -> sessions.value
+          else -> filterSessionEntries(sessions.value, query)
         }
 
     fun requestOwnerIsCurrent(): Boolean {
@@ -2352,30 +2377,37 @@ class ChatController internal constructor(
         currentAgentId == ownerAgentId &&
         (!requestTracksDefaultAgent || currentDefaultAgentRevision() == requestDefaultAgentRevision)
     }
-    return try {
-      val params =
-        buildJsonObject {
-          put("includeGlobal", JsonPrimitive(true))
-          put("includeUnknown", JsonPrimitive(false))
-          put("agentId", JsonPrimitive(ownerAgentId))
-          put("limit", JsonPrimitive(SESSION_LIST_FETCH_LIMIT))
-          if (query != null) put("search", JsonPrimitive(query))
-          if (archived) put("archived", JsonPrimitive(true))
+    val entries =
+      try {
+        val params =
+          buildJsonObject {
+            put("includeGlobal", JsonPrimitive(true))
+            put("includeUnknown", JsonPrimitive(false))
+            put("agentId", JsonPrimitive(ownerAgentId))
+            put("limit", JsonPrimitive(SESSION_LIST_FETCH_LIMIT))
+            if (query != null) put("search", JsonPrimitive(query))
+            if (archived) put("archived", JsonPrimitive(true))
+          }
+        val sessions = parseSessions(requestGateway("sessions.list", params.toString())).sessions
+        sessions.map { session ->
+          session.copy(ownerAgentId = ownerAgentId)
         }
-      val sessions = parseSessions(requestGateway("sessions.list", params.toString())).sessions
-      if (!requestOwnerIsCurrent()) return emptyList()
-      sessions.map { session ->
-        session.copy(ownerAgentId = ownerAgentId)
+      } catch (err: CancellationException) {
+        // A superseded search owns the results now; never repaint stale fallback rows.
+        throw err
+      } catch (_: Throwable) {
+        when {
+          archived -> emptyList()
+          query == null -> _sessions.value
+          else -> filterSessionEntries(_sessions.value, query)
+        }
       }
-    } catch (err: CancellationException) {
-      // A superseded search owns the results now; never repaint stale fallback rows.
-      throw err
-    } catch (_: Throwable) {
-      if (!requestOwnerIsCurrent()) return emptyList()
-      when {
-        archived -> emptyList()
-        query == null -> _sessions.value
-        else -> filterSessionEntries(_sessions.value, query)
+    return synchronized(gatewayScopeApplyLock) {
+      if (!requestOwnerIsCurrent()) {
+        emptyList()
+      } else {
+        val binding = requestCacheScope?.let { desiredMainSessions[it.gatewayId] }
+        projectLocalSessionTitles(entries, binding)
       }
     }
   }
@@ -3167,14 +3199,15 @@ class ChatController internal constructor(
           clearProgressCard()
         }
         val activeAgentId = resolveAgentIdForSessionKey(key)
-        _sessions.value =
+        publishSessions(
           reconcileGlobalObserverDigestOwner(
             // Unscoped keys can name different sessions for each agent. Retire the
             // old owner's rows before history, settings intents, or events can merge.
             _sessions.value.filter { activeAgentId == null || it.ownerAgentId == activeAgentId },
             activeAgentId = activeAgentId,
             adoptOwnerless = false,
-          )
+          ),
+        )
         applyThinkingMetadata(_sessions.value.firstOrNull { it.key == key })
         _selectedModelRef.value = null
         lastHandledTerminalRunId = null
@@ -4991,11 +5024,12 @@ class ChatController internal constructor(
           requestCacheScope == currentCacheScope() &&
           requestOwnerIsCurrent()
         ) {
-          _sessions.value =
+          publishSessions(
             reconcileGlobalObserverDigestOwner(
               cachedSessions.map { session -> session.copy(ownerAgentId = requestAgentId) },
               activeAgentId = requestAgentId,
-            )
+            ),
+          )
         }
       }
     }
@@ -5102,7 +5136,7 @@ class ChatController internal constructor(
                     it.key == activeSessionKey && it.ownerAgentId == requestAgentId
                   }?.takeIf { result.sessions.none { row -> row.key == activeSessionKey } }
               val sessions = if (selected == null) result.sessions else result.sessions + selected
-              _sessions.value = sessions
+              publishSessions(sessions)
               result.sessions.forEach { observeSessionSettings(it) }
               sessionsListArchived = archived
               sessionsListLimit = requestLimit
@@ -6633,12 +6667,13 @@ class ChatController internal constructor(
   private fun handleSessionObserverEvent(payloadJson: String) {
     val digest = runCatching { json.decodeFromString<SessionObserverDigest>(payloadJson) }.getOrNull() ?: return
     val selectedAgentId = _sessionOwnerAgentId.value ?: resolveAgentIdForSessionKey(_sessionKey.value)
-    _sessions.value =
+    publishSessions(
       applySessionObserverDigest(
         _sessions.value,
         digest,
         activeAgentId = selectedAgentId,
-      )
+      ),
+    )
   }
 
   private fun scheduleSessionsChangedBranchReconciliation(
@@ -8164,8 +8199,9 @@ class ChatController internal constructor(
           category = if ("category" in clearedFields) null else applied.category,
         )
     }
-    _sessions.value =
-      if (index >= 0) current.toMutableList().also { it[index] = applied } else listOf(applied) + current
+    publishSessions(
+      if (index >= 0) current.toMutableList().also { it[index] = applied } else listOf(applied) + current,
+    )
     if (!preserveSessionSettings && (authoritativeSessionSettings || replace || entry.carriesSessionSettings())) {
       observeSessionSettings(applied, SessionSettingsSnapshot(entry, authoritativeSessionSettings || replace))
     }
@@ -8246,7 +8282,7 @@ class ChatController internal constructor(
           }
         val visibleOwner = resolveAgentIdForSessionKey(_sessionKey.value)
         val removesVisibleEntry = cacheScope == currentCacheScope() && owner != null && owner == visibleOwner
-        if (removesVisibleEntry) _sessions.value = _sessions.value.filterNot { it.key == key }
+        if (removesVisibleEntry) publishSessions(_sessions.value.filterNot { it.key == key })
         removesVisibleEntry to retired
       }
     retiredSettings.forEach { it.complete(false) }

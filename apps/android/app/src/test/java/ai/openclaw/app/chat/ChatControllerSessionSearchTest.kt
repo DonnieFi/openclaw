@@ -69,6 +69,70 @@ class ChatControllerSessionSearchTest {
   }
 
   @Test
+  fun localDeviceTitleFollowsBindingAcrossSearchReconnectAndGatewayChanges() =
+    runTest {
+      val key = "agent:main:node-device"
+      var cacheScope = ChatCacheScope("gateway-a", 1)
+      var offline = false
+      val gateway = ScriptedGateway(json)
+      gateway.respond("sessions.list") {
+        if (offline) error("offline")
+        sessionsListJson(sessionRowJson(key, updatedAt = 1))
+      }
+      gateway.respondWith("chat.history", """{"sessionId":"device-session","messages":[]}""")
+      val controller =
+        backgroundScope.createChatController(
+          requestGateway = gateway::request,
+          requestGatewayForGateway = { _, method, params -> gateway.request(method, params) },
+          cacheScope = { cacheScope },
+        )
+      controller.prepareMainSessionKey(key)
+      controller.onGatewayConnected(MainSessionBinding(key, "Device A"))
+      runCurrent()
+      controller.refreshSessions()
+      runCurrent()
+      assertEquals(
+        "Device A",
+        controller.sessions.value
+          .single()
+          .localFallbackTitle,
+      )
+      val searched = controller.fetchSessionList(search = "node-device", archived = false).single()
+      assertEquals("Device A", searched.localFallbackTitle)
+      assertNull(searched.autoLabel)
+      assertNull(searched.displayName)
+
+      offline = true
+      assertEquals("Device A", controller.fetchSessionList(search = "node-device", archived = false).single().localFallbackTitle)
+      controller.onGatewayConnected(MainSessionBinding(key, "Renamed device A"))
+      assertEquals(
+        "Renamed device A",
+        controller.sessions.value
+          .single()
+          .localFallbackTitle,
+      )
+      runCurrent()
+
+      controller.onGatewayScopeChanging()
+      cacheScope = ChatCacheScope("gateway-b", 2)
+      assertTrue(controller.sessions.value.isEmpty())
+      offline = false
+      assertNull(controller.fetchSessionList(search = null, archived = false).single().localFallbackTitle)
+      controller.prepareMainSessionKey(key)
+      controller.onGatewayConnected(MainSessionBinding(key, "Device B"))
+      runCurrent()
+      controller.refreshSessions()
+      runCurrent()
+      assertEquals(
+        "Device B",
+        controller.sessions.value
+          .single()
+          .localFallbackTitle,
+      )
+      assertEquals("Device B", controller.fetchSessionList(search = null, archived = false).single().localFallbackTitle)
+    }
+
+  @Test
   fun fetchSessionListSendsSearchAndArchivedParams() =
     runTest {
       val gateway = ScriptedGateway(json)

@@ -435,6 +435,8 @@ data class ChatSessionEntry(
   val label: String? = null,
   /** Automatic device label; explicit labels and generated display names take precedence. */
   val autoLabel: String? = null,
+  /** In-memory presentation fallback; never server metadata or cached session state. */
+  val localFallbackTitle: String? = null,
   val category: String? = null,
   val color: String? = null,
   val hasColorMetadata: Boolean = color != null,

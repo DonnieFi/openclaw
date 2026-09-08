@@ -239,6 +239,7 @@ internal fun sessionPresentationTitle(
   val label = session.label?.trim()?.takeIf(String::isNotEmpty)
   val displayName = session.displayName?.trim()?.takeIf(String::isNotEmpty)
   val autoLabel = session.autoLabel?.trim()?.takeIf(String::isNotEmpty)
+  val localFallbackTitle = session.localFallbackTitle?.trim()?.takeIf(String::isNotEmpty)
   if (label != null) {
     return label
   }
@@ -247,6 +248,9 @@ internal fun sessionPresentationTitle(
   }
   if (autoLabel != null) {
     return autoLabel
+  }
+  if (localFallbackTitle != null) {
+    return localFallbackTitle
   }
   return nativeString("New chat").takeIf { session.isDashboardSession() } ?: unnamedTitle()
 }

@@ -36,7 +36,7 @@ class SessionsScreenGroupingTest {
     assertEquals(
       "Generated title",
       sessionPresentationTitle(
-        ChatSessionEntry(key = dashboardKey, updatedAtMs = null, displayName = "Generated title"),
+        ChatSessionEntry(key = dashboardKey, updatedAtMs = null, displayName = "Generated title", localFallbackTitle = "Local device"),
       ) { "Main thread" },
     )
     assertEquals(
@@ -47,6 +47,7 @@ class SessionsScreenGroupingTest {
           updatedAtMs = null,
           autoLabel = "OpenClaw App · Pixel · 1234567890ab",
           displayName = "Generated title",
+          localFallbackTitle = "Local device",
         ),
       ) { "Main thread" },
     )
@@ -57,8 +58,17 @@ class SessionsScreenGroupingTest {
           key = "agent:main:node-1234567890ab",
           updatedAtMs = null,
           autoLabel = "OpenClaw App · Pixel · 1234567890ab",
+          localFallbackTitle = "Local device",
         ),
       ) { "Main thread" },
+    )
+    assertEquals(
+      "Local device",
+      sessionPresentationTitle(ChatSessionEntry(key = "agent:main:node-device", updatedAtMs = null, localFallbackTitle = "  Local device  ")) { "Unnamed" },
+    )
+    assertEquals(
+      "Unnamed",
+      sessionPresentationTitle(ChatSessionEntry(key = "agent:main:node-device", updatedAtMs = null, localFallbackTitle = "  ")) { "Unnamed" },
     )
     val manualLabels =
       listOf(
@@ -77,6 +87,7 @@ class SessionsScreenGroupingTest {
             label = manualLabel,
             autoLabel = "OpenClaw App · Pixel · 1234567890ab",
             displayName = "Generated title",
+            localFallbackTitle = "Local device",
           ),
         ) { "Main thread" },
       )

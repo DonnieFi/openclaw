@@ -189,7 +189,9 @@ Existing label-only records are preserved: the Gateway does not infer whether a
 saved `label` was automatic from its text. Clear or replace it explicitly to
 change its precedence. An older Gateway that does not support `autoLabel` rejects
 that patch field; Android does not retry the device name as `label`, which could
-overwrite a custom name.
+overwrite a custom name. Android still uses its locally known device name as a
+display-only fallback for its own session, below server-provided names. This
+fallback is neither sent to the Gateway nor stored in the session cache.
 
 The Gateway is the authority: it may rewrite or rehydrate entries as sessions
 run. For legacy file-backed installs, migrate with

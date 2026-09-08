@@ -4,6 +4,7 @@ import ai.openclaw.app.gateway.GatewayRequestNotEnqueued
 import ai.openclaw.app.gateway.GatewayRequestOutcomeUnknown
 import ai.openclaw.app.gateway.GatewayRequestRejected
 import ai.openclaw.app.gateway.GatewaySession
+import ai.openclaw.app.ui.sessionPresentationTitle
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
@@ -137,6 +138,7 @@ class ChatControllerReconnectRestoreTest {
   fun connectedRefreshContinuesWhenGatewayRejectsAutoLabelWithoutWritingManualLabel() =
     runTest {
       val sessionKey = "agent:main:node-device"
+      val deviceTitle = "OpenClaw App · Pixel · device"
       val gateway = ScriptedGateway(json)
       gateway.respondWith("sessions.describe", """{"session":null}""")
       gateway.respond("sessions.patch") {
@@ -145,20 +147,35 @@ class ChatControllerReconnectRestoreTest {
         )
       }
       gateway.respondWith("chat.history", history(emptyList()))
+      gateway.respondWith(
+        "sessions.list",
+        """{"sessions":[{"key":"$sessionKey"},{"key":"agent:main:node-other"},{"key":"agent:other:node-device"}]}""",
+      )
       val controller = newScopedController(gateway)
 
       controller.prepareMainSessionKey(sessionKey)
-      controller.onGatewayConnected(MainSessionBinding(sessionKey, "OpenClaw App · Pixel · device"))
+      controller.onGatewayConnected(MainSessionBinding(sessionKey, deviceTitle))
+      runCurrent()
+      controller.refreshSessions()
       runCurrent()
 
       assertEquals(1, gateway.callCount("sessions.patch"))
-      val patchParams =
-        json.parseToJsonElement(gateway.calls.single { it.method == "sessions.patch" }.paramsJson.orEmpty()).jsonObject
-      assertEquals("OpenClaw App · Pixel · device", patchParams["autoLabel"]?.jsonPrimitive?.content)
+      val patchCall = gateway.calls.single { it.method == "sessions.patch" }
+      val patchParams = json.parseToJsonElement(patchCall.paramsJson.orEmpty()).jsonObject
+      assertEquals(deviceTitle, patchParams["autoLabel"]?.jsonPrimitive?.content)
       assertFalse("label" in patchParams)
       assertEquals(1, gateway.callCount("chat.history"))
       assertEquals(sessionKey, controller.sessionKey.value)
       assertNull(controller.errorText.value)
+
+      val ownSession = controller.sessions.value.single { it.key == sessionKey }
+      assertNull(ownSession.label)
+      assertNull(ownSession.displayName)
+      assertNull(ownSession.autoLabel)
+      assertEquals(deviceTitle, sessionPresentationTitle(ownSession) { "Unnamed" })
+      controller.sessions.value.filter { it.key != sessionKey }.forEach {
+        assertEquals("Unnamed", sessionPresentationTitle(it) { "Unnamed" })
+      }
     }
 
   @Test

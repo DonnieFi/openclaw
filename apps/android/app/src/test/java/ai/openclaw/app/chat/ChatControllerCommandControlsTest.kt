@@ -682,8 +682,9 @@ class ChatControllerCommandControlsTest {
 
       controller.refreshSessions()
       advanceUntilIdle()
-      assertEquals("Device fallback", controller.sessions.value.single().autoLabel)
-      assertEquals("Generated title", controller.sessions.value.single().displayName)
+      val initialSession = controller.sessions.value.single()
+      assertEquals("Device fallback", initialSession.autoLabel)
+      assertEquals("Generated title", initialSession.displayName)
       assertEquals(
         "Work",
         controller.sessions.value
