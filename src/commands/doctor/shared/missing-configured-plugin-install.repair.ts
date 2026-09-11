@@ -189,6 +189,7 @@ async function repairMissingPluginInstallsWithLease(
     installedPluginIdsWithStaleVersionBoundRuntimePackages,
     installedPluginIdsWithRepairablePackages,
     officialReplacementPluginIds,
+    hostAuthoritativeVersionBoundRuntimePluginIds,
   } = await resolveConfiguredPluginInstallContext({
     cfg: params.cfg,
     env,
@@ -246,7 +247,11 @@ async function repairMissingPluginInstallsWithLease(
       nextRecords = { ...records };
     }
     delete nextRecords[pluginId];
-    changes.push(`Removed stale managed install record for bundled plugin "${pluginId}".`);
+    changes.push(
+      hostAuthoritativeVersionBoundRuntimePluginIds.has(pluginId)
+        ? `Kept host-rebuilt bundled plugin "${pluginId}" authoritative on this source checkout; ignored npm install that would shadow it.`
+        : `Removed stale managed install record for bundled plugin "${pluginId}".`,
+    );
   }
 
   for (const pluginId of stalePathInstallPluginIds) {

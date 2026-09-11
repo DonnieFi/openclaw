@@ -49,6 +49,39 @@ function isSourceCheckoutRoot(packageRoot: string): boolean {
   );
 }
 
+function bundledPluginRootHasUsableTree(pluginDir: string): boolean {
+  return (
+    pluginCacheExistsSync(path.join(pluginDir, "package.json")) ||
+    pluginCacheExistsSync(path.join(pluginDir, "openclaw.plugin.json"))
+  );
+}
+
+/**
+ * True when `rootDir` is a usable bundled plugin tree owned by a source checkout.
+ * Package hosts and official-external npm installs do not satisfy this.
+ */
+export function isUsableSourceCheckoutBundledPluginRoot(rootDir: string): boolean {
+  const resolved = path.resolve(rootDir);
+  if (!bundledPluginRootHasUsableTree(resolved)) {
+    return false;
+  }
+  let cursor = resolved;
+  for (let i = 0; i < 6; i += 1) {
+    const parent = path.dirname(cursor);
+    if (parent === cursor) {
+      break;
+    }
+    if (
+      isSourceCheckoutRoot(parent) &&
+      isPluginInPackageBundledRoots({ rootDir: resolved, packageRoot: parent })
+    ) {
+      return true;
+    }
+    cursor = parent;
+  }
+  return false;
+}
+
 export function shouldTrustTestBundledPluginsDirOverride(env: NodeJS.ProcessEnv): boolean {
   const isVitestProcess = isVitestRuntimeEnv(env) || isVitestRuntimeEnv(process.env);
   return (

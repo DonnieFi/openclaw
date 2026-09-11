@@ -8,6 +8,7 @@ import {
   normalizeUpdateChannel,
   resolveRegistryUpdateChannel,
 } from "../../../infra/update-channels.js";
+import { isUsableSourceCheckoutBundledPluginRoot } from "../../../plugins/bundled-dir.js";
 import {
   resolveDefaultPluginExtensionsDir,
   resolvePluginInstallDir,
@@ -90,9 +91,15 @@ export async function resolveConfiguredPluginInstallContext(params: {
     snapshot,
     configuredChannelIds: params.configuredChannelIds,
   });
+  const hostAuthoritativeVersionBoundRuntimePluginIds =
+    collectHostAuthoritativeVersionBoundRuntimePluginIds(currentBundledPlugins);
   const bundledPluginsById = new Map<string, BundledPluginPackageDescriptor>(
     currentBundledPlugins
-      .filter((plugin) => !isExternallyDistributedPlugin(plugin))
+      .filter(
+        (plugin) =>
+          !isExternallyDistributedPlugin(plugin) ||
+          hostAuthoritativeVersionBoundRuntimePluginIds.has(plugin.pluginId),
+      )
       .map((plugin) => [plugin.pluginId, { packageName: plugin.packageName }] as const),
   );
   const configuredPluginIdsWithStaleDescriptors =
@@ -120,6 +127,7 @@ export async function resolveConfiguredPluginInstallContext(params: {
       installRecords: records,
       configuredPluginIds: params.configuredPluginIds,
       currentVersion,
+      hostAuthoritativePluginIds: hostAuthoritativeVersionBoundRuntimePluginIds,
     });
   const installedPluginIdsWithRepairablePackages = new Set([
     ...installedPluginIdsWithRepairablePackageDiagnostics,
@@ -190,6 +198,7 @@ export async function resolveConfiguredPluginInstallContext(params: {
     installedPluginIdsWithStaleVersionBoundRuntimePackages,
     installedPluginIdsWithRepairablePackages,
     officialReplacementPluginIds,
+    hostAuthoritativeVersionBoundRuntimePluginIds,
   };
 }
 
@@ -533,11 +542,37 @@ function installedRuntimePackageVersionIsStale(params: {
   return comparison === null ? params.installedVersion !== params.currentVersion : comparison < 0;
 }
 
+function collectHostAuthoritativeVersionBoundRuntimePluginIds(
+  currentBundledPlugins: ReadonlyArray<{
+    pluginId: string;
+    origin?: string;
+    rootDir?: string;
+  }>,
+): Set<string> {
+  const pluginIds = new Set<string>();
+  for (const plugin of currentBundledPlugins) {
+    const rootDir = plugin.rootDir?.trim();
+    // Official-external version-bound plugins stay npm-owned on package hosts.
+    // A source-checkout tree rebuilt with this host is the admitted Codex owner.
+    if (
+      !VERSION_BOUND_RUNTIME_PLUGIN_IDS.has(plugin.pluginId) ||
+      plugin.origin !== "bundled" ||
+      !rootDir ||
+      !isUsableSourceCheckoutBundledPluginRoot(rootDir)
+    ) {
+      continue;
+    }
+    pluginIds.add(plugin.pluginId);
+  }
+  return pluginIds;
+}
+
 function collectInstalledPluginIdsWithStaleVersionBoundRuntimePackages(params: {
   snapshot: PluginMetadataSnapshot;
   installRecords: Record<string, PluginInstallRecord>;
   configuredPluginIds: ReadonlySet<string>;
   currentVersion: string;
+  hostAuthoritativePluginIds: ReadonlySet<string>;
 }): Set<string> {
   const pluginIds = new Set<string>();
   const currentVersion = normalizeOptionalLowercaseString(params.currentVersion);
@@ -547,7 +582,8 @@ function collectInstalledPluginIdsWithStaleVersionBoundRuntimePackages(params: {
   for (const candidate of CONFIGURED_RUNTIME_PLUGIN_INSTALL_CANDIDATES) {
     if (
       !VERSION_BOUND_RUNTIME_PLUGIN_IDS.has(candidate.pluginId) ||
-      !params.configuredPluginIds.has(candidate.pluginId)
+      !params.configuredPluginIds.has(candidate.pluginId) ||
+      params.hostAuthoritativePluginIds.has(candidate.pluginId)
     ) {
       continue;
     }

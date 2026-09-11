@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as openClawRoot from "../infra/openclaw-root.js";
 import {
+  isUsableSourceCheckoutBundledPluginRoot,
   resolveBundledPluginsDir,
   resolveSourceCheckoutDependencyDiagnostic,
 } from "./bundled-dir.js";
@@ -351,6 +352,40 @@ describe("resolveBundledPluginsDir", () => {
       repoRoot,
       expectedRelativeDir: path.join("dist-runtime", "extensions"),
     });
+  });
+
+  it("admits usable source-checkout bundled plugin roots and rejects packaged trees", () => {
+    const checkoutRoot = createOpenClawRoot({
+      prefix: "openclaw-bundled-dir-source-plugin-",
+      hasExtensions: true,
+      hasSrc: true,
+      hasDistExtensions: true,
+      hasPnpmWorkspace: true,
+    });
+    seedBundledPluginTree(checkoutRoot, path.join("dist", "extensions"), "codex");
+    seedBundledPluginTree(checkoutRoot, "extensions", "codex");
+    const packagedRoot = createOpenClawRoot({
+      prefix: "openclaw-bundled-dir-packaged-plugin-",
+      hasDistExtensions: true,
+    });
+    seedBundledPluginTree(packagedRoot, path.join("dist", "extensions"), "codex");
+
+    expect(
+      isUsableSourceCheckoutBundledPluginRoot(
+        path.join(checkoutRoot, "dist", "extensions", "codex"),
+      ),
+    ).toBe(true);
+    expect(
+      isUsableSourceCheckoutBundledPluginRoot(path.join(checkoutRoot, "extensions", "codex")),
+    ).toBe(true);
+    expect(
+      isUsableSourceCheckoutBundledPluginRoot(
+        path.join(packagedRoot, "dist", "extensions", "codex"),
+      ),
+    ).toBe(false);
+    expect(
+      isUsableSourceCheckoutBundledPluginRoot(path.join(checkoutRoot, "dist", "extensions")),
+    ).toBe(false);
   });
 
   it("reports missing pnpm workspace deps for source checkouts", () => {
