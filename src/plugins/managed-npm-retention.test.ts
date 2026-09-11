@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import {
   resolvePluginNpmGenerationProjectDir,
@@ -145,4 +145,105 @@ describe("managed npm retention", () => {
       expect(hasRetainedManagedNpmInstallMarker(packageDir)).toBe(true);
     },
   );
+
+  it.each(["stat", "mkdir"] as const)(
+    "does not publish a retention marker when authority is revoked after %s",
+    async (phase) => {
+      const stateDir = retentionTempDirs.make("openclaw-retention-revoke-");
+      const npmDir = path.join(stateDir, "npm");
+      const packageDir = path.join(npmDir, "node_modules", "@openclaw", "codex");
+      fs.mkdirSync(packageDir, { recursive: true });
+      const expired = new Error("approved operation owner expired");
+      let ownerActive = true;
+      const beforePersistentEffect = () => {
+        if (!ownerActive) {
+          throw expired;
+        }
+      };
+      const revokeAfterAwait = () => {
+        ownerActive = false;
+      };
+      const stat = fs.promises.stat.bind(fs.promises);
+      const mkdir = fs.promises.mkdir.bind(fs.promises);
+      const spy =
+        phase === "stat"
+          ? vi.spyOn(fs.promises, "stat").mockImplementation(async (...args) => {
+              try {
+                return await stat(...args);
+              } finally {
+                revokeAfterAwait();
+              }
+            })
+          : vi.spyOn(fs.promises, "mkdir").mockImplementation(async (...args) => {
+              try {
+                return await mkdir(...args);
+              } finally {
+                revokeAfterAwait();
+              }
+            });
+
+      try {
+        await expect(
+          markRetainedManagedNpmInstall({
+            packageDir,
+            pluginId: "codex",
+            reason: RETAINED_MANAGED_NPM_KEEP_FILES_REASON,
+            beforePersistentEffect,
+          }),
+        ).rejects.toBe(expired);
+        expect(hasRetainedManagedNpmInstallMarker(packageDir)).toBe(false);
+      } finally {
+        spy.mockRestore();
+      }
+    },
+  );
+
+  it("does not publish further retention markers after authority is revoked mid-loop", async () => {
+    const stateDir = retentionTempDirs.make("openclaw-retention-revoke-loop-");
+    const npmDir = path.join(stateDir, "npm");
+    const firstPackageDir = path.join(npmDir, "node_modules", "@openclaw", "codex");
+    const secondPackageDir = path.join(npmDir, "node_modules", "@openclaw", "codex-older");
+    fs.mkdirSync(firstPackageDir, { recursive: true });
+    fs.mkdirSync(secondPackageDir, { recursive: true });
+    const expired = new Error("approved operation owner expired");
+    let ownerActive = true;
+    const beforePersistentEffect = () => {
+      if (!ownerActive) {
+        throw expired;
+      }
+    };
+    const writeFile = fs.promises.writeFile.bind(fs.promises);
+    const spy = vi
+      .spyOn(fs.promises, "writeFile")
+      .mockImplementation(async (file, data, options) => {
+        const result = await writeFile(file, data, options);
+        if (String(file).includes(".openclaw-retained-npm-installs")) {
+          ownerActive = false;
+        }
+        return result;
+      });
+
+    try {
+      await expect(
+        markRetainedManagedNpmInstall({
+          packageDir: firstPackageDir,
+          pluginId: "codex",
+          reason: RETAINED_MANAGED_NPM_KEEP_FILES_REASON,
+          beforePersistentEffect,
+        }),
+      ).resolves.toBe(true);
+      await expect(
+        markRetainedManagedNpmInstall({
+          packageDir: secondPackageDir,
+          pluginId: "codex",
+          reason: RETAINED_MANAGED_NPM_KEEP_FILES_REASON,
+          beforePersistentEffect,
+        }),
+      ).rejects.toBe(expired);
+      expect(hasRetainedManagedNpmInstallMarker(firstPackageDir)).toBe(true);
+      expect(hasRetainedManagedNpmInstallMarker(secondPackageDir)).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });

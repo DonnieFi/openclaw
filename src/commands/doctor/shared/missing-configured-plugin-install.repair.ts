@@ -283,6 +283,7 @@ async function repairMissingPluginInstallsWithLease(
         packageDir,
         pluginId,
         reason: RETAINED_MANAGED_NPM_KEEP_FILES_REASON,
+        beforePersistentEffect: params.beforePersistentEffect,
       });
     }
   }

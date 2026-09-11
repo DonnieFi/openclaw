@@ -92,6 +92,7 @@ export async function markRetainedManagedNpmInstall(params: {
   pluginId: string;
   retainedAt?: string;
   reason: string;
+  beforePersistentEffect?: () => void | Promise<void>;
 }): Promise<boolean> {
   const info = resolveRetainedManagedNpmInstallPackageInfo(params.packageDir);
   if (!info) {
@@ -109,7 +110,10 @@ export async function markRetainedManagedNpmInstall(params: {
   if (!stat.isDirectory()) {
     return false;
   }
+  // Recheck after the stat await: a revoked updater must not publish markers.
+  await params.beforePersistentEffect?.();
   await fs.promises.mkdir(path.dirname(info.markerPath), { recursive: true });
+  await params.beforePersistentEffect?.();
   await fs.promises.writeFile(
     info.markerPath,
     `${JSON.stringify(

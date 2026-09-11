@@ -2296,6 +2296,73 @@ describe("repairMissingConfiguredPluginInstalls", () => {
     }
   });
 
+  it("does not publish further Codex recovery-exclusion markers after updater authority is revoked", async () => {
+    const stateDir = tempDirs.make("openclaw-codex-host-authority-revoke-");
+    const env = { ...testEnv, OPENCLAW_STATE_DIR: stateDir };
+    const installedVersion = "2026.5.6";
+    const packageDir = writeRecoverableManagedCodexNpmInstall({
+      stateDir,
+      version: installedVersion,
+      projectName: "openclaw-codex-shadow-recent",
+    });
+    const siblingPackageDir = writeRecoverableManagedCodexNpmInstall({
+      stateDir,
+      version: "2026.4.1",
+      projectName: "openclaw-codex-shadow-older",
+    });
+    mockSourceCheckoutBundledCodexNpmRecord(installedVersion, {
+      installPath: packageDir,
+    });
+    const actualRecords = await vi.importActual<
+      typeof import("../../../plugins/installed-plugin-index-records.js")
+    >("../../../plugins/installed-plugin-index-records.js");
+    mocks.writePersistedInstalledPluginIndexInstallRecords.mockImplementation(
+      (nextRecords, options) =>
+        actualRecords.writePersistedInstalledPluginIndexInstallRecords(nextRecords, options),
+    );
+    const expired = new Error("approved operation owner expired");
+    let ownerActive = true;
+    const writeFile = fs.promises.writeFile.bind(fs.promises);
+    const writeSpy = vi
+      .spyOn(fs.promises, "writeFile")
+      .mockImplementation(async (file, data, options) => {
+        const result = await writeFile(file, data, options);
+        if (String(file).includes(".openclaw-retained-npm-installs")) {
+          ownerActive = false;
+        }
+        return result;
+      });
+
+    try {
+      const { repairMissingConfiguredPluginInstalls } =
+        await import("./missing-configured-plugin-install.js");
+      const cfg = {
+        plugins: { entries: { codex: { enabled: true } } },
+        agents: { defaults: { model: "openai/gpt-5.5" } },
+        update: { channel: "dev" as const },
+      };
+      await expect(
+        repairMissingConfiguredPluginInstalls({
+          cfg,
+          env,
+          beforePersistentEffect: () => {
+            if (!ownerActive) {
+              throw expired;
+            }
+          },
+        }),
+      ).rejects.toBe(expired);
+      expect(hasRetainedManagedNpmInstallMarker(packageDir)).toBe(true);
+      expect(hasRetainedManagedNpmInstallMarker(siblingPackageDir)).toBe(false);
+      expect(fs.existsSync(packageDir)).toBe(true);
+      expect(fs.existsSync(siblingPackageDir)).toBe(true);
+    } finally {
+      writeSpy.mockRestore();
+      actualRecords.clearLoadInstalledPluginIndexInstallRecordsCache();
+      closeOpenClawStateDatabaseByPath(resolveOpenClawStateSqlitePath(env));
+    }
+  });
+
   it.each(["stable", "beta"] as const)(
     "retains a healthy same-version npm Codex record on %s source checkouts",
     async (channel) => {
