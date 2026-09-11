@@ -9,7 +9,10 @@ import {
   resolveEffectiveEnableState,
 } from "../../../plugins/config-state.js";
 import { PLUGIN_INSTALL_ERROR_CODE } from "../../../plugins/install-types.js";
+import { listRecoveredManagedNpmInstallCandidates } from "../../../plugins/installed-plugin-index-record-reader.js";
 import { writePersistedInstalledPluginIndexInstallRecords } from "../../../plugins/installed-plugin-index-records.js";
+import { RETAINED_MANAGED_NPM_KEEP_FILES_REASON } from "../../../plugins/managed-npm-retention-contract.js";
+import { markRetainedManagedNpmInstall } from "../../../plugins/managed-npm-retention.js";
 import { isPayloadMissing } from "../../../plugins/payload-verification.js";
 import { withPluginLifecycleLease } from "../../../plugins/plugin-lifecycle-lease.js";
 import { updateNpmInstalledPlugins, type PluginUpdateOutcome } from "../../../plugins/update.js";
@@ -238,6 +241,15 @@ async function repairMissingPluginInstallsWithLease(
     failedPlugins.set(pluginId, outcome);
   };
 
+  const retiredBundledPluginIds = new Set<string>();
+  const retiredManagedNpmInstalls = new Map<string, string>();
+  const rememberRetiredManagedNpmInstall = (pluginId: string, installPath?: string) => {
+    const packageDir = installPath?.trim();
+    if (!packageDir) {
+      return;
+    }
+    retiredManagedNpmInstalls.set(resolveUserPath(packageDir, env), pluginId);
+  };
   for (const [pluginId, record] of Object.entries(records)) {
     const bundled = bundledPluginsById.get(pluginId);
     if (!bundled || !recordMatchesBundledPackage(record, bundled)) {
@@ -247,11 +259,32 @@ async function repairMissingPluginInstallsWithLease(
       nextRecords = { ...records };
     }
     delete nextRecords[pluginId];
+    retiredBundledPluginIds.add(pluginId);
+    rememberRetiredManagedNpmInstall(pluginId, record.installPath);
     changes.push(
       hostAuthoritativeVersionBoundRuntimePluginIds.has(pluginId)
         ? `Kept host-rebuilt bundled plugin "${pluginId}" authoritative on this git/dev checkout; ignored npm install that would shadow it.`
         : `Removed stale managed install record for bundled plugin "${pluginId}".`,
     );
+  }
+  if (retiredBundledPluginIds.size > 0) {
+    const recoveredStoreOptions = {
+      env,
+      ...(env.OPENCLAW_STATE_DIR ? { stateDir: env.OPENCLAW_STATE_DIR } : {}),
+    };
+    for (const candidate of listRecoveredManagedNpmInstallCandidates(recoveredStoreOptions)) {
+      if (retiredBundledPluginIds.has(candidate.pluginId)) {
+        rememberRetiredManagedNpmInstall(candidate.pluginId, candidate.installRecord.installPath);
+      }
+    }
+    await params.beforePersistentEffect?.();
+    for (const [packageDir, pluginId] of retiredManagedNpmInstalls) {
+      await markRetainedManagedNpmInstall({
+        packageDir,
+        pluginId,
+        reason: RETAINED_MANAGED_NPM_KEEP_FILES_REASON,
+      });
+    }
   }
 
   for (const pluginId of stalePathInstallPluginIds) {

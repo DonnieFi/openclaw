@@ -18,6 +18,7 @@ import {
 } from "../../../plugins/install-channel-specs.js";
 import type { PluginInstallArtifactConsentHandler } from "../../../plugins/install-types.js";
 import { resolveInstalledPluginIndexPolicyHash } from "../../../plugins/installed-plugin-index-policy.js";
+import { hasRetainedManagedNpmInstallMarker } from "../../../plugins/managed-npm-retention.js";
 import { isTrustedOfficialPluginInstallRecord } from "../../../plugins/official-external-install-records.js";
 import type { BundledProviderPolicySurface } from "../../../plugins/provider-policy-surface.js";
 import { createColdPluginFixture } from "../../../plugins/test-helpers/cold-plugin-fixtures.js";
@@ -197,13 +198,51 @@ function writeSourceCheckoutBundledCodex(version = VERSION): string {
   return pluginDir;
 }
 
-function mockSourceCheckoutBundledCodexNpmRecord(installedVersion: string) {
-  const bundledRoot = writeSourceCheckoutBundledCodex();
-  const installDir = tempDirs.make("openclaw-codex-npm-shadow-");
-  fs.writeFileSync(
-    path.join(installDir, "package.json"),
-    JSON.stringify({ name: "@openclaw/codex", version: installedVersion }),
+function writeRecoverableManagedCodexNpmInstall(params: {
+  stateDir: string;
+  version: string;
+  projectName?: string;
+}): string {
+  const projectRoot = path.join(
+    params.stateDir,
+    "npm",
+    "projects",
+    params.projectName ?? "openclaw-codex-shadow",
   );
+  const packageDir = path.join(projectRoot, "node_modules", "@openclaw", "codex");
+  fs.mkdirSync(packageDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(projectRoot, "package.json"),
+    JSON.stringify({
+      private: true,
+      dependencies: { "@openclaw/codex": params.version },
+    }),
+  );
+  fs.writeFileSync(
+    path.join(packageDir, "package.json"),
+    JSON.stringify({
+      name: "@openclaw/codex",
+      version: params.version,
+      openclaw: { extensions: ["./index.js"] },
+    }),
+  );
+  fs.writeFileSync(path.join(packageDir, "openclaw.plugin.json"), JSON.stringify({ id: "codex" }));
+  fs.writeFileSync(path.join(packageDir, "index.js"), "export {};\n");
+  return packageDir;
+}
+
+function mockSourceCheckoutBundledCodexNpmRecord(
+  installedVersion: string,
+  options: { installPath?: string } = {},
+) {
+  const bundledRoot = writeSourceCheckoutBundledCodex();
+  const installDir = options.installPath ?? tempDirs.make("openclaw-codex-npm-shadow-");
+  if (!options.installPath) {
+    fs.writeFileSync(
+      path.join(installDir, "package.json"),
+      JSON.stringify({ name: "@openclaw/codex", version: installedVersion }),
+    );
+  }
   const records = {
     codex: {
       source: "npm",
@@ -2173,6 +2212,89 @@ describe("repairMissingConfiguredPluginInstalls", () => {
       expect(result.pluginInventoryChanged).toBe(true);
     },
   );
+
+  it("retires shadowed Codex npm generations so recovery cannot resurrect them on git/dev", async () => {
+    const stateDir = tempDirs.make("openclaw-codex-host-authority-retire-");
+    const env = { ...testEnv, OPENCLAW_STATE_DIR: stateDir };
+    const installedVersion = "2026.5.6";
+    const packageDir = writeRecoverableManagedCodexNpmInstall({
+      stateDir,
+      version: installedVersion,
+      projectName: "openclaw-codex-shadow-recent",
+    });
+    const siblingPackageDir = writeRecoverableManagedCodexNpmInstall({
+      stateDir,
+      version: "2026.4.1",
+      projectName: "openclaw-codex-shadow-older",
+    });
+    const recentStamp = new Date("2026-09-11T00:00:00.000Z");
+    const olderStamp = new Date("2026-08-01T00:00:00.000Z");
+    fs.utimesSync(
+      path.join(stateDir, "npm", "projects", "openclaw-codex-shadow-recent", "package.json"),
+      recentStamp,
+      recentStamp,
+    );
+    fs.utimesSync(
+      path.join(stateDir, "npm", "projects", "openclaw-codex-shadow-older", "package.json"),
+      olderStamp,
+      olderStamp,
+    );
+    mockSourceCheckoutBundledCodexNpmRecord(installedVersion, {
+      installPath: packageDir,
+    });
+    const actualRecords = await vi.importActual<
+      typeof import("../../../plugins/installed-plugin-index-records.js")
+    >("../../../plugins/installed-plugin-index-records.js");
+    mocks.writePersistedInstalledPluginIndexInstallRecords.mockImplementation(
+      (nextRecords, options) =>
+        actualRecords.writePersistedInstalledPluginIndexInstallRecords(nextRecords, options),
+    );
+    const emitWarning = vi.spyOn(process, "emitWarning").mockImplementation(() => undefined);
+
+    try {
+      const recoveredBefore = await actualRecords.loadInstalledPluginIndexInstallRecords({
+        stateDir,
+        env,
+      });
+      expectRecordFields(recoveredBefore.codex, {
+        installPath: packageDir,
+        resolvedVersion: installedVersion,
+      });
+
+      const { repairMissingConfiguredPluginInstalls } =
+        await import("./missing-configured-plugin-install.js");
+      const cfg = {
+        plugins: { entries: { codex: { enabled: true } } },
+        agents: { defaults: { model: "openai/gpt-5.5" } },
+        update: { channel: "dev" as const },
+      };
+      const result = await repairMissingConfiguredPluginInstalls({ cfg, env });
+
+      expect(result.records).toEqual({});
+      expect(mocks.writePersistedInstalledPluginIndexInstallRecords).toHaveBeenCalledWith(
+        {},
+        { config: cfg, env },
+      );
+      expect(hasRetainedManagedNpmInstallMarker(packageDir)).toBe(true);
+      expect(hasRetainedManagedNpmInstallMarker(siblingPackageDir)).toBe(true);
+      expect(fs.existsSync(packageDir)).toBe(true);
+      expect(fs.existsSync(siblingPackageDir)).toBe(true);
+
+      emitWarning.mockClear();
+      const recoveredAfter = await actualRecords.loadInstalledPluginIndexInstallRecords({
+        stateDir,
+        env,
+      });
+      expect(recoveredAfter.codex).toBeUndefined();
+      expect(emitWarning).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ code: "OPENCLAW_PLUGIN_INSTALL_RECOVERY_FALLBACK" }),
+      );
+    } finally {
+      actualRecords.clearLoadInstalledPluginIndexInstallRecordsCache();
+      closeOpenClawStateDatabaseByPath(resolveOpenClawStateSqlitePath(env));
+    }
+  });
 
   it.each(["stable", "beta"] as const)(
     "retains a healthy same-version npm Codex record on %s source checkouts",
