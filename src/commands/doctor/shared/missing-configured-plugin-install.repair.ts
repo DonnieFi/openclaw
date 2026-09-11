@@ -249,7 +249,7 @@ async function repairMissingPluginInstallsWithLease(
     delete nextRecords[pluginId];
     changes.push(
       hostAuthoritativeVersionBoundRuntimePluginIds.has(pluginId)
-        ? `Kept host-rebuilt bundled plugin "${pluginId}" authoritative on this source checkout; ignored npm install that would shadow it.`
+        ? `Kept host-rebuilt bundled plugin "${pluginId}" authoritative on this git/dev checkout; ignored npm install that would shadow it.`
         : `Removed stale managed install record for bundled plugin "${pluginId}".`,
     );
   }

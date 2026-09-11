@@ -7,6 +7,7 @@ import { compareOpenClawReleaseVersions } from "../../../infra/npm-registry-spec
 import {
   normalizeUpdateChannel,
   resolveRegistryUpdateChannel,
+  type UpdateChannel,
 } from "../../../infra/update-channels.js";
 import { isUsableSourceCheckoutBundledPluginRoot } from "../../../plugins/bundled-dir.js";
 import {
@@ -91,8 +92,13 @@ export async function resolveConfiguredPluginInstallContext(params: {
     snapshot,
     configuredChannelIds: params.configuredChannelIds,
   });
+  const currentVersion = params.coreVersion ?? resolveCompatibilityHostVersion(params.env);
+  const updateChannel = resolveRegistryUpdateChannel({
+    configChannel: normalizeUpdateChannel(params.cfg.update?.channel),
+    currentVersion,
+  });
   const hostAuthoritativeVersionBoundRuntimePluginIds =
-    collectHostAuthoritativeVersionBoundRuntimePluginIds(currentBundledPlugins);
+    collectHostAuthoritativeVersionBoundRuntimePluginIds(currentBundledPlugins, updateChannel);
   const bundledPluginsById = new Map<string, BundledPluginPackageDescriptor>(
     currentBundledPlugins
       .filter(
@@ -110,11 +116,6 @@ export async function resolveConfiguredPluginInstallContext(params: {
     });
   const records =
     params.baselineRecords ?? (await loadInstalledPluginIndexInstallRecords({ env: params.env }));
-  const currentVersion = params.coreVersion ?? resolveCompatibilityHostVersion(params.env);
-  const updateChannel = resolveRegistryUpdateChannel({
-    configChannel: normalizeUpdateChannel(params.cfg.update?.channel),
-    currentVersion,
-  });
   const installedPluginIdsWithRepairablePackageDiagnostics =
     collectInstalledPluginIdsWithRepairablePackageDiagnostics({
       snapshot,
@@ -548,12 +549,18 @@ function collectHostAuthoritativeVersionBoundRuntimePluginIds(
     origin?: string;
     rootDir?: string;
   }>,
+  updateChannel: UpdateChannel,
 ): Set<string> {
   const pluginIds = new Set<string>();
+  // Automatic bundled Codex ownership is reserved for the git/dev channel.
+  // Release channels keep a healthy matching npm install record intact.
+  if (updateChannel !== "dev") {
+    return pluginIds;
+  }
   for (const plugin of currentBundledPlugins) {
     const rootDir = plugin.rootDir?.trim();
     // Official-external version-bound plugins stay npm-owned on package hosts.
-    // A source-checkout tree rebuilt with this host is the admitted Codex owner.
+    // A git/dev source-checkout tree rebuilt with this host is the admitted Codex owner.
     if (
       !VERSION_BOUND_RUNTIME_PLUGIN_IDS.has(plugin.pluginId) ||
       plugin.origin !== "bundled" ||
