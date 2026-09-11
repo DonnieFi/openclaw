@@ -13,6 +13,39 @@ describe("feishu target classification", () => {
   });
 });
 
+describe("feishuPlugin.security.collectWarnings", () => {
+  it("records an intentional open groupPolicy as a non-blocking posture advisory", () => {
+    const cfg = {
+      channels: {
+        feishu: {
+          groupPolicy: "open",
+          accounts: {
+            default: {
+              appId: "app-id",
+              appSecret: "app-secret",
+            },
+          },
+        },
+      },
+    } as OpenClawConfig;
+
+    expect(
+      feishuPlugin.security?.collectWarnings?.({
+        cfg,
+        accountId: "default",
+      }),
+    ).toEqual([
+      {
+        checkId: "channels.feishu.groups.open",
+        severity: "warn",
+        title: "Feishu security warning",
+        detail:
+          'Feishu[default] groups: groupPolicy="open" allows any member to trigger (mention-gated). Set channels.feishu.groupPolicy="allowlist" + channels.feishu.groupAllowFrom to restrict senders.',
+      },
+    ]);
+  });
+});
+
 const probeFeishuMock = vi.hoisted(() => vi.fn());
 const createFeishuClientMock = vi.hoisted(() => vi.fn());
 const addReactionFeishuMock = vi.hoisted(() => vi.fn());

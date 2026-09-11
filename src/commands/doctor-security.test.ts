@@ -780,6 +780,66 @@ describe("noteSecurityWarnings gateway exposure", () => {
     expect(message).toContain("Run: openclaw security audit --deep");
   });
 
+  it("keeps intentional Discord open groupPolicy below the update lint error threshold", async () => {
+    const { resolveDiscordAccount } = await import("../../extensions/discord/src/accounts.js");
+    const { discordSecurityAdapter } = await import("../../extensions/discord/src/security.js");
+    const { createCoreHealthChecks } = await import("../flows/doctor-core-checks.js");
+    const { exitCodeFromFindings } = await import("../flows/doctor-lint-flow.js");
+
+    pluginRegistry.list = [
+      {
+        id: "discord",
+        meta: { label: "Discord" },
+        config: {
+          listAccountIds: () => ["default"],
+          resolveAccount: (cfg: OpenClawConfig, accountId?: string | null) =>
+            resolveDiscordAccount({ cfg, accountId }),
+          isEnabled: () => true,
+          isConfigured: () => true,
+        },
+        security: {
+          collectWarnings: discordSecurityAdapter.collectWarnings,
+        },
+      },
+    ];
+
+    const cfg = {
+      channels: {
+        discord: {
+          groupPolicy: "open",
+        },
+      },
+    } as OpenClawConfig;
+
+    const securityCheck = createCoreHealthChecks().find(
+      (check) => check.id === "core/doctor/security",
+    );
+    expect(securityCheck).toBeDefined();
+
+    const healthFindings = await securityCheck!.detect({
+      mode: "lint",
+      runtime: { log() {}, error() {}, exit() {} },
+      cfg,
+    });
+
+    const openGroupFindings = healthFindings.filter((finding) =>
+      finding.message.includes('groupPolicy="open"'),
+    );
+    expect(openGroupFindings).toEqual([
+      expect.objectContaining({
+        checkId: "core/doctor/security",
+        severity: "warning",
+        message: expect.stringContaining("Discord security warning"),
+      }),
+    ]);
+    expect(openGroupFindings.some((finding) => finding.severity === "error")).toBe(false);
+
+    // Candidate update lint uses --severity-min error; the advisory must remain visible under warning.
+    expect(exitCodeFromFindings(openGroupFindings, "error")).toBe(0);
+    expect(exitCodeFromFindings(openGroupFindings, "warning")).toBe(1);
+    expect(exitCodeFromFindings(healthFindings, "error")).toBe(0);
+  });
+
   it("skips heartbeat directPolicy warning when delivery is internal-only or explicit", async () => {
     const cfg = {
       agents: {
