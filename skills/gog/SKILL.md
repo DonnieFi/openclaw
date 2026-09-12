@@ -26,27 +26,27 @@ metadata:
 
 Use `gog` for Gmail/Calendar/Drive/Contacts/Sheets/Docs. Requires OAuth setup.
 
-Prefer an already-authorized host account: run the needed command with `exec` first. Enter setup only after an auth error; confirm with `gog auth list --check` and `gog auth doctor`. Do not ask the user for passwords, client secrets, or refresh tokens in chat, and do not use the `secrets` tool for Google OAuth material.
+Prefer an already-authorized host account: run the requested `gog` command first. Enter setup only after an authentication error. Never ask for passwords, client secrets, or refresh tokens in chat.
 
 Setup (once)
 
 - `gog auth credentials /path/to/client_secret.json`
 - `gog auth add you@gmail.com --services gmail,calendar,drive,contacts,docs,sheets`
-- `gog auth list --check`
+- `gog auth list`
 
 Remote / headless Gateway hosts
 
 When the Gateway host has no local browser display:
 
 1. Prefer a live callback listener on the Gateway host. From the machine with the browser, forward the exact callback port (`ssh -L <port>:127.0.0.1:<port> user@gateway-host`), open the authorization URL `gog` prints, and let the redirect complete on that forwarded port.
-2. When a live listener is unavailable, pick one paste-mode path and keep callback URLs out of chat:
-   - `--manual`: `gog` waits for the full redirect URL on its interactive prompt.
-   - `--remote --step 1`: prints `auth_url` (and `state_reused`) then exits. After browser consent, finish with `--remote --step 2 --auth-url <callback-url>` using the same root flags, `--client`, scopes, and consent options. A failed `localhost` page load after consent is expected; copy the address-bar URL for step 2.
-3. Keep the same `GOG_HOME` / `--home` and `--client` across remote steps. Matching unexpired manual state may be reused (`state_reused=true`); preserve the same services/scopes/consent flags so step 2 can consume that state.
+2. When a live listener is unavailable, the operator picks one paste-mode path in a trusted shell on the Gateway host. Callback URLs must never enter chat or agent tool input:
+   - `--manual`: the operator pastes the full redirect URL into `gog`'s interactive prompt.
+   - `--remote --step 1`: prints `auth_url` (and `state_reused`) then exits. After browser consent, the operator runs `--remote --step 2 --auth-url <callback-url>` in the trusted shell. A failed `localhost` page load after consent is expected.
+3. Keep the same resolved config context across remote steps: `GOG_CONFIG_DIR` takes precedence over `--home`, which takes precedence over `GOG_HOME`. Also preserve `--client`, services/scopes, redirect URI, and consent options. Matching unexpired manual state may be reused (`state_reused=true`).
 4. If desktop keyring is unavailable, configure the file backend (`gog auth keyring file`) and set `GOG_KEYRING_PASSWORD` in the Gateway environment so non-interactive agent/`--no-input` runs can read tokens. `gog auth doctor` reports when the password is missing.
-5. Callback received is not the same as token stored. If token exchange fails with a proxy authentication error, retry the exchange with direct egress to Google (or proxy exceptions for Google OAuth endpoints); do not treat the browser approval alone as success.
+5. Callback received is not the same as token stored. If token exchange or identity lookup fails behind a proxy, restart from step 1 after the operator approves scoped egress or proxy exceptions for the required Google endpoints. Do not bypass host network policy or reuse failed or expired state.
 
-Verify with `gog auth list --check` before sending mail or mutating calendar/drive state.
+For diagnostics, inspect every entry reported by `gog auth list --check`; its exit status does not prove every stored token is valid. Likewise, inspect the status reported by `gog auth doctor` rather than relying only on its exit code.
 
 Common commands
 
