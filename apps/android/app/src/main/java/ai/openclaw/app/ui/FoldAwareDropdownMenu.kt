@@ -157,7 +157,8 @@ private fun MenuBody(
         }
       },
     ) { measurables, constraints ->
-      val padding = 16.dp.roundToPx()
+      // Match Compose PaddingNode: vertical 8.dp rounds each edge, not 16.dp once.
+      val padding = 2 * 8.dp.roundToPx()
       val limit = minOf(constraints.maxWidth, opening.geometry.available.width, 280.dp.roundToPx())
       if (opening.terminal || measurables.isEmpty() || limit < 112.dp.roundToPx()) {
         owner.cancel(opening)
@@ -261,7 +262,8 @@ private class MenuOpening(
       owner.cancel(this)
     } else if (admitted != null && admitted.size != popupContentSize) {
       // Compose popup measure can report ±1px vs the admitted layout size.
-      bounds = IntRect(admitted.topLeft, popupContentSize)
+      // Re-place so a 1px growth at the safe edge still fits (or flips above the anchor).
+      bounds = IntRect(owner.place(geometry, popupContentSize), popupContentSize)
     }
     return bounds?.topLeft ?: geometry.available.topLeft
   }
@@ -274,6 +276,26 @@ internal fun foldAwarePopupSizeCompatible(
 ): Boolean =
   kotlin.math.abs(admitted.width - content.width) <= 1 &&
     kotlin.math.abs(admitted.height - content.height) <= 1
+
+/** Place a menu of [size] relative to [anchor] inside [available], preferring below then above. */
+internal fun foldAwareMenuTopLeft(
+  available: IntRect,
+  anchor: IntRect,
+  size: IntSize,
+  direction: LayoutDirection,
+): IntOffset {
+  val start = if (direction == LayoutDirection.Ltr) anchor.left else anchor.right - size.width
+  val end = if (direction == LayoutDirection.Ltr) anchor.right - size.width else anchor.left
+  val x =
+    listOf(start, end).firstOrNull { it >= available.left && it + size.width <= available.right }
+      ?: start.coerceIn(available.left, (available.right - size.width).coerceAtLeast(available.left))
+  val y =
+    listOf(anchor.bottom, anchor.top - size.height).firstOrNull {
+      it >= available.top && it + size.height <= available.bottom
+    }
+      ?: anchor.bottom.coerceIn(available.top, (available.bottom - size.height).coerceAtLeast(available.top))
+  return IntOffset(x, y)
+}
 
 private class AnchoredMenuOwner {
   var opening by mutableStateOf<MenuOpening?>(null)
@@ -361,6 +383,11 @@ private class AnchoredMenuOwner {
       next.token == current.geometry.token && next.display == current.geometry.display &&
       next.available.contains(current.bounds ?: current.geometry.available) && itemLayout() == current.items
 
+  fun place(
+    geometry: MenuGeometry,
+    size: IntSize,
+  ): IntOffset = foldAwareMenuTopLeft(geometry.available, geometry.anchor, size, direction)
+
   fun admit(
     current: MenuOpening,
     size: IntSize,
@@ -368,17 +395,7 @@ private class AnchoredMenuOwner {
   ): Boolean {
     if (!valid(current, geometry())) return false
     if (current.bounds == null) {
-      val available = current.geometry.available
-      val anchor = current.geometry.anchor
-      val start = if (direction == LayoutDirection.Ltr) anchor.left else anchor.right - size.width
-      val end = if (direction == LayoutDirection.Ltr) anchor.right - size.width else anchor.left
-      val x =
-        listOf(start, end).firstOrNull { it >= available.left && it + size.width <= available.right }
-          ?: start.coerceIn(available.left, available.right - size.width)
-      val y =
-        listOf(anchor.bottom, anchor.top - size.height).firstOrNull { it >= available.top && it + size.height <= available.bottom }
-          ?: anchor.bottom.coerceIn(available.top, available.bottom - size.height)
-      current.bounds = IntRect(IntOffset(x, y), size)
+      current.bounds = IntRect(place(current.geometry, size), size)
       current.rowLayout = rows
     }
     return current.bounds?.size == size && current.rowLayout?.hasSameLayout(rows) == true
