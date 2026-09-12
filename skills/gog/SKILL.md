@@ -26,11 +26,25 @@ metadata:
 
 Use `gog` for Gmail/Calendar/Drive/Contacts/Sheets/Docs. Requires OAuth setup.
 
+Prefer an already-authorized host account: run the needed command with `exec` first. Enter setup only after an auth error; confirm with `gog auth list --check` and `gog auth doctor`. Do not ask the user for passwords, client secrets, or refresh tokens in chat, and do not use the `secrets` tool for Google OAuth material.
+
 Setup (once)
 
 - `gog auth credentials /path/to/client_secret.json`
 - `gog auth add you@gmail.com --services gmail,calendar,drive,contacts,docs,sheets`
-- `gog auth list`
+- `gog auth list --check`
+
+Remote / headless Gateway hosts
+
+When the Gateway host has no local browser display:
+
+1. Prefer a live callback listener on the Gateway host. From the machine with the browser, forward the exact callback port (`ssh -L <port>:127.0.0.1:<port> user@gateway-host`), open the authorization URL `gog` prints, and let the redirect complete on that forwarded port.
+2. Use `--manual` or `--remote --step 1` / `--remote --step 2 --auth-url ...` only when a live listener is unavailable. A failed `localhost` page load after consent is expected in paste mode; paste the full callback URL into the waiting `gog` prompt, never into chat.
+3. Keep the same `GOG_HOME` / `--home` and `--client` across remote steps. Re-running step 1 creates a new PKCE state and invalidates an older callback URL.
+4. If desktop keyring is unavailable, configure the file backend (`gog auth keyring file`) and set `GOG_KEYRING_PASSWORD` in the Gateway environment so non-interactive agent/`--no-input` runs can read tokens. `gog auth doctor` reports when the password is missing.
+5. Callback received is not the same as token stored. If token exchange fails with a proxy authentication error, retry the exchange with direct egress to Google (or proxy exceptions for Google OAuth endpoints); do not treat the browser approval alone as success.
+
+Verify with `gog auth list --check` before sending mail or mutating calendar/drive state.
 
 Common commands
 
