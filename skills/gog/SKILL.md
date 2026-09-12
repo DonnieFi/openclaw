@@ -39,8 +39,10 @@ Remote / headless Gateway hosts
 When the Gateway host has no local browser display:
 
 1. Prefer a live callback listener on the Gateway host. From the machine with the browser, forward the exact callback port (`ssh -L <port>:127.0.0.1:<port> user@gateway-host`), open the authorization URL `gog` prints, and let the redirect complete on that forwarded port.
-2. Use `--manual` or `--remote --step 1` / `--remote --step 2 --auth-url ...` only when a live listener is unavailable. A failed `localhost` page load after consent is expected in paste mode; paste the full callback URL into the waiting `gog` prompt, never into chat.
-3. Keep the same `GOG_HOME` / `--home` and `--client` across remote steps. Re-running step 1 creates a new PKCE state and invalidates an older callback URL.
+2. When a live listener is unavailable, pick one paste-mode path and keep callback URLs out of chat:
+   - `--manual`: `gog` waits for the full redirect URL on its interactive prompt.
+   - `--remote --step 1`: prints `auth_url` (and `state_reused`) then exits. After browser consent, finish with `--remote --step 2 --auth-url <callback-url>` using the same root flags, `--client`, scopes, and consent options. A failed `localhost` page load after consent is expected; copy the address-bar URL for step 2.
+3. Keep the same `GOG_HOME` / `--home` and `--client` across remote steps. Matching unexpired manual state may be reused (`state_reused=true`); preserve the same services/scopes/consent flags so step 2 can consume that state.
 4. If desktop keyring is unavailable, configure the file backend (`gog auth keyring file`) and set `GOG_KEYRING_PASSWORD` in the Gateway environment so non-interactive agent/`--no-input` runs can read tokens. `gog auth doctor` reports when the password is missing.
 5. Callback received is not the same as token stored. If token exchange fails with a proxy authentication error, retry the exchange with direct egress to Google (or proxy exceptions for Google OAuth endpoints); do not treat the browser approval alone as success.
 
