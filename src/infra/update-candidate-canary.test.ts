@@ -38,6 +38,7 @@ const children = new Map<number, FakeChild>();
 let candidateConfig: Record<string, unknown>;
 let childEnv: NodeJS.ProcessEnv;
 let pluginErrors = false;
+let pluginInventory: unknown;
 let runtimeError = false;
 let runtimeContract: unknown;
 let lintReport: { ok: boolean; checksRun: number; findings: unknown[]; warnings: unknown[] };
@@ -45,6 +46,7 @@ let lintReport: { ok: boolean; checksRun: number; findings: unknown[]; warnings:
 beforeEach(async () => {
   vi.clearAllMocks();
   pluginErrors = false;
+  pluginInventory = undefined;
   runtimeError = false;
   runtimeContract = { state: 2, agent: 3 };
   lintReport = { ok: true, checksRun: 1, findings: [], warnings: [] };
@@ -73,12 +75,14 @@ beforeEach(async () => {
         queueMicrotask(() => {
           if (args.includes("plugins")) {
             child.stdout.write(
-              JSON.stringify({
-                plugins: [],
-                diagnostics: pluginErrors
-                  ? [{ level: "error", message: "incompatible plugin" }]
-                  : [],
-              }),
+              JSON.stringify(
+                pluginInventory ?? {
+                  plugins: [],
+                  diagnostics: pluginErrors
+                    ? [{ level: "error", message: "incompatible plugin" }]
+                    : [],
+                },
+              ),
             );
           }
           if (args.includes("--check")) {
@@ -240,6 +244,58 @@ describe("update candidate canary", () => {
       });
     } finally {
       clock.mockRestore();
+    }
+  });
+
+  it.each([
+    {
+      label: "plugin load failure",
+      inventory: { plugins: [{ id: "fixture", status: "error" }] },
+      proceeds: true,
+    },
+    {
+      label: "attributed registry failure",
+      inventory: {
+        plugins: [],
+        registry: {
+          diagnostics: [{ pluginId: "fixture", level: "error", message: "Plugin unavailable" }],
+        },
+      },
+      proceeds: true,
+    },
+    {
+      label: "malformed plugin inventory",
+      inventory: { plugins: [{ status: "error" }] },
+      proceeds: false,
+    },
+  ])("handles $label before proving core readiness", async ({ inventory, proceeds }) => {
+    pluginInventory = inventory;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ status: "started", ready: true })),
+    );
+
+    const result = await validateUpdateCandidateCanary({
+      root,
+      stateDir: root,
+      config: {},
+      env: {},
+      timeoutMs: 3000,
+    });
+
+    expect(result.status).toBe(proceeds ? "ok" : "error");
+    expect(mocks.spawn.mock.calls.some(([, args]) => args.includes("gateway"))).toBe(proceeds);
+    if (proceeds) {
+      expect(result.steps).toContainEqual(
+        expect.objectContaining({
+          name: "candidate plugin resolution",
+          exitCode: 0,
+          stdoutTail: 'Plugin "fixture" could not be loaded during the update preview.',
+        }),
+      );
+      expect(result.phase).toBe("readiness");
+    } else {
+      expect(result.phase).toBe("plugins");
     }
   });
 
