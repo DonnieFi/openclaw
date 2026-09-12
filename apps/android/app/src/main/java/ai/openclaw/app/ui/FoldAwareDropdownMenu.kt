@@ -255,10 +255,25 @@ private class MenuOpening(
   ): IntOffset {
     owner.refresh()
     val admitted = bounds
-    if (anchorBounds != geometry.anchor || admitted?.size != popupContentSize) owner.cancel(this)
-    return admitted?.topLeft ?: geometry.available.topLeft
+    if (anchorBounds != geometry.anchor) {
+      owner.cancel(this)
+    } else if (admitted != null && !foldAwarePopupSizeCompatible(admitted.size, popupContentSize)) {
+      owner.cancel(this)
+    } else if (admitted != null && admitted.size != popupContentSize) {
+      // Compose popup measure can report ±1px vs the admitted layout size.
+      bounds = IntRect(admitted.topLeft, popupContentSize)
+    }
+    return bounds?.topLeft ?: geometry.available.topLeft
   }
 }
+
+/** True when popup content matches the admitted size within one-pixel measure noise. */
+internal fun foldAwarePopupSizeCompatible(
+  admitted: IntSize,
+  content: IntSize,
+): Boolean =
+  kotlin.math.abs(admitted.width - content.width) <= 1 &&
+    kotlin.math.abs(admitted.height - content.height) <= 1
 
 private class AnchoredMenuOwner {
   var opening by mutableStateOf<MenuOpening?>(null)

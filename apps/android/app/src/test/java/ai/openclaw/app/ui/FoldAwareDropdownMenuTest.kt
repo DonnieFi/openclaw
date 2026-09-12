@@ -47,6 +47,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.core.graphics.Insets
@@ -139,6 +140,16 @@ class FoldAwareDropdownMenuTest {
     WindowInfoTracker.reset()
     WindowMetricsCalculator.reset()
     Settings.Global.putString(RuntimeEnvironment.getApplication().contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, animatorScale)
+  }
+
+  @Test
+  fun popupSizeCompatibleAllowsOnePixelMeasureNoise() {
+    val admitted = IntSize(560, 720)
+    assertTrue(foldAwarePopupSizeCompatible(admitted, IntSize(560, 720)))
+    assertTrue(foldAwarePopupSizeCompatible(admitted, IntSize(560, 721)))
+    assertTrue(foldAwarePopupSizeCompatible(admitted, IntSize(559, 720)))
+    assertFalse(foldAwarePopupSizeCompatible(admitted, IntSize(560, 722)))
+    assertFalse(foldAwarePopupSizeCompatible(admitted, IntSize(558, 720)))
   }
 
   @Test
