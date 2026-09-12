@@ -235,7 +235,8 @@ export async function convergeUpdatePlugins(params: {
         };
       }
       const pluginAdvisories = (postCorePluginUpdate?.warnings ?? []).filter(
-        (warning) => warning.reason === "plugin-target-unavailable",
+        (warning) =>
+          warning.reason === "plugin-target-unavailable" || warning.reason === "doctor-advisory",
       );
       resultWithPostUpdate = {
         ...resultWithPostUpdate,

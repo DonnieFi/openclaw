@@ -25,7 +25,7 @@ function createConfiguredMSTeamsCfg(): OpenClawConfig {
 }
 
 describe("msteamsPlugin.security.collectWarnings", () => {
-  it("records an intentional open groupPolicy as a non-blocking posture advisory", () => {
+  it("records an intentional open groupPolicy as a non-blocking posture advisory", async () => {
     const cfg = {
       channels: {
         msteams: {
@@ -33,8 +33,9 @@ describe("msteamsPlugin.security.collectWarnings", () => {
         },
       },
     } as OpenClawConfig;
+    const account = msteamsPlugin.config.resolveAccount(cfg, "default");
 
-    expect(msteamsPlugin.security?.collectWarnings?.({ cfg })).toEqual([
+    expect(await msteamsPlugin.security?.collectWarnings?.({ cfg, account })).toEqual([
       {
         checkId: "channels.msteams.groups.open",
         severity: "warn",

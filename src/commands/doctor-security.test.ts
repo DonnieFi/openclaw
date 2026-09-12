@@ -2,6 +2,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ChannelPlugin } from "../channels/plugins/types.plugin.js";
 import type { OpenClawConfig } from "../config/config.js";
 import type { ExecApprovalsFile } from "../infra/exec-approvals-core.js";
 import { saveExecApprovals } from "../infra/exec-approvals-store.js";
@@ -174,6 +175,39 @@ describe("noteSecurityWarnings gateway exposure", () => {
     expect(message).toContain(`agents.${agentKey}.security="allowlist"`);
     expect(message).toContain(`agents.${agentKey}.ask="always"`);
   }
+
+  it("treats valid trusted-proxy authentication as authenticated network exposure", async () => {
+    const findings = await collectSecurityWarnings(
+      {
+        gateway: {
+          mode: "local",
+          bind: "lan",
+          auth: { mode: "trusted-proxy", trustedProxy: { userHeader: "x-user" } },
+          trustedProxies: ["127.0.0.1"],
+          controlUi: { enabled: false },
+        },
+      },
+      {},
+    );
+    expect(findings).toEqual([
+      expect.objectContaining({ checkId: "gateway.bind_network_accessible", severity: "warn" }),
+    ]);
+  });
+
+  it("retains rendered security warnings for update finalization", async () => {
+    const { createDoctorHealthFlowContext } =
+      await import("../flows/doctor-health-contributions.test-support.js");
+    const { runSecurityHealth } =
+      await import("../flows/doctor-health-contribution-runners.gateway.js");
+    const ctx = createDoctorHealthFlowContext({
+      cfg: { gateway: { bind: "lan", auth: { mode: "token", token: "SYNTHETIC_GATEWAY_TOKEN" } } },
+      env: {},
+    });
+    await runSecurityHealth(ctx);
+    expect(ctx.updateWarnings).toEqual(
+      expect.arrayContaining([expect.stringContaining("network-accessible")]),
+    );
+  });
 
   it("warns when exposed without auth", async () => {
     const cfg = { gateway: { bind: "lan" } } as OpenClawConfig;
@@ -781,8 +815,15 @@ describe("noteSecurityWarnings gateway exposure", () => {
   });
 
   it("keeps intentional Discord open groupPolicy below the update lint error threshold", async () => {
-    const { resolveDiscordAccount } = await import("../../extensions/discord/src/accounts.js");
-    const { discordSecurityAdapter } = await import("../../extensions/discord/src/security.js");
+    const { loadBundledPluginPublicSurface } =
+      await import("../plugin-sdk/test-helpers/public-surface-loader.js");
+    const { resolveDiscordAccount, discordPlugin } = await loadBundledPluginPublicSurface<{
+      discordPlugin: ChannelPlugin;
+      resolveDiscordAccount: (params: {
+        cfg: OpenClawConfig;
+        accountId?: string | null;
+      }) => unknown;
+    }>({ pluginId: "discord", artifactBasename: "api.js" });
     const { createCoreHealthChecks } = await import("../flows/doctor-core-checks.js");
     const { exitCodeFromFindings } = await import("../flows/doctor-lint-flow.js");
 
@@ -798,7 +839,7 @@ describe("noteSecurityWarnings gateway exposure", () => {
           isConfigured: () => true,
         },
         security: {
-          collectWarnings: discordSecurityAdapter.collectWarnings,
+          collectWarnings: discordPlugin.security?.collectWarnings,
         },
       },
     ];

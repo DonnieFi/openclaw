@@ -71,6 +71,11 @@ available, preserving bundled trust. External path installs keep their existing
 classification. The live plugin files and host links stay unchanged. Channels,
 cron, automatic updates, and other side services are suppressed in this canary.
 
+Warning-severity Doctor findings do not block candidate or post-plugin readiness.
+The updater retains them in the run report shown by `openclaw update status`,
+including when an intentional open channel policy requires no configuration change.
+Error findings and failed check execution still refuse the update.
+
 Snapshot preparation budgets time for the SQLite database and journal bytes,
 including copying and verification passes, with a five-minute startup floor.
 It uses the larger of that allowance and the configured per-step timeout.

@@ -35,7 +35,6 @@ describe("discordSecurityAdapter.collectWarnings", () => {
     expect(
       discordSecurityAdapter.collectWarnings?.({
         cfg,
-        accountId: "default",
         account,
       }),
     ).toEqual([

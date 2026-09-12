@@ -14,7 +14,7 @@ describe("feishu target classification", () => {
 });
 
 describe("feishuPlugin.security.collectWarnings", () => {
-  it("records an intentional open groupPolicy as a non-blocking posture advisory", () => {
+  it("records an intentional open groupPolicy as a non-blocking posture advisory", async () => {
     const cfg = {
       channels: {
         feishu: {
@@ -28,11 +28,13 @@ describe("feishuPlugin.security.collectWarnings", () => {
         },
       },
     } as OpenClawConfig;
+    const account = feishuPlugin.config.resolveAccount(cfg, "default");
 
     expect(
-      feishuPlugin.security?.collectWarnings?.({
+      await feishuPlugin.security?.collectWarnings?.({
         cfg,
         accountId: "default",
+        account,
       }),
     ).toEqual([
       {

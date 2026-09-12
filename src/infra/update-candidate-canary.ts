@@ -18,6 +18,8 @@ import {
   prepareUpdateCandidateRehearsal,
   type UpdateCandidateRehearsal,
 } from "./update-candidate-rehearsal.js";
+import { parseUpdateDoctorLintReport } from "./update-doctor-lint.js";
+import { normalizeUpdatePostInstallDoctorWarnings } from "./update-doctor-result.js";
 import { cleanupUpdateTemporaryDirectory } from "./update-maintenance.js";
 import { resolveUpdateDoctorExecutionPolicy } from "./update-runner-doctor.js";
 import type { UpdateStepResult } from "./update-runner-types.js";
@@ -337,6 +339,22 @@ export async function validateUpdateCandidateCanary(params: {
       } finally {
         await terminateCanary(running.child, running.closed, deadline);
       }
+      let lintWarnings: string[] = [];
+      if (code === 0 && phase === "lint") {
+        if (running.outputExceeded()) {
+          throw new Error("Candidate Doctor lint output exceeded the inspection limit");
+        }
+        const report = parseUpdateDoctorLintReport(running.stdout());
+        lintWarnings = normalizeUpdatePostInstallDoctorWarnings(
+          report.warnings.map((finding) =>
+            redactSupportString(
+              [finding.message, finding.fixHint].filter(Boolean).join("\n"),
+              { env, stateDir: params.stateDir },
+              { maxLength: 20_000 },
+            ),
+          ),
+        );
+      }
       if (code === 0 && phase === "plugins") {
         const inventory: unknown = running.outputExceeded()
           ? undefined
@@ -377,6 +395,9 @@ export async function validateUpdateCandidateCanary(params: {
         durationMs: Date.now() - commandStart,
         exitCode: code,
       };
+      if (lintWarnings.length > 0) {
+        step.warnings = lintWarnings;
+      }
       steps.push(step);
       if (code !== 0) {
         throw new Error(
