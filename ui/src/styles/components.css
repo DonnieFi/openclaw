@@ -5387,7 +5387,10 @@ td.data-table-key-col {
 
 /* Mobile pairing */
 .device-pair-setup {
+  max-width: 100%;
+  min-width: 0;
   max-height: calc(100dvh - 48px);
+  overflow-x: hidden;
   overflow-y: auto;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-xl);
@@ -5475,9 +5478,12 @@ td.data-table-key-col {
 
 .device-pair-setup__body {
   display: grid;
+  width: 100%;
+  min-width: 0;
   justify-items: center;
   gap: 15px;
   padding: 0 28px 24px;
+  box-sizing: border-box;
 }
 
 .device-pair-setup__access {
@@ -5622,7 +5628,19 @@ td.data-table-key-col {
 .device-pair-setup__command {
   display: grid;
   width: min(540px, 100%);
+  min-width: 0;
+  max-width: 100%;
   gap: 10px;
+}
+
+.device-pair-setup .login-gate__command {
+  min-width: 0;
+}
+
+.device-pair-setup .login-gate__command code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .device-pair-setup__meta {
