@@ -78,4 +78,70 @@ describe("closeTrackedCdpTarget", () => {
       }),
     ).resolves.toEqual({ status: "unavailable", reason: "target-close-failed" });
   });
+
+  it("closes through the normalized endpoint while keeping advertised fingerprints", async () => {
+    let sawClose = false;
+    const httpServer = createServer((_, response) => {
+      response.setHeader("content-type", "application/json");
+      // Omit the port so loopback normalization rewrites onto the configured listener.
+      response.end(
+        JSON.stringify({
+          webSocketDebuggerUrl: "ws://localhost/devtools/browser/SIDECAR",
+        }),
+      );
+    });
+    servers.push(httpServer);
+    const wsServer = new WebSocketServer({ server: httpServer });
+    servers.push(wsServer);
+    wsServer.on("connection", (socket) => {
+      socket.on("message", (data) => {
+        const message = JSON.parse(rawDataToString(data)) as { id?: number; method?: string };
+        if (message.method === "Target.getTargets") {
+          socket.send(
+            JSON.stringify({
+              id: message.id,
+              result: { targetInfos: [{ targetId: "OWNED", type: "page" }] },
+            }),
+          );
+        } else if (message.method === "Target.closeTarget") {
+          sawClose = true;
+          socket.send(JSON.stringify({ id: message.id, result: { success: true } }));
+        }
+      });
+    });
+    httpServer.listen(0, "127.0.0.1");
+    await listen(httpServer);
+    const port = (httpServer.address() as AddressInfo).port;
+    const cdpUrl = `http://127.0.0.1:${port}`;
+
+    const ownership = await resolveCdpTabOwnership({
+      profileName: "remote",
+      cdpUrl,
+      nativeTargetId: "OWNED",
+    });
+    if (ownership.status !== "durable") {
+      throw new Error("expected durable ownership");
+    }
+
+    const again = await resolveCdpTabOwnership({
+      profileName: "remote",
+      cdpUrl,
+      nativeTargetId: "OWNED",
+    });
+    if (again.status !== "durable") {
+      throw new Error("expected durable ownership on re-resolve");
+    }
+    expect(again.browserInstanceFingerprint).toBe(ownership.browserInstanceFingerprint);
+
+    await expect(
+      closeTrackedCdpTarget({
+        profileName: "remote",
+        cdpUrl,
+        nativeTargetId: "OWNED",
+        expectedProfileFingerprint: ownership.profileFingerprint,
+        expectedBrowserInstanceFingerprint: ownership.browserInstanceFingerprint,
+      }),
+    ).resolves.toEqual({ status: "closed" });
+    expect(sawClose).toBe(true);
+  });
 });

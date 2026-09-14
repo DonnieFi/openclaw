@@ -376,6 +376,68 @@ describe("cdp helpers", () => {
     expect(release).toHaveBeenCalledOnce();
   });
 
+  it("keeps browser-instance fingerprints on the advertised websocket identity", async () => {
+    const advertised = "ws://127.0.0.1:9222/devtools/browser/BROWSER-SIDECAR";
+    fetchWithSsrFGuardMock.mockResolvedValueOnce({
+      response: new Response(JSON.stringify({ webSocketDebuggerUrl: advertised }), {
+        headers: { "content-type": "application/json" },
+      }),
+      release: vi.fn(async () => {}),
+    });
+    const policy = {
+      dangerouslyAllowPrivateNetwork: false,
+      allowedHostnames: ["1.1.1.1"],
+    };
+    const ownership = await resolveCdpTabOwnership({
+      profileName: "remote",
+      cdpUrl: "https://1.1.1.1",
+      nativeTargetId: "TARGET-1",
+      ssrfPolicy: policy,
+    });
+    expect(ownership).toMatchObject({ status: "durable" });
+    if (ownership.status !== "durable") {
+      throw new Error("expected durable ownership");
+    }
+
+    // Same advertisement without a hostname allowlist (pre-upgrade path that
+    // already accepted authority changes) must yield the same instance hash.
+    fetchWithSsrFGuardMock.mockResolvedValueOnce({
+      response: new Response(JSON.stringify({ webSocketDebuggerUrl: advertised }), {
+        headers: { "content-type": "application/json" },
+      }),
+      release: vi.fn(async () => {}),
+    });
+    const legacyCompatible = await resolveCdpTabOwnership({
+      profileName: "remote",
+      cdpUrl: "https://1.1.1.1",
+      nativeTargetId: "TARGET-1",
+    });
+    expect(legacyCompatible).toMatchObject({
+      status: "durable",
+      browserInstanceFingerprint: ownership.browserInstanceFingerprint,
+    });
+  });
+
+  it("classifies malformed discovered websocket URLs as non-durable", async () => {
+    fetchWithSsrFGuardMock.mockResolvedValueOnce({
+      response: new Response(JSON.stringify({ webSocketDebuggerUrl: "not-a-url" }), {
+        headers: { "content-type": "application/json" },
+      }),
+      release: vi.fn(async () => {}),
+    });
+
+    await expect(
+      resolveCdpTabOwnership({
+        profileName: "remote",
+        cdpUrl: "https://1.1.1.1",
+        nativeTargetId: "TARGET-1",
+      }),
+    ).resolves.toEqual({
+      status: "non-durable",
+      reason: "browser-identity-unavailable",
+    });
+  });
+
   it("still blocks ownership when discovery advertises a different remote authority", async () => {
     fetchWithSsrFGuardMock.mockResolvedValueOnce({
       response: new Response(

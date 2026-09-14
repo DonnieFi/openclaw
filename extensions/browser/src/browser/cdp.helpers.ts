@@ -328,8 +328,8 @@ async function resolveCdpTabOwnershipContext(params: CdpTabOwnershipParams): Pro
   if (!advertisedWebSocketUrl) {
     return { ownership: { status: "non-durable", reason: "browser-identity-unavailable" } };
   }
-  const browserWebSocketUrl = normalizeCdpWsUrl(advertisedWebSocketUrl, cdpHttpBase);
   try {
+    const browserWebSocketUrl = normalizeCdpWsUrl(advertisedWebSocketUrl, cdpHttpBase);
     const pinned = await assertCdpEndpointAllowed(browserWebSocketUrl, params.ssrfPolicy, {
       source: "discovered",
       configuredUrl: params.cdpUrl,
@@ -341,7 +341,7 @@ async function resolveCdpTabOwnershipContext(params: CdpTabOwnershipParams): Pro
         ...createCdpOwnershipFingerprints({
           profileName: params.profileName,
           cdpUrl: params.cdpUrl,
-          browserWebSocketUrl,
+          browserWebSocketUrl: advertisedWebSocketUrl,
         }),
       },
       browserWebSocketUrl,
