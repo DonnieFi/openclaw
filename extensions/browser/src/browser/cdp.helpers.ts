@@ -182,13 +182,7 @@ export function normalizeCdpWsUrl(wsUrl: string, cdpUrl: string): string {
   if ((isLoopbackHost(ws.hostname) || isWildcardBind) && !isLoopbackHost(cdp.hostname)) {
     ws.hostname = cdp.hostname;
     const cdpPort = cdp.port || (cdp.protocol === "https:" ? "443" : "80");
-    // `cdpPort` is always truthy: either the explicit cdp.port (truthy
-    // string), or the "443"/"80" default from the ternary. The guard is
-    // defensive against future parser edge cases.
-    /* c8 ignore next 3 */
-    if (cdpPort) {
-      ws.port = cdpPort;
-    }
+    ws.port = cdpPort;
     ws.protocol = cdp.protocol === "https:" ? "wss:" : "ws:";
   } else if (isLoopbackHost(ws.hostname) && isLoopbackHost(cdp.hostname)) {
     ws.hostname = cdp.hostname;
