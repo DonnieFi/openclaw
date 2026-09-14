@@ -1,0 +1,14 @@
+{
+  "ok": false,
+  "topology": "sidecar proxy on cdp-sidecar.localhost; Chrome /json/version advertises loopback",
+  "configuredCdpUrl": "http://cdp-sidecar.localhost:46049",
+  "advertisedWebSocketUrl": "ws://127.0.0.1:9222/devtools/browser/56f4e9fe-108e-44b2-bf76-d74d80390042",
+  "normalizedWebSocketUrl": "ws://cdp-sidecar.localhost:46049/devtools/browser/56f4e9fe-108e-44b2-bf76-d74d80390042",
+  "ownershipStatus": "durable",
+  "fingerprintStableAcrossReresolve": true,
+  "createdTargetId": "4B64C00F1DFBF2509093937D09C2E198",
+  "screenshotBytes": 2137,
+  "screenshotPath": "/tmp/openclaw-148546-proof/after-tab.png",
+  "closeStatus": "unavailable",
+  "chromeBrowser": "Chrome/153.0.8010.36"
+}
