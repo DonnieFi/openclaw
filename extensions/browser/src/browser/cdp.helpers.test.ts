@@ -394,27 +394,10 @@ describe("cdp helpers", () => {
       nativeTargetId: "TARGET-1",
       ssrfPolicy: policy,
     });
-    expect(ownership).toMatchObject({ status: "durable" });
-    if (ownership.status !== "durable") {
-      throw new Error("expected durable ownership");
-    }
-
-    // Same advertisement without a hostname allowlist (pre-upgrade path that
-    // already accepted authority changes) must yield the same instance hash.
-    fetchWithSsrFGuardMock.mockResolvedValueOnce({
-      response: new Response(JSON.stringify({ webSocketDebuggerUrl: advertised }), {
-        headers: { "content-type": "application/json" },
-      }),
-      release: vi.fn(async () => {}),
-    });
-    const legacyCompatible = await resolveCdpTabOwnership({
-      profileName: "remote",
-      cdpUrl: "https://1.1.1.1",
-      nativeTargetId: "TARGET-1",
-    });
-    expect(legacyCompatible).toMatchObject({
+    expect(ownership).toMatchObject({
       status: "durable",
-      browserInstanceFingerprint: ownership.browserInstanceFingerprint,
+      browserInstanceFingerprint:
+        "sha256:6eb6cb69267d17a1f2fbf755b1b5c681ddd023c458f6e0f14b3f30848c566ee3",
     });
   });
 

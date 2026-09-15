@@ -79,7 +79,7 @@ describe("closeTrackedCdpTarget", () => {
     ).resolves.toEqual({ status: "unavailable", reason: "target-close-failed" });
   });
 
-  it("closes through the normalized endpoint while keeping advertised fingerprints", async () => {
+  it("closes through the normalized endpoint with the pre-upgrade advertised fingerprint", async () => {
     let sawClose = false;
     const httpServer = createServer((_, response) => {
       response.setHeader("content-type", "application/json");
@@ -123,23 +123,14 @@ describe("closeTrackedCdpTarget", () => {
       throw new Error("expected durable ownership");
     }
 
-    const again = await resolveCdpTabOwnership({
-      profileName: "remote",
-      cdpUrl,
-      nativeTargetId: "OWNED",
-    });
-    if (again.status !== "durable") {
-      throw new Error("expected durable ownership on re-resolve");
-    }
-    expect(again.browserInstanceFingerprint).toBe(ownership.browserInstanceFingerprint);
-
     await expect(
       closeTrackedCdpTarget({
         profileName: "remote",
         cdpUrl,
         nativeTargetId: "OWNED",
         expectedProfileFingerprint: ownership.profileFingerprint,
-        expectedBrowserInstanceFingerprint: ownership.browserInstanceFingerprint,
+        expectedBrowserInstanceFingerprint:
+          "sha256:e40b808cae2f166a9e1e0f0fc45e3600f01f6dfd5265d9ff59d13de95356dae2",
       }),
     ).resolves.toEqual({ status: "closed" });
     expect(sawClose).toBe(true);
