@@ -1254,6 +1254,52 @@ describe("handleDiscordMessagingAction", () => {
     expect(message.timestampUtc).toBe(new Date(expectedMs).toISOString());
   });
 
+  it("uses fetchMessageDiscord when readMessages includes messageId", async () => {
+    fetchMessageDiscord.mockResolvedValueOnce({
+      id: "1542546825066577940",
+      content: "exact",
+      timestamp: "2026-01-15T10:00:00.000Z",
+    } as never);
+
+    const result = await handleMessagingAction(
+      "readMessages",
+      { channelId: "C1", messageId: "1542546825066577940" },
+      enableAllActions,
+    );
+    const payload = result.details as {
+      channelId?: string;
+      messages: Array<{ id?: string; content?: string }>;
+    };
+
+    expect(fetchMessageDiscord).toHaveBeenCalledWith(
+      "C1",
+      "1542546825066577940",
+      expect.objectContaining({}),
+    );
+    expect(readMessagesDiscord).not.toHaveBeenCalled();
+    expect(payload.channelId).toBe("C1");
+    expect(payload.messages).toHaveLength(1);
+    expect(payload.messages[0]?.id).toBe("1542546825066577940");
+  });
+
+  it("propagates missing-message errors from fetchMessageDiscord for exact reads", async () => {
+    fetchMessageDiscord.mockRejectedValueOnce(new Error("Unknown Message"));
+
+    await expect(
+      handleMessagingAction(
+        "readMessages",
+        { channelId: "C1", messageId: "9999999999999999999" },
+        enableAllActions,
+      ),
+    ).rejects.toThrow(/Unknown Message/);
+    expect(fetchMessageDiscord).toHaveBeenCalledWith(
+      "C1",
+      "9999999999999999999",
+      expect.objectContaining({}),
+    );
+    expect(readMessagesDiscord).not.toHaveBeenCalled();
+  });
+
   it("rejects unexpected readMessages payloads with a boundary error", async () => {
     readMessagesDiscord.mockResolvedValueOnce({ ok: true } as never);
 

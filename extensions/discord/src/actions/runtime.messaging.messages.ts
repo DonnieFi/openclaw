@@ -101,6 +101,19 @@ export async function handleDiscordMessageManagementAction(ctx: DiscordMessaging
       }
       const channelId = ctx.resolveChannelId();
       await ctx.assertReadTargetAllowed({ channelId });
+      const messageId = readStringParam(ctx.params, "messageId");
+      if (messageId) {
+        const message = await discordMessagingActionRuntime.fetchMessageDiscord(
+          channelId,
+          messageId,
+          ctx.withOpts(),
+        );
+        return jsonResult({
+          ok: true,
+          channelId,
+          messages: [ctx.normalizeMessage(message)],
+        });
+      }
       const query = {
         limit: readPositiveIntegerParam(ctx.params, "limit"),
         before: readStringParam(ctx.params, "before"),
