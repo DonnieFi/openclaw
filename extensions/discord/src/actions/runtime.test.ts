@@ -1254,22 +1254,18 @@ describe("handleDiscordMessagingAction", () => {
     expect(message.timestampUtc).toBe(new Date(expectedMs).toISOString());
   });
 
-  it("uses fetchMessageDiscord when readMessages includes messageId", async () => {
+  it("returns the exact normalized message through the Discord read action", async () => {
     fetchMessageDiscord.mockResolvedValueOnce({
       id: "1542546825066577940",
       content: "exact",
       timestamp: "2026-01-15T10:00:00.000Z",
-    } as never);
+    });
 
-    const result = await handleMessagingAction(
-      "readMessages",
-      { channelId: "C1", messageId: "1542546825066577940" },
-      enableAllActions,
-    );
-    const payload = result.details as {
-      channelId?: string;
-      messages: Array<{ id?: string; content?: string }>;
-    };
+    const result = await handleDiscordMessageAction({
+      action: "read",
+      params: { channelId: "C1", messageId: "1542546825066577940" },
+      cfg: DISCORD_TEST_CFG,
+    });
 
     expect(fetchMessageDiscord).toHaveBeenCalledWith(
       "C1",
@@ -1277,20 +1273,30 @@ describe("handleDiscordMessagingAction", () => {
       expect.objectContaining({}),
     );
     expect(readMessagesDiscord).not.toHaveBeenCalled();
-    expect(payload.channelId).toBe("C1");
-    expect(payload.messages).toHaveLength(1);
-    expect(payload.messages[0]?.id).toBe("1542546825066577940");
+    expect(result.details).toEqual({
+      ok: true,
+      channelId: "C1",
+      messages: [
+        {
+          id: "1542546825066577940",
+          content: "exact",
+          timestamp: "2026-01-15T10:00:00.000Z",
+          timestampMs: Date.parse("2026-01-15T10:00:00.000Z"),
+          timestampUtc: "2026-01-15T10:00:00.000Z",
+        },
+      ],
+    });
   });
 
-  it("propagates missing-message errors from fetchMessageDiscord for exact reads", async () => {
+  it("propagates missing-message errors through the Discord read action", async () => {
     fetchMessageDiscord.mockRejectedValueOnce(new Error("Unknown Message"));
 
     await expect(
-      handleMessagingAction(
-        "readMessages",
-        { channelId: "C1", messageId: "9999999999999999999" },
-        enableAllActions,
-      ),
+      handleDiscordMessageAction({
+        action: "read",
+        params: { channelId: "C1", messageId: "9999999999999999999" },
+        cfg: DISCORD_TEST_CFG,
+      }),
     ).rejects.toThrow(/Unknown Message/);
     expect(fetchMessageDiscord).toHaveBeenCalledWith(
       "C1",
