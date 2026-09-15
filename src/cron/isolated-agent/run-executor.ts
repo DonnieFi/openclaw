@@ -56,6 +56,7 @@ import {
   hasNewGeneratedMediaTaskForSessionKey,
 } from "../../tasks/task-status-access.js";
 import { resolveCronJobConfigRevision } from "../config-revision.js";
+import { assertCronExecutionRootRuntime } from "../execution-root-runtime.js";
 import type { CronRuntimeAuthority } from "../runtime-authority.js";
 import { resolveCronScheduledToolPolicy } from "../scheduled-tool-policy.js";
 import type { CronAgentExecutionPhaseUpdate, CronJob, CronStoredJob } from "../types.js";
@@ -79,7 +80,6 @@ import {
   runCliAgent,
 } from "./run-execution.runtime.js";
 import { resolveCronFallbacksOverride } from "./run-fallback-policy.js";
-import { assertCronExecutionRootRuntime } from "./run-prepare-runtime.js";
 import {
   type CronLiveSelection,
   type MutableCronSession,
@@ -656,9 +656,7 @@ function createCronPromptExecutor(
           // Cron intentionally reuses its durable session id as the run id; turn
           // claims stay unique via per-claim ids and the worker gate handles this
           // via credential rotation (see worker-environments/service.ts fences).
-          // Direct cron CLI must own the same diagnostic lifecycle as reply-path
-          // CLI handoff so stuck-session recovery sees live backend liveness and
-          // does not release the lane as an orphan after STALE_ACTIVE_LANE_TASK_RELEASE_MS.
+          // Keep CLI work visible to recovery until execution and settlement finish.
           const deferredLifecycle = createDeferredEmbeddedRunLifecycleManager({
             runId,
             agentId: params.agentId,
@@ -668,9 +666,6 @@ function createCronPromptExecutor(
             abortSignal: params.abortSignal,
           });
           try {
-            // Match reply-path CLI: the handoff handle aborts deferredLifecycle.signal.
-            // Forward that signal into CLI execution and settlement so recovery abort
-            // reaches the process runner instead of only clearing the handle.
             const cliAbortSignal = deferredLifecycle.signal;
             const result = await withLocalSessionPlacementTurnSettlement(
               {
@@ -805,6 +800,10 @@ function createCronPromptExecutor(
               result.meta?.systemPromptReport,
             );
             return result;
+          } catch (error) {
+            // Process cancellation must retain the owner's terminal reason across fallback.
+            deferredLifecycle.signal.throwIfAborted();
+            throw error;
           } finally {
             await deferredLifecycle.complete();
           }

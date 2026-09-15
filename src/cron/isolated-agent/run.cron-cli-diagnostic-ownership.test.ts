@@ -1,10 +1,9 @@
-// Cron CLI diagnostic ownership tests cover handoff registration and abort wiring (#149198).
-import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   abortEmbeddedAgentRun,
-  resolveActiveEmbeddedRunHandleSessionId,
+  isEmbeddedAgentRunHandleActive,
 } from "../../agents/embedded-agent-runner/runs.js";
+import type { RunCronAgentTurnParams } from "./run-prepare-runtime.js";
 import {
   clearFastTestEnv,
   isCliProviderMock,
@@ -19,168 +18,90 @@ import {
   resetRunCronIsolatedAgentTurnHarness,
   restoreFastTestEnv,
   runCliAgentMock,
-  runEmbeddedAgentMock,
 } from "./run.test-harness.js";
 
 const runCronIsolatedAgentTurn = await loadRunCronIsolatedAgentTurn();
-const requireRecord = createRequireRecord("record", "expected-non-array-record");
+const sessionId = "cron-cli-diagnostic-session";
 
-function makeJob(overrides?: Record<string, unknown>) {
-  return {
-    id: "model-fwd-job",
-    name: "Model Forward Test",
-    schedule: { kind: "cron", expr: "0 9 * * *", tz: "UTC" },
-    sessionTarget: "isolated",
-    payload: {
-      kind: "agentTurn",
-      message: "summarize",
-      model: "google/gemini-2.0-flash",
-    },
-    ...overrides,
-  } as never;
-}
-
-function makeParams(overrides?: Record<string, unknown>) {
+function makeParams(): RunCronAgentTurnParams {
   return {
     cfg: {},
-    deps: {} as never,
-    job: makeJob(),
+    deps: {},
+    job: {
+      id: "cli-diagnostic-job",
+      name: "CLI diagnostic ownership",
+      enabled: true,
+      createdAtMs: 0,
+      updatedAtMs: 0,
+      schedule: { kind: "cron", expr: "0 9 * * *", tz: "UTC" },
+      sessionTarget: "session:existing-cron-session",
+      wakeMode: "now",
+      payload: { kind: "agentTurn", message: "summarize", model: "test-cli/test-model" },
+      state: {},
+    },
     message: "summarize",
-    sessionKey: "cron:model-fwd",
-    ...overrides,
+    sessionKey: "cron:cli-diagnostic",
   };
 }
 
-function firstMockArg(mock: { mock: { calls: unknown[][] } }): Record<string, unknown> {
-  return requireRecord(mock.mock.calls[0]?.[0]);
-}
-
-describe("runCronIsolatedAgentTurn — cron CLI diagnostic ownership (#149198)", () => {
+describe("runCronIsolatedAgentTurn CLI ownership", () => {
   let previousFastTestEnv: string | undefined;
 
   beforeEach(() => {
     previousFastTestEnv = clearFastTestEnv();
     resetRunCronIsolatedAgentTurnHarness();
-    resolveConfiguredModelRefMock.mockReturnValue({
-      provider: "anthropic",
-      model: "claude-opus-4-6",
+    isCliProviderMock.mockImplementation((provider: string) => provider === "test-cli");
+    resolveConfiguredModelRefMock.mockReturnValue({ provider: "test-cli", model: "test-model" });
+    resolveAllowedModelRefMock.mockReturnValue({
+      ref: { provider: "test-cli", model: "test-model" },
     });
     resolveThinkingDefaultMock.mockReturnValue("off");
-    runEmbeddedAgentMock.mockResolvedValue({
-      payloads: [{ text: "summary done" }],
-      meta: {
-        agentMeta: {
-          provider: "google",
-          model: "gemini-2.0-flash",
-          usage: { input: 100, output: 50 },
-        },
-      },
-    });
+    resolveCronSessionMock.mockReturnValue(
+      makeCronSession({ sessionEntry: makeCronSessionEntry({ sessionId }), isNewSession: true }),
+    );
+    mockRunCronFallbackPassthrough();
   });
 
   afterEach(() => {
     restoreFastTestEnv(previousFastTestEnv);
   });
 
-  it("registers diagnostic CLI ownership for stuck-session recovery during cron CLI runs", async () => {
-    isCliProviderMock.mockImplementation((provider: string) => provider === "claude-cli");
-    resolveAllowedModelRefMock.mockReturnValue({
-      ref: { provider: "claude-cli", model: "claude-opus-4-6" },
-    });
-    mockRunCronFallbackPassthrough();
-    const cronSession = makeCronSession({
-      sessionEntry: makeCronSessionEntry({
-        sessionId: "cron-cli-diagnostic-session",
-      }),
-      isNewSession: true,
-    });
-    resolveCronSessionMock.mockReturnValue(cronSession);
-    let activeHandleDuringCli: string | undefined;
-    let diagnosticOwnerDuringCli: unknown;
-    let cliAbortSignalDuringCli: AbortSignal | undefined;
-    runCliAgentMock.mockImplementationOnce(async (runParams) => {
-      diagnosticOwnerDuringCli = runParams.diagnosticOwner;
-      cliAbortSignalDuringCli = runParams.abortSignal;
-      activeHandleDuringCli = resolveActiveEmbeddedRunHandleSessionId(runParams.sessionKey ?? "");
+  it("holds diagnostic ownership during CLI execution and releases it after settlement", async () => {
+    runCliAgentMock.mockImplementationOnce(async (params) => {
+      expect(params.diagnosticOwner).toEqual(
+        expect.objectContaining({ sessionId, generation: expect.anything() }),
+      );
+      expect(params.abortSignal).toBeInstanceOf(AbortSignal);
+      expect(params.abortSignal.aborted).toBe(false);
+      expect(isEmbeddedAgentRunHandleActive(sessionId)).toBe(true);
       return {
         payloads: [{ text: "summary done" }],
         meta: {
           durationMs: 1,
           executionTrace: { runner: "cli" },
-          agentMeta: {
-            provider: "claude-cli",
-            model: "claude-opus-4-6",
-            usage: { input: 1, output: 1 },
-          },
+          agentMeta: { provider: "test-cli", model: "test-model", usage: { input: 1, output: 1 } },
         },
       };
     });
 
-    const result = await runCronIsolatedAgentTurn(
-      makeParams({
-        job: makeJob({ sessionTarget: "session:existing-cron-session" }),
-      }),
-    );
+    const result = await runCronIsolatedAgentTurn(makeParams());
 
     expect(result.status).toBe("ok");
-    expect(diagnosticOwnerDuringCli).toEqual(
-      expect.objectContaining({
-        sessionId: "cron-cli-diagnostic-session",
-        generation: expect.anything(),
-      }),
-    );
-    expect(cliAbortSignalDuringCli).toBeInstanceOf(AbortSignal);
-    expect(cliAbortSignalDuringCli?.aborted).toBe(false);
-    expect(activeHandleDuringCli).toBe("cron-cli-diagnostic-session");
-    expect(
-      resolveActiveEmbeddedRunHandleSessionId(String(firstMockArg(runCliAgentMock).sessionKey)),
-    ).toBeUndefined();
+    expect(isEmbeddedAgentRunHandleActive(sessionId)).toBe(false);
   });
 
-  it("forwards handle abort onto the cron CLI abort signal", async () => {
-    isCliProviderMock.mockImplementation((provider: string) => provider === "claude-cli");
-    resolveAllowedModelRefMock.mockReturnValue({
-      ref: { provider: "claude-cli", model: "claude-opus-4-6" },
-    });
-    mockRunCronFallbackPassthrough();
-    const cronSession = makeCronSession({
-      sessionEntry: makeCronSessionEntry({
-        sessionId: "cron-cli-abort-session",
-      }),
-      isNewSession: true,
-    });
-    resolveCronSessionMock.mockReturnValue(cronSession);
-    let seenAbortSignal: AbortSignal | undefined;
-    let abortedViaHandle = false;
-    runCliAgentMock.mockImplementationOnce(async (runParams) => {
-      seenAbortSignal = runParams.abortSignal;
-      expect(runParams.abortSignal?.aborted).toBe(false);
-      abortedViaHandle = abortEmbeddedAgentRun("cron-cli-abort-session");
-      expect(abortedViaHandle).toBe(true);
-      expect(runParams.abortSignal?.aborted).toBe(true);
-      return {
-        payloads: [{ text: "aborted mid-run" }],
-        meta: {
-          durationMs: 1,
-          executionTrace: { runner: "cli" },
-          agentMeta: {
-            provider: "claude-cli",
-            model: "claude-opus-4-6",
-            usage: { input: 1, output: 1 },
-          },
-        },
-      };
+  it("preserves handle cancellation as a terminal abort when the CLI rejects", async () => {
+    runCliAgentMock.mockImplementationOnce(async (params) => {
+      expect(params.abortSignal.aborted).toBe(false);
+      expect(abortEmbeddedAgentRun(sessionId)).toBe(true);
+      expect(params.abortSignal.aborted).toBe(true);
+      throw Object.assign(new Error("CLI run aborted"), { name: "AbortError" });
     });
 
-    const result = await runCronIsolatedAgentTurn(
-      makeParams({
-        job: makeJob({ sessionTarget: "session:existing-cron-session" }),
-      }),
-    );
+    const result = await runCronIsolatedAgentTurn(makeParams());
 
-    expect(result.status).toBe("ok");
-    expect(seenAbortSignal).toBeInstanceOf(AbortSignal);
-    expect(abortedViaHandle).toBe(true);
-    expect(seenAbortSignal?.aborted).toBe(true);
+    expect(result.status).toBe("error");
+    expect(result.error).toBe("agent run aborted | OPENCLAW_DIRECT_ABORT");
+    expect(isEmbeddedAgentRunHandleActive(sessionId)).toBe(false);
   });
 });
