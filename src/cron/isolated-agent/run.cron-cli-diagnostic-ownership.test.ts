@@ -75,8 +75,8 @@ describe("cron project: runCronIsolatedAgentTurn CLI ownership", () => {
     { outcome: "accepted", abort: false },
     { outcome: "canceled", abort: true },
   ])("holds ownership during a pending continuity write ($outcome)", async ({ abort }) => {
-    const writeStarted = createDeferred<void>();
-    const releaseWrite = createDeferred<void>();
+    const writeStarted = createDeferred();
+    const releaseWrite = createDeferred();
     const upstream = new AbortController();
     const cronSession = makeCronSession({
       sessionEntry: makeCronSessionEntry({ sessionId }),
@@ -92,10 +92,16 @@ describe("cron project: runCronIsolatedAgentTurn CLI ownership", () => {
         userTurnDisposition: "persisted",
       },
     };
-    const persist = expectDefined(patchSessionEntryMock.getMockImplementation());
+    const persist = expectDefined(
+      patchSessionEntryMock.getMockImplementation(),
+      "expected persistence fixture",
+    );
     let continuityCommitted = false;
     const holdContinuityWrite: typeof patchSessionEntryCore = async (scope, update, options) => {
-      const assertCommitAllowed = expectDefined(options?.assertCommitAllowed);
+      const assertCommitAllowed = expectDefined(
+        options?.assertCommitAllowed,
+        "expected continuity commit guard",
+      );
       writeStarted.resolve();
       await releaseWrite.promise;
       assertCommitAllowed();
