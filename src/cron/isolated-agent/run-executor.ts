@@ -668,6 +668,10 @@ function createCronPromptExecutor(
             abortSignal: params.abortSignal,
           });
           try {
+            // Match reply-path CLI: the handoff handle aborts deferredLifecycle.signal.
+            // Forward that signal into CLI execution and settlement so recovery abort
+            // reaches the process runner instead of only clearing the handle.
+            const cliAbortSignal = deferredLifecycle.signal;
             const result = await withLocalSessionPlacementTurnSettlement(
               {
                 sessionId: params.cronSession.sessionEntry.sessionId,
@@ -750,7 +754,7 @@ function createCronPromptExecutor(
                     params.agentPayload?.toolsAllowIsDefault,
                   ),
                   scheduledToolPolicy,
-                  abortSignal: params.abortSignal,
+                  abortSignal: cliAbortSignal,
                   onExecutionStarted: notifyExecutionStarted,
                   onExecutionPhase: notifyExecutionPhase,
                   bootstrapContextMode,
@@ -775,7 +779,7 @@ function createCronPromptExecutor(
                 const settledEntry = { ...params.cronSession.sessionEntry };
                 if (
                   (candidateResult.meta.agentMeta?.clearCliSessionBinding === true ||
-                    (!params.abortSignal?.aborted && !classification)) &&
+                    (!cliAbortSignal.aborted && !classification)) &&
                   applyCliSessionBindingResult(
                     settledEntry,
                     executionProvider,
@@ -786,7 +790,7 @@ function createCronPromptExecutor(
                     assertCliSessionBindingResultCommitAllowed(
                       candidateResult.meta.agentMeta,
                       assertSettlementCurrent,
-                      params.abortSignal,
+                      cliAbortSignal,
                     );
                   return await settleCliSessionResult(candidateResult, async () => {
                     await params.persistSessionEntry(assertCommitAllowed, settledEntry);
@@ -795,7 +799,7 @@ function createCronPromptExecutor(
                 }
                 return candidateResult;
               },
-              { preparedRunAdmission, abortSignal: params.abortSignal, trigger: "cron" },
+              { preparedRunAdmission, abortSignal: cliAbortSignal, trigger: "cron" },
             );
             bootstrapPromptWarningSignaturesSeen = resolveBootstrapWarningSignaturesSeen(
               result.meta?.systemPromptReport,

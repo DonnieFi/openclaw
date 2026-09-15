@@ -5,7 +5,10 @@ import { createDeferred } from "../../../test/helpers/promise.js";
 import { buildPreparedCliRunContext } from "../../agents/cli-runner.test-helpers.js";
 import { buildCliRunResult } from "../../agents/cli-runner/cli-run-settlement.js";
 import type { classifyEmbeddedAgentRunResultForModelFallback } from "../../agents/embedded-agent-runner/result-fallback-classifier.js";
-import { resolveActiveEmbeddedRunHandleSessionId } from "../../agents/embedded-agent-runner/runs.js";
+import {
+  resolveActiveEmbeddedRunHandleSessionId,
+  abortEmbeddedAgentRun,
+} from "../../agents/embedded-agent-runner/runs.js";
 import { GENERIC_EXTERNAL_RUN_FAILURE_TEXT } from "../../agents/failover/user-copy.js";
 import {
   runFallbackModelAttempt,
@@ -422,8 +425,10 @@ describe("runCronIsolatedAgentTurn — cron model override forwarding (#58065)",
     resolveCronSessionMock.mockReturnValue(cronSession);
     let activeHandleDuringCli: string | undefined;
     let diagnosticOwnerDuringCli: unknown;
+    let cliAbortSignalDuringCli: AbortSignal | undefined;
     runCliAgentMock.mockImplementationOnce(async (runParams) => {
       diagnosticOwnerDuringCli = runParams.diagnosticOwner;
+      cliAbortSignalDuringCli = runParams.abortSignal;
       activeHandleDuringCli = resolveActiveEmbeddedRunHandleSessionId(runParams.sessionKey ?? "");
       return {
         payloads: [{ text: "summary done" }],
@@ -452,10 +457,59 @@ describe("runCronIsolatedAgentTurn — cron model override forwarding (#58065)",
         generation: expect.anything(),
       }),
     );
+    expect(cliAbortSignalDuringCli).toBeInstanceOf(AbortSignal);
+    expect(cliAbortSignalDuringCli?.aborted).toBe(false);
     expect(activeHandleDuringCli).toBe("cron-cli-diagnostic-session");
     expect(
       resolveActiveEmbeddedRunHandleSessionId(String(firstMockArg(runCliAgentMock).sessionKey)),
     ).toBeUndefined();
+  });
+
+  it("forwards handle abort onto the cron CLI abort signal", async () => {
+    isCliProviderMock.mockImplementation((provider: string) => provider === "claude-cli");
+    resolveAllowedModelRefMock.mockReturnValue({
+      ref: { provider: "claude-cli", model: "claude-opus-4-6" },
+    });
+    mockRunCronFallbackPassthrough();
+    const cronSession = makeCronSession({
+      sessionEntry: makeCronSessionEntry({
+        sessionId: "cron-cli-abort-session",
+      }),
+      isNewSession: true,
+    });
+    resolveCronSessionMock.mockReturnValue(cronSession);
+    let seenAbortSignal: AbortSignal | undefined;
+    let abortedViaHandle = false;
+    runCliAgentMock.mockImplementationOnce(async (runParams) => {
+      seenAbortSignal = runParams.abortSignal;
+      expect(runParams.abortSignal?.aborted).toBe(false);
+      abortedViaHandle = abortEmbeddedAgentRun("cron-cli-abort-session");
+      expect(abortedViaHandle).toBe(true);
+      expect(runParams.abortSignal?.aborted).toBe(true);
+      return {
+        payloads: [{ text: "aborted mid-run" }],
+        meta: {
+          durationMs: 1,
+          executionTrace: { runner: "cli" },
+          agentMeta: {
+            provider: "claude-cli",
+            model: "claude-opus-4-6",
+            usage: { input: 1, output: 1 },
+          },
+        },
+      };
+    });
+
+    const result = await runCronIsolatedAgentTurn(
+      makeParams({
+        job: makeJob({ sessionTarget: "session:existing-cron-session" }),
+      }),
+    );
+
+    expect(result.status).toBe("ok");
+    expect(seenAbortSignal).toBeInstanceOf(AbortSignal);
+    expect(abortedViaHandle).toBe(true);
+    expect(seenAbortSignal?.aborted).toBe(true);
   });
 
   it.each([
