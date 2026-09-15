@@ -773,10 +773,19 @@ function createCronPromptExecutor(
                     assertSettlementCurrent,
                     params.abortSignal,
                   );
-                return await settleCliSessionResult(candidateResult, async () => {
-                  await params.persistSessionEntry(assertCommitAllowed, settledEntry);
-                  await params.persistRunContinuationSession?.(assertCommitAllowed);
-                });
+                return await settleCliSessionResult(
+                  candidateResult,
+                  async () => {
+                    await params.persistSessionEntry(assertCommitAllowed, settledEntry);
+                    await params.persistRunContinuationSession?.(assertCommitAllowed);
+                  },
+                  {
+                    retrySettleWithoutPlacementAssertion: async () => {
+                      await params.persistSessionEntry(undefined, settledEntry);
+                      await params.persistRunContinuationSession?.();
+                    },
+                  },
+                );
               }
               return candidateResult;
             },

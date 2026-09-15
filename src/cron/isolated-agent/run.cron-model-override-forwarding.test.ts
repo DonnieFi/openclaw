@@ -537,6 +537,64 @@ describe("runCronIsolatedAgentTurn — cron model override forwarding (#58065)",
     );
   });
 
+  it("retries cron CLI continuity persist when placement settlement is already closed", async () => {
+    isCliProviderMock.mockImplementation((provider: string) => provider === "claude-cli");
+    resolveAllowedModelRefMock.mockReturnValue({
+      ref: { provider: "claude-cli", model: "claude-opus-4-6" },
+    });
+    mockRunCronFallbackPassthrough();
+    const cronSession = makeCronSession({
+      sessionEntry: makeCronSessionEntry({
+        cliSessionBindings: { "claude-cli": { sessionId: "previous-cli-session" } },
+      }),
+      isNewSession: false,
+    });
+    resolveCronSessionMock.mockReturnValue(cronSession);
+    const cliSessionBinding = {
+      sessionId: "fresh-cli-session",
+      reseedReceipt: {
+        version: 1 as const,
+        promptHash: "a".repeat(64),
+        localSessionId: cronSession.sessionEntry.sessionId,
+        userTurnDisposition: "persisted",
+      },
+    };
+    runCliAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "summary done" }],
+      meta: {
+        durationMs: 1,
+        executionTrace: { runner: "cli" },
+        agentMeta: {
+          provider: "claude-cli",
+          model: "claude-opus-4-6",
+          sessionId: "fresh-cli-session",
+          cliSessionBinding,
+          usage: { input: 10, output: 20 },
+        },
+      },
+    });
+    const persistImpl = patchSessionEntryMock.getMockImplementation();
+    let failGuardedPersistOnce = true;
+    patchSessionEntryMock.mockImplementation(async (...args) => {
+      const options = args[2] as { assertCommitAllowed?: () => void };
+      if (failGuardedPersistOnce && options?.assertCommitAllowed) {
+        failGuardedPersistOnce = false;
+        throw new Error("session placement turn settlement is closed");
+      }
+      return await persistImpl!(...args);
+    });
+
+    const result = await runCronIsolatedAgentTurn(
+      makeParams({
+        job: makeJob({ sessionTarget: "session:existing-cron-session" }),
+      }),
+    );
+
+    expect(result.status).toBe("ok");
+    expect(cronSession.sessionEntry.cliSessionBindings?.["claude-cli"]).toEqual(cliSessionBinding);
+    expect(patchSessionEntryMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
   it("validates cron thinking with catalog reasoning metadata", async () => {
     resolveAllowedModelRefMock.mockImplementation(() => ({
       ref: { provider: "ollama", model: "qwen3:0.6b" },

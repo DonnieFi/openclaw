@@ -74,15 +74,38 @@ async function patchCliSessionBindingInStore(
   return committed;
 }
 
+const SESSION_PLACEMENT_TURN_SETTLEMENT_CLOSED = "session placement turn settlement is closed";
+
+export function isSessionPlacementTurnSettlementClosedError(error: unknown): boolean {
+  return formatErrorMessageForDisplay(error).includes(SESSION_PLACEMENT_TURN_SETTLEMENT_CLOSED);
+}
+
+export type SettleCliSessionResultOptions = {
+  /** Retry persistence when placement settlement closed but lifecycle guards may still commit. */
+  retrySettleWithoutPlacementAssertion?: () => Promise<void>;
+};
+
 /** A rejected continuity write cannot erase completed effects or reopen model fallback. */
 export async function settleCliSessionResult(
   result: EmbeddedAgentRunResult,
   settle: () => Promise<void>,
+  options?: SettleCliSessionResultOptions,
 ): Promise<EmbeddedAgentRunResult> {
   try {
     await settle();
     return result;
   } catch (error) {
+    if (
+      options?.retrySettleWithoutPlacementAssertion &&
+      isSessionPlacementTurnSettlementClosedError(error)
+    ) {
+      try {
+        await options.retrySettleWithoutPlacementAssertion();
+        return result;
+      } catch (retryError) {
+        error = retryError;
+      }
+    }
     const detail = redactSensitiveText(formatErrorMessageForDisplay(error), { mode: "tools" });
     const diagnostic = truncateUtf16Safe(
       `CLI session continuity could not be saved: ${detail}`,
