@@ -1,0 +1,39 @@
+{
+  "gateway": {
+    "mode": "local",
+    "bind": "loopback",
+    "auth": {
+      "mode": "token",
+      "token": "__OPENCLAW_REDACTED__"
+    },
+    "controlUi": {
+      "enabled": true
+    }
+  },
+  "channels": {
+    "matrix": {
+      "enabled": false,
+      "accounts": {
+        "work": {
+          "password": {
+            "source": "store",
+            "provider": "default",
+            "id": "__OPENCLAW_REDACTED__"
+          },
+          "accessToken": {
+            "source": "store",
+            "provider": "default",
+            "id": "__OPENCLAW_REDACTED__"
+          },
+          "joinIntro": false
+        }
+      }
+    }
+  },
+  "meta": {
+    "migrations": {
+      "modelPolicyAllowlist": true
+    },
+    "lastTouchedVersion": "2026.9.4"
+  }
+}
