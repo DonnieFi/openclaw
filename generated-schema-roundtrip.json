@@ -1,0 +1,18 @@
+{
+  "head": "c4334e61118903cf047ae2d61caed1806e7f800a",
+  "passwordHint": {
+    "sensitive": true,
+    "advanced": false
+  },
+  "redactedPassword": {
+    "source": "store",
+    "provider": "default",
+    "id": "__OPENCLAW_REDACTED__"
+  },
+  "restoreOk": true,
+  "restoredPassword": {
+    "source": "store",
+    "provider": "default",
+    "id": "MATRIX_WORK_PASSWORD"
+  }
+}
