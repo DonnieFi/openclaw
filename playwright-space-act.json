@@ -1,0 +1,46 @@
+{
+  "head": "34ebbf046e2fd7d543044afd1ec2af163d4b8baf",
+  "exercisedSurface": "POST /act kind=press key=' ' → normalizeActRequest → pressKeyViaPlaywright → page.keyboard.press (same payload Browser panel sends from event.key)",
+  "executablePath": "/home/red/.cache/ms-playwright/chromium-1243/chrome-linux64/chrome",
+  "steps": [
+    {
+      "step": "before",
+      "value": "hello",
+      "shot": "01-before-space.png"
+    },
+    {
+      "step": "baseline-normalize-sim",
+      "ok": false,
+      "error": "press requires key"
+    },
+    {
+      "step": "fixed-normalize",
+      "ok": true,
+      "result": {
+        "kind": "press",
+        "key": "Space"
+      }
+    },
+    {
+      "step": "act-press-literal-space",
+      "route": {
+        "statusCode": 200,
+        "body": {
+          "ok": true,
+          "targetId": "216A311F5D4081B6E4F230AAF3E25AB4",
+          "url": "about:blank"
+        }
+      },
+      "value": "hello ",
+      "diag": "keydowns: [{\"key\":\" \",\"code\":\"Space\",\"keyCode\":32}]\nvalue: \"hello \"",
+      "shot": "02-after-literal-space.png"
+    },
+    {
+      "step": "after-hello-world",
+      "value": "hello world",
+      "diag": "keydowns: [{\"key\":\" \",\"code\":\"Space\",\"keyCode\":32},{\"key\":\"w\",\"code\":\"KeyW\",\"keyCode\":87},{\"key\":\"o\",\"code\":\"KeyO\",\"keyCode\":79},{\"key\":\"r\",\"code\":\"KeyR\",\"keyCode\":82},{\"key\":\"l\",\"code\":\"KeyL\",\"keyCode\":76},{\"key\":\"d\",\"code\":\"KeyD\",\"keyCode\":68}]\nvalue: \"hello world\"",
+      "shot": "03-after-hello-world.png"
+    }
+  ],
+  "ok": true
+}
