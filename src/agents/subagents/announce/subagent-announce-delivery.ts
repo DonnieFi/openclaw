@@ -45,7 +45,10 @@ import {
   setSubagentAnnounceDeliveryDepsForTest,
   type SubagentAnnounceDeliveryDeps,
 } from "./subagent-announce-delivery.runtime.js";
-import { sendSubagentAnnounceDirectly } from "./subagent-announce-direct-delivery.js";
+import {
+  clearRetainedCompletionHandoffKeysForTest,
+  sendSubagentAnnounceDirectly,
+} from "./subagent-announce-direct-delivery.js";
 import {
   runSubagentAnnounceDispatch,
   type SubagentAnnounceDeliveryResult,
@@ -347,6 +350,7 @@ const testing = {
   setDepsForTest(overrides?: Partial<SubagentAnnounceDeliveryDeps>) {
     setSubagentAnnounceDeliveryDepsForTest(overrides);
   },
+  clearRetainedCompletionHandoffKeysForTest,
   hasAnnounceSendEvidence,
   isWriterClaimReboundAnnounceError,
 };
