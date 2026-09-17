@@ -453,14 +453,24 @@ export async function sendSubagentAnnounceDirectly(params: {
     }
 
     if (isGatewayAgentRunPending(directAnnounceResponse)) {
-      return parentOnly
-        ? {
-            delivered: false,
-            path: "direct",
-            reason: "requester_turn_pending",
-            disposition: "retryable",
-          }
-        : { delivered: true, path: "direct" };
+      if (parentOnly) {
+        return {
+          delivered: false,
+          path: "direct",
+          reason: "requester_turn_pending",
+          disposition: "retryable",
+        };
+      }
+      if (params.expectsCompletionMessage) {
+        return {
+          delivered: false,
+          path: "direct",
+          reason: "completion_handoff_pending",
+          disposition: "retryable",
+          terminal: true,
+        };
+      }
+      return { delivered: true, path: "direct" };
     }
 
     const directAnnounceResult = getGatewayAgentResult(directAnnounceResponse);

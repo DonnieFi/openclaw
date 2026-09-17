@@ -3966,7 +3966,13 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
       }),
     });
 
-    expectDeliveryPath(result, "direct");
+    expect(result).toMatchObject({
+      delivered: false,
+      path: "direct",
+      reason: "completion_handoff_pending",
+      disposition: "retryable",
+      terminal: true,
+    });
     expect(callGateway).toHaveBeenCalledTimes(1);
     expect(sendMessage).not.toHaveBeenCalled();
   });
@@ -4267,7 +4273,13 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
               reason: "completion_handoff_pending",
               disposition: "session_queued",
             }
-          : { delivered: true, path: "direct" },
+          : {
+              delivered: false,
+              path: "direct",
+              reason: "completion_handoff_pending",
+              disposition: "retryable",
+              terminal: true,
+            },
       );
       expect(result.phases?.map((phase) => phase.phase)).toEqual(["direct-primary"]);
       expect(callGateway).toHaveBeenCalledTimes(1);
