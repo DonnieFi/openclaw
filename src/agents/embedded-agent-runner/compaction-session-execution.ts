@@ -472,6 +472,22 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
           log.info(
             `[compaction] skipping — no real conversation messages (sessionKey=${params.sessionKey ?? params.sessionId})`,
           );
+          await runAfterCompactionHooks({
+            hookRunner,
+            sessionId: params.sessionId,
+            sessionAgentId,
+            hookSessionKey,
+            missingSessionKey,
+            workspaceDir: effectiveWorkspace,
+            messageProvider: resolvedMessageProvider,
+            messageCountAfter: beforeHookMetrics.messageCountBefore,
+            tokensAfter: beforeHookMetrics.tokenCountBefore,
+            compactedCount: 0,
+            sessionFile: params.sessionFile,
+            tokensBefore: limitedTranscriptTokensBefore,
+            assertActive,
+            onHookMessages: params.onCompactionHookMessages,
+          });
           return {
             ok: true,
             compacted: false,
