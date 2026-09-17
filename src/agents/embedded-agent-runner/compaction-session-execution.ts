@@ -479,6 +479,7 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
             messageCountAfter: beforeHookMetrics.messageCountBefore,
             tokensAfter: beforeHookMetrics.tokenCountBefore,
             compactedCount: 0,
+            compactionOutcome: "skipped",
             sessionFile: params.sessionFile,
             tokensBefore: limitedTranscriptTokensBefore,
             assertActive,

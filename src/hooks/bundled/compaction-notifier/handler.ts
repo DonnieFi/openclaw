@@ -8,6 +8,11 @@ function readOptionalNumber(context: Record<string, unknown>, key: string): numb
   return asFiniteNumber(value);
 }
 
+/** True when internal after-hooks mark a native skip (not a zero message-count delta). */
+function isSkippedCompactionOutcome(context: Record<string, unknown>): boolean {
+  return context.compactionOutcome === "skipped";
+}
+
 /** Session compaction hook that emits short user-visible progress messages. */
 const handler: HookHandler = async (event) => {
   try {
@@ -24,11 +29,9 @@ const handler: HookHandler = async (event) => {
     }
 
     if (event.type === "session" && event.action === "compact:after") {
-      // compactedCount: 0 is the shared no-op completion signal (native skip, queued
-      // compacted:false). Observers still need after_compaction; the notice must not claim
-      // summarization happened.
-      const compactedCount = readOptionalNumber(context, "compactedCount");
-      if (compactedCount === 0) {
+      // Native skip completion sets compactionOutcome: "skipped". compactedCount: 0 alone can
+      // also mean a successful provider rewrite that did not shorten session.messages.
+      if (isSkippedCompactionOutcome(context)) {
         event.messages.push("✅ Nothing to compact. Continuing from where I left off.");
         return;
       }

@@ -15,6 +15,8 @@ type PreparedAfterCompactionHookParams = {
   messageCountAfter: number;
   tokensAfter?: number;
   compactedCount: number;
+  /** Internal-hook only: native skip completion, distinct from compactedCount 0 after a rewrite. */
+  compactionOutcome?: "skipped";
   sessionFile: string;
   summaryLength?: number;
   tokensBefore?: number;
@@ -37,6 +39,7 @@ export async function runPreparedAfterCompactionHooks(
     messageCountAfter: params.messageCountAfter,
     tokensAfter: params.tokensAfter,
     compactedCount: params.compactedCount,
+    ...(params.compactionOutcome ? { compactionOutcome: params.compactionOutcome } : {}),
     sessionFile: params.sessionFile,
     summaryLength: params.summaryLength,
     tokensBefore: params.tokensBefore,
