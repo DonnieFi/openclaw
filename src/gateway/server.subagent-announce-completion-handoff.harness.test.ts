@@ -12,7 +12,7 @@ import type { AgentCommandOpts } from "../agents/command/types.js";
 import { createTaskCompletionEvent } from "../agents/subagent-test-fixtures.test-helpers.js";
 import {
   clearRetainedCompletionHandoffKeysForTest,
-  shouldJoinOriginalCompletionHandoff,
+  shouldPreferOriginalCompletionHandoff,
 } from "../agents/subagents/announce/subagent-announce-completion-handoff-retention.js";
 import {
   deliverSubagentAnnouncement,
@@ -89,7 +89,7 @@ describe("public completion handoff real Gateway admission", () => {
         mediaUrl: null,
         result: { messageId: "msg-handoff" },
       })) as never,
-      queueEmbeddedAgentMessageWithOutcome: steer,
+      queueEmbeddedAgentMessageWithOutcome: steer as never,
     });
   }
 
@@ -199,7 +199,7 @@ describe("public completion handoff real Gateway admission", () => {
     async () => {
       const held = createDeferred();
       const release = createDeferred();
-      agentCommandMock.mockImplementationOnce(async (input) => {
+      agentCommandMock.mockImplementationOnce(async (input: unknown) => {
         const command = input as AgentCommandOpts;
         command.onExecutionStarted?.();
         held.resolve();
@@ -215,7 +215,7 @@ describe("public completion handoff real Gateway admission", () => {
             succeeded: true,
             resultCount: 1,
           },
-        };
+        } as never;
       });
 
       registerSubagentRun({
@@ -251,7 +251,9 @@ describe("public completion handoff real Gateway admission", () => {
         disposition: "retryable",
         terminal: true,
       });
-      expect(shouldJoinOriginalCompletionHandoff(handoffKey)).toBe(true);
+      expect(shouldPreferOriginalCompletionHandoff({ directIdempotencyKey: handoffKey })).toBe(
+        true,
+      );
 
       installAnnounceDeps({
         requesterSessionActivity: () => ({
@@ -269,7 +271,9 @@ describe("public completion handoff real Gateway admission", () => {
         terminal: true,
       });
       expect(steer).not.toHaveBeenCalled();
-      expect(shouldJoinOriginalCompletionHandoff(handoffKey)).toBe(true);
+      expect(shouldPreferOriginalCompletionHandoff({ directIdempotencyKey: handoffKey })).toBe(
+        true,
+      );
 
       release.resolve();
       const terminal = await original;
@@ -281,7 +285,9 @@ describe("public completion handoff real Gateway admission", () => {
         path: "direct",
       });
       expect(steer).not.toHaveBeenCalled();
-      expect(shouldJoinOriginalCompletionHandoff(handoffKey)).toBe(false);
+      expect(shouldPreferOriginalCompletionHandoff({ directIdempotencyKey: handoffKey })).toBe(
+        false,
+      );
 
       await settleSubagentRegistryPersistenceWork();
       expect(getSubagentRunByRunId(childRunId)?.runId).toBe(childRunId);

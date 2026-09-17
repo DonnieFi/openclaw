@@ -20,12 +20,12 @@ import type { SubagentAnnounceDeliveryResult } from "./subagent-announce-dispatc
 
 const retainedCompletionHandoffKeys = new Set<string>();
 
-export function normalizeCompletionHandoffKey(key: string | undefined): string | undefined {
+function normalizeCompletionHandoffKey(key: string | undefined): string | undefined {
   const normalized = key?.trim();
   return normalized || undefined;
 }
 
-export function retainCompletionHandoffKey(key: string | undefined): void {
+function retainCompletionHandoffKey(key: string | undefined): void {
   const normalized = normalizeCompletionHandoffKey(key);
   if (normalized) {
     retainedCompletionHandoffKeys.add(normalized);
@@ -106,7 +106,7 @@ export function clearRetainedCompletionHandoffKeysForTest(): void {
   retainedCompletionHandoffKeys.clear();
 }
 
-export function shouldJoinOriginalCompletionHandoff(key: string | undefined): boolean {
+function shouldJoinOriginalCompletionHandoff(key: string | undefined): boolean {
   const normalized = normalizeCompletionHandoffKey(key);
   if (!normalized) {
     return false;
