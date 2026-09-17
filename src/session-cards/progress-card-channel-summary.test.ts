@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { projectProgressCardChannelUpdate } from "./progress-card-channel-summary.js";
+import {
+  isAgentPlanProgressToolName,
+  projectProgressCardChannelUpdate,
+} from "./progress-card-channel-summary.js";
 
 describe("projectProgressCardChannelUpdate", () => {
   it.each([
@@ -53,4 +56,22 @@ describe("projectProgressCardChannelUpdate", () => {
   ])("projects normalized $name input for every runtime producer", ({ input, expected }) => {
     expect(projectProgressCardChannelUpdate(input)).toEqual(expected);
   });
+});
+
+describe("isAgentPlanProgressToolName", () => {
+  it.each([
+    "progress_card",
+    "update_plan",
+    "mcp__openclaw__progress_card",
+    " MCP__OPENCLAW__UPDATE_PLAN ",
+  ])("recognizes %s as a plan-progress tool", (name) => {
+    expect(isAgentPlanProgressToolName(name)).toBe(true);
+  });
+
+  it.each(["exec", "mcp__openclaw__exec", "mcp__other__progress_card", undefined])(
+    "rejects %s",
+    (name) => {
+      expect(isAgentPlanProgressToolName(name)).toBe(false);
+    },
+  );
 });

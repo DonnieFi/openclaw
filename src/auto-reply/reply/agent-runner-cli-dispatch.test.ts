@@ -897,33 +897,36 @@ describe("createCliToolSummaryTracker", () => {
     expect(deliver).not.toHaveBeenCalled();
   });
 
-  it("leaves plan tools to the authoritative plan event instead of summarizing arguments", async () => {
-    const deliver = vi.fn();
-    const tracker = createCliToolSummaryTracker({
-      commandDetailsVisible: true,
-      shouldEmitToolResult: () => true,
-      shouldEmitToolOutput: () => true,
-      deliver,
-    });
-    await tracker.noteToolEvent({
-      name: "progress_card",
-      phase: "start",
-      args: {
-        markdown: '<progress aria-label="CI · 2/3" value="2" max="3"></progress>',
-      },
-      toolCallId: "plan-1",
-    });
-    await tracker.noteToolEvent({
-      name: "progress_card",
-      phase: "result",
-      args: undefined,
-      toolCallId: "plan-1",
-      isError: false,
-      result: { content: [{ type: "text", text: "Progress card updated" }] },
-    });
+  it.each(["progress_card", "mcp__openclaw__progress_card"])(
+    "leaves %s to the authoritative plan event instead of summarizing arguments",
+    async (name) => {
+      const deliver = vi.fn();
+      const tracker = createCliToolSummaryTracker({
+        commandDetailsVisible: true,
+        shouldEmitToolResult: () => true,
+        shouldEmitToolOutput: () => true,
+        deliver,
+      });
+      await tracker.noteToolEvent({
+        name,
+        phase: "start",
+        args: {
+          markdown: '<progress aria-label="CI · 2/3" value="2" max="3"></progress>',
+        },
+        toolCallId: "plan-1",
+      });
+      await tracker.noteToolEvent({
+        name,
+        phase: "result",
+        args: undefined,
+        toolCallId: "plan-1",
+        isError: false,
+        result: { content: [{ type: "text", text: "Progress card updated" }] },
+      });
 
-    expect(deliver).not.toHaveBeenCalled();
-  });
+      expect(deliver).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([false, true])(
     "keeps card errors visible without arguments (full output: %s)",

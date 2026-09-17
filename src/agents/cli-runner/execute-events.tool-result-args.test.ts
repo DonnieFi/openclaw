@@ -55,18 +55,45 @@ function buildToolTracking(): CliToolTracking {
   } as unknown as CliToolTracking;
 }
 
-function collectToolEvents(runId: string): {
+function collectRunEvents(
+  runId: string,
+  streams: readonly string[],
+): {
   events: AgentEventRuntimePayload[];
   dispose: () => void;
 } {
+  const wanted = new Set(streams);
   const events: AgentEventRuntimePayload[] = [];
   const dispose = onAgentEvent((event) => {
-    if (event.runId === runId && event.stream === "tool") {
+    if (event.runId === runId && wanted.has(event.stream)) {
       events.push(event);
     }
   });
   return { events, dispose };
 }
+
+function collectToolEvents(runId: string): {
+  events: AgentEventRuntimePayload[];
+  dispose: () => void;
+} {
+  return collectRunEvents(runId, ["tool"]);
+}
+
+const PROGRESS_CARD_PLAN_ARGS = {
+  plan: [
+    { step: "Inspect the failing route", status: "completed" },
+    { step: "Repair the session owner", status: "in_progress" },
+    { step: "Run focused verification", status: "pending" },
+  ],
+};
+
+const EXPECTED_PROGRESS_CARD_PLAN_DATA = {
+  phase: "update",
+  title: "Plan updated",
+  source: "openclaw",
+  explanation: "1/3 complete",
+  steps: PROGRESS_CARD_PLAN_ARGS.plan,
+};
 
 describe("cli tool result events", () => {
   it("emits complete CLI commentary as a completed preamble", () => {
@@ -210,6 +237,111 @@ describe("cli tool result events", () => {
       const results = events.filter((event) => event.data.phase === "result");
       expect(results[0]?.data.args).toEqual({ command: "first" });
       expect(results[1]?.data.args).toBeUndefined();
+    } finally {
+      dispose();
+    }
+  });
+
+  it("projects a successful prefixed progress_card result onto the plan stream", () => {
+    const runId = "run-progress-card-plan";
+    const handlers = createCliEventHandlers({
+      context: buildContext(runId),
+      toolTracking: buildToolTracking(),
+      getRunState: () => ({ failed: false, error: undefined }),
+    });
+    const { events, dispose } = collectRunEvents(runId, ["plan", "tool"]);
+
+    try {
+      handlers.emitParsedToolUseStart({
+        toolCallId: "call-plan",
+        name: "mcp__openclaw__progress_card",
+        kind: "mcp_tool_use",
+        args: PROGRESS_CARD_PLAN_ARGS,
+      });
+      handlers.emitParsedToolResult({
+        toolCallId: "call-plan",
+        name: "mcp__openclaw__progress_card",
+        isError: false,
+        result: { content: [{ type: "text", text: "Progress card updated (rev 2, 1/3 done)" }] },
+      });
+
+      expect(events.filter((event) => event.stream === "plan")).toEqual([
+        expect.objectContaining({
+          stream: "plan",
+          data: EXPECTED_PROGRESS_CARD_PLAN_DATA,
+        }),
+      ]);
+      expect(
+        events.find((event) => event.stream === "tool" && event.data.phase === "result")?.data.name,
+      ).toBe("mcp__openclaw__progress_card");
+    } finally {
+      dispose();
+    }
+  });
+
+  it("keeps failed prefixed progress_card writes off the plan stream", () => {
+    const runId = "run-progress-card-plan-error";
+    const handlers = createCliEventHandlers({
+      context: buildContext(runId),
+      toolTracking: buildToolTracking(),
+      getRunState: () => ({ failed: false, error: undefined }),
+    });
+    const { events, dispose } = collectRunEvents(runId, ["plan"]);
+
+    try {
+      handlers.emitParsedToolUseStart({
+        toolCallId: "call-plan-error",
+        name: "mcp__openclaw__progress_card",
+        kind: "mcp_tool_use",
+        args: PROGRESS_CARD_PLAN_ARGS,
+      });
+      handlers.emitParsedToolResult({
+        toolCallId: "call-plan-error",
+        name: "mcp__openclaw__progress_card",
+        isError: true,
+        result: { content: [{ type: "text", text: "Card write failed" }] },
+      });
+
+      expect(events).toEqual([]);
+    } finally {
+      dispose();
+    }
+  });
+
+  it("emits an empty plan snapshot when a successful prefixed write clears the card", () => {
+    const runId = "run-progress-card-plan-clear";
+    const handlers = createCliEventHandlers({
+      context: buildContext(runId),
+      toolTracking: buildToolTracking(),
+      getRunState: () => ({ failed: false, error: undefined }),
+    });
+    const { events, dispose } = collectRunEvents(runId, ["plan"]);
+
+    try {
+      handlers.emitParsedToolUseStart({
+        toolCallId: "call-plan-clear",
+        name: "mcp__openclaw__progress_card",
+        kind: "mcp_tool_use",
+        args: {},
+      });
+      handlers.emitParsedToolResult({
+        toolCallId: "call-plan-clear",
+        name: "mcp__openclaw__progress_card",
+        isError: false,
+        result: { content: [{ type: "text", text: "Progress card cleared" }] },
+      });
+
+      expect(events).toEqual([
+        expect.objectContaining({
+          stream: "plan",
+          data: {
+            phase: "update",
+            title: "Plan updated",
+            source: "openclaw",
+            steps: [],
+          },
+        }),
+      ]);
     } finally {
       dispose();
     }

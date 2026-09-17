@@ -42,7 +42,7 @@ describe("buildChannelProgressDraftLine", () => {
     expect(isChannelProgressDraftWorkToolName("update_plan")).toBe(false);
   });
 
-  it.each(["progress_card", "update_plan"])(
+  it.each(["progress_card", "update_plan", "mcp__openclaw__progress_card"])(
     "keeps %s arguments out of generic tool and item rows",
     (name) => {
       const args = {
