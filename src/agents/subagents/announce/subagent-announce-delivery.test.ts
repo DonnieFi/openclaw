@@ -551,6 +551,7 @@ async function deliverDiscordDirectMessageCompletion(params: {
   sendMessage?: typeof runtimeSendMessage;
   completionTarget?: "parent";
   currentRequesterSessionId?: string | null;
+  directIdempotencyKey?: string;
   internalEvents?: AgentInternalEvent[];
   isActive?: boolean;
   requesterSessionKey?: string;
@@ -603,7 +604,7 @@ async function deliverDiscordDirectMessageCompletion(params: {
         }
       : {}),
     bestEffortDeliver: true,
-    directIdempotencyKey: "announce-dm-fallback-empty",
+    directIdempotencyKey: params.directIdempotencyKey ?? "announce-dm-fallback-empty",
     internalEvents: params.internalEvents,
     sourceRunId: "run-generated-media",
     sourceSessionKey: params.sourceSessionKey,
@@ -1981,6 +1982,70 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
     expect(mockCallArg(sendMessage, 0, 0).content).toBe(
       "A delegated task failed before it could report a result. Please retry the task.",
     );
+  });
+
+  it("does not text-direct a failed-child notice while the original handoff is retained", async () => {
+    const directIdempotencyKey = "announce-dm-retained-no-text-direct";
+    const childSessionKey = "agent:worker:subagent:retained-failed-notice";
+    const callGateway = vi
+      .fn()
+      .mockResolvedValueOnce({
+        runId: directIdempotencyKey,
+        status: "in_flight",
+        admissionPending: true,
+      })
+      .mockRejectedValueOnce(
+        new Error("original handoff replay failed"),
+      ) as unknown as typeof runtimeCallGateway;
+    const sendMessage = createSendMessageMock();
+    const internalEvents = taskCompletionEvents({
+      childSessionKey,
+      childSessionId: "child-session-id",
+      status: "error",
+      statusLabel: "failed: all models failed",
+      result: "(no output)",
+      noVisibleResult: true,
+    });
+
+    const pending = await deliverDiscordDirectMessageCompletion({
+      callGateway,
+      sendMessage,
+      directIdempotencyKey,
+      sourceSessionKey: childSessionKey,
+      internalEvents,
+    });
+    expect(pending).toMatchObject({
+      delivered: false,
+      path: "direct",
+      reason: "completion_handoff_pending",
+      disposition: "retryable",
+      terminal: true,
+    });
+    expect(sendMessage).not.toHaveBeenCalled();
+
+    const failedReplay = await deliverDiscordDirectMessageCompletion({
+      callGateway,
+      sendMessage,
+      directIdempotencyKey,
+      sourceSessionKey: childSessionKey,
+      internalEvents,
+    });
+    expect(failedReplay).toMatchObject({
+      delivered: false,
+      path: "direct",
+      reason: "completion_handoff_pending",
+      disposition: "retryable",
+      terminal: true,
+      error: "original handoff replay failed",
+    });
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(
+      vi
+        .mocked(callGateway)
+        .mock.calls.map(
+          (call) => (call[0] as { params?: Record<string, unknown> })?.params?.idempotencyKey,
+        ),
+    ).toEqual([directIdempotencyKey, directIdempotencyKey]);
   });
 
   it.each(["error", "timeout", "unknown"] as const)(

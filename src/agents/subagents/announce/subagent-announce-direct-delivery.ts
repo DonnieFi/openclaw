@@ -467,6 +467,22 @@ async function sendSubagentAnnounceDirectlyUnchecked(params: {
         isSubagentCompletion &&
         directCompletionFallbackKind
       ) {
+        // Retained original handoff must not send a separate :text-direct notice;
+        // that credits delivery on another key while Gateway may still settle later.
+        if (
+          shouldPreferOriginalCompletionHandoff({
+            directIdempotencyKey: params.directIdempotencyKey,
+          })
+        ) {
+          return {
+            delivered: false,
+            path: "direct",
+            reason: "completion_handoff_pending",
+            error: summarizeDeliveryError(err),
+            disposition: "retryable",
+            terminal: true,
+          };
+        }
         const textDelivery = await tryTextCompletionDirectDelivery(directCompletionFallbackKind);
         if (textDelivery) {
           return textDelivery;
