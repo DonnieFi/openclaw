@@ -5,7 +5,11 @@ import { normalizeProgressCardInput, ProgressCardInputError } from "./progress-c
 const PLAN_PROGRESS_TOOL_NAMES = new Set(["progress_card", "update_plan"]);
 
 export function isAgentPlanProgressToolName(name: string | undefined): boolean {
-  return PLAN_PROGRESS_TOOL_NAMES.has(name?.trim().toLowerCase() ?? "");
+  const normalized = name?.trim().toLowerCase() ?? "";
+  const unprefixed = normalized.startsWith("mcp__openclaw__")
+    ? normalized.slice("mcp__openclaw__".length)
+    : normalized;
+  return PLAN_PROGRESS_TOOL_NAMES.has(unprefixed);
 }
 
 /** Projects checklist counts or readable notes through the shared Markdown owner. */
