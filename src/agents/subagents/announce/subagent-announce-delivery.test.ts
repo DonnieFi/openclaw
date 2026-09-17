@@ -3971,6 +3971,47 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
     expect(sendMessage).not.toHaveBeenCalled();
   });
 
+  it("does not credit an in-flight completion announce replay as delivered", async () => {
+    const directIdempotencyKey = "announce-channel-completion-inflight";
+    const callGateway = createGatewayMock({
+      runId: directIdempotencyKey,
+      status: "in_flight",
+      admissionPending: true,
+    });
+    const sendMessage = createSendMessageMock();
+    const queueEmbeddedAgentMessageWithOutcome = createQueueOutcomeMock(true);
+    const result = await deliverSlackChannelAnnouncement({
+      callGateway,
+      sendMessage,
+      queueEmbeddedAgentMessageWithOutcome,
+      directIdempotencyKey,
+      internalEvents: taskCompletionEvents({
+        childSessionId: "child-session-id",
+        taskLabel: "channel completion smoke",
+      }),
+    });
+
+    expect(result).toMatchObject({
+      delivered: false,
+      path: "direct",
+      reason: "completion_handoff_pending",
+      disposition: "retryable",
+      terminal: true,
+      phases: [
+        {
+          phase: "direct-primary",
+          delivered: false,
+          path: "direct",
+          reason: "completion_handoff_pending",
+        },
+      ],
+    });
+    expect(result.requesterVisibleFinalDelivered).toBeUndefined();
+    expect(callGateway).toHaveBeenCalledTimes(1);
+    expect(queueEmbeddedAgentMessageWithOutcome).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
   it("does not credit stale channel completions without a delivery receipt", async () => {
     const callGateway = createPayloadGatewayMock();
     const sendMessage = createSendMessageMock();
