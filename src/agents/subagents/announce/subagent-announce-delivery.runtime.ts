@@ -29,6 +29,7 @@ import {
   formatEmbeddedAgentQueueFailureSummary,
   isEmbeddedAgentRunActive,
   queueEmbeddedAgentMessageWithOutcomeAsync,
+  queueGuardedEmbeddedAgentMessageWithOutcomeAsync,
   resolveActiveEmbeddedRunOwner,
   resolveEmbeddedRunAbandonment,
   type EmbeddedAgentQueueMessageOutcome,
@@ -69,6 +70,7 @@ export type SubagentAnnounceDeliveryDeps = {
     text: string,
     options?: EmbeddedAgentQueueMessageOptions,
   ) => EmbeddedAgentQueueMessageOutcome | Promise<EmbeddedAgentQueueMessageOutcome>;
+  queueGuardedEmbeddedAgentMessageWithOutcome: typeof queueGuardedEmbeddedAgentMessageWithOutcomeAsync;
   sendMessage: typeof sendMessage;
 };
 
@@ -171,6 +173,8 @@ const defaultSubagentAnnounceDeliveryDeps: SubagentAnnounceDeliveryDeps = {
   loadRequesterSessionEntry: loadDefaultRequesterSessionEntry,
   queueEmbeddedAgentMessageWithOutcome: (...args) =>
     queueEmbeddedAgentMessageWithOutcomeAsync(...args),
+  queueGuardedEmbeddedAgentMessageWithOutcome: (...args) =>
+    queueGuardedEmbeddedAgentMessageWithOutcomeAsync(...args),
   sendMessage: (...args) => sendMessage(...args),
 };
 
@@ -256,7 +260,16 @@ export async function queueSubagentAnnounceMessage(
   sessionId: string,
   text: string,
   options?: EmbeddedAgentQueueMessageOptions,
+  canInject?: () => boolean,
 ): Promise<EmbeddedAgentQueueMessageOutcome> {
+  if (canInject) {
+    return await subagentAnnounceDeliveryDeps.queueGuardedEmbeddedAgentMessageWithOutcome(
+      sessionId,
+      text,
+      options,
+      canInject,
+    );
+  }
   return await subagentAnnounceDeliveryDeps.queueEmbeddedAgentMessageWithOutcome(
     sessionId,
     text,

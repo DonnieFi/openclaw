@@ -3287,6 +3287,7 @@ function runFocusedLiveSuiteValidation(suiteId: string, overrides: Record<string
     workflowJob(LIVE_E2E_WORKFLOW, "validate_selected_ref"),
     "Validate focused live suite filter",
   );
+  const runnerTemp = tempDirs.make("focused-live-suite-");
   return spawnSync("bash", ["-c", step.run ?? ""], {
     encoding: "utf8",
     env: {
@@ -3298,6 +3299,7 @@ function runFocusedLiveSuiteValidation(suiteId: string, overrides: Record<string
       LIVE_MODELS_ONLY: "false",
       LIVE_MODEL_PROVIDERS: "",
       ADMISSION_TOOLING_ROOT: resolve("."),
+      RUNNER_TEMP: runnerTemp,
       ...overrides,
     },
   });
@@ -4178,6 +4180,10 @@ case "$2" in
     printf '%s\\n' "$MOCK_QUALIFIED_RUN"
     exit 0
     ;;
+  */actions/runs/"\${MOCK_QUALIFIED_RUN_ID:-}")
+    printf '%s\\n' "$MOCK_QUALIFIED_RUN"
+    exit 0
+    ;;
   */actions/artifacts/555)
     printf '%s\\n' "$MOCK_QUALIFIED_ARTIFACT"
     exit 0
@@ -4316,6 +4322,7 @@ globalThis.fetch = async (url) => {
     NODE_OPTIONS: `--import=${pathToFileURL(preload).href}`,
     MOCK_QUALIFIED_ARCHIVE: archivePath,
     MOCK_QUALIFIED_ARTIFACT: JSON.stringify(artifactMetadata),
+    MOCK_QUALIFIED_RUN_ID: runId,
     MOCK_QUALIFIED_RUN: JSON.stringify({
       id: Number(runId),
       run_attempt: 1,
@@ -9778,6 +9785,14 @@ describe("package artifact reuse", () => {
     },
   );
 
+  it("fails focused live suite validation when Docker matrix planning fails", () => {
+    const result = runFocusedLiveSuiteValidation("openshell-e2e", {
+      ADMISSION_TOOLING_ROOT: resolve(tempDirs.make("missing-admission-tooling-"), "missing"),
+    });
+
+    expect(result.status).not.toBe(0);
+  });
+
   it("accepts the OpenCode Go aggregate for its stable smoke lane", () => {
     const result = runFocusedLiveSuiteValidation("native-live-src-gateway-profiles-opencode-go", {
       RELEASE_TEST_PROFILE: "stable",
@@ -9959,6 +9974,9 @@ describe("package artifact reuse", () => {
     expect(workflow).toContain("suite_id: native-live-src-infra");
     expect(workflow).toContain(
       "command: OPENCLAW_LIVE_APNS_REACHABILITY=1 OPENCLAW_LIVE_SESSION_EVENT_WAKE=1 node .release-harness/scripts/test-live-shard.mjs native-live-src-infra",
+    );
+    expect(workflow).toContain(
+      "command: OPENCLAW_LIVE_CODEX_NODE_EXEC_TIMEOUT=1 node .release-harness/scripts/test-live-shard.mjs native-live-test",
     );
     expect(workflow).toContain("suite_id: native-live-src-gateway-profiles-anthropic-smoke");
     expect(workflow).toContain("OPENCLAW_LIVE_GATEWAY_SETUP_TIMEOUT_MS=300000");
