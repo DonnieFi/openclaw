@@ -4190,6 +4190,71 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
     expect(sendMessage).not.toHaveBeenCalled();
   });
 
+  it("fences steer-fallback when retained handoff replay fails while a successor requester is active", async () => {
+    const directIdempotencyKey = "announce-channel-completion-successor-replay-fail";
+    const callGateway = vi
+      .fn()
+      .mockResolvedValueOnce({
+        runId: directIdempotencyKey,
+        status: "in_flight",
+        admissionPending: true,
+      })
+      .mockRejectedValueOnce(
+        new Error("original handoff replay failed"),
+      ) as unknown as typeof runtimeCallGateway;
+    const sendMessage = createSendMessageMock();
+    const queueEmbeddedAgentMessageWithOutcome = createQueueOutcomeMock(true);
+    let attempt = 0;
+    const requesterSessionActivity = () => {
+      attempt += 1;
+      if (attempt === 1) {
+        return {
+          sessionId: "requester-session-channel",
+          isActive: false,
+        };
+      }
+      return {
+        sessionId: "requester-session-channel",
+        runId: "successor-requester-run-b",
+        isActive: true,
+      };
+    };
+    const params = {
+      callGateway,
+      sendMessage,
+      queueEmbeddedAgentMessageWithOutcome,
+      requesterSessionActivity,
+      directIdempotencyKey,
+      internalEvents: taskCompletionEvents({
+        childSessionId: "child-session-id",
+        taskLabel: "channel completion successor replay fail",
+      }),
+    };
+
+    const pending = await deliverSlackChannelAnnouncement(params);
+    expect(pending).toMatchObject({
+      delivered: false,
+      path: "direct",
+      reason: "completion_handoff_pending",
+      disposition: "retryable",
+      terminal: true,
+    });
+    expect(queueEmbeddedAgentMessageWithOutcome).not.toHaveBeenCalled();
+
+    const failedReplay = await deliverSlackChannelAnnouncement(params);
+    expect(failedReplay).toMatchObject({
+      delivered: false,
+      path: "direct",
+      disposition: "retryable",
+      terminal: true,
+      error: "original handoff replay failed",
+    });
+    expect(failedReplay.phases?.some((phase) => phase.phase === "steer-fallback")).toBe(false);
+    expect(callGateway).toHaveBeenCalledTimes(2);
+    expect(queueEmbeddedAgentMessageWithOutcome).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
   it("does not credit stale channel completions without a delivery receipt", async () => {
     const callGateway = createPayloadGatewayMock();
     const sendMessage = createSendMessageMock();

@@ -55,6 +55,37 @@ describe("completion handoff retention lifecycle", () => {
     expect(shouldJoinOriginalCompletionHandoff(handoffKey)).toBe(true);
   });
 
+  it("fences retryable replay failures while the original handoff is retained", () => {
+    retainCompletionHandoffKey(handoffKey);
+
+    const fenced = settleCompletionHandoffRetention(handoffKey, {
+      delivered: false,
+      path: "direct",
+      error: "original handoff replay failed",
+      disposition: "retryable",
+    });
+
+    expect(fenced).toMatchObject({
+      delivered: false,
+      path: "direct",
+      disposition: "retryable",
+      terminal: true,
+      error: "original handoff replay failed",
+    });
+    expect(shouldJoinOriginalCompletionHandoff(handoffKey)).toBe(true);
+
+    // First-attempt failures with no retained ownership stay unfenced so
+    // ordinary steer-fallback can still run.
+    clearRetainedCompletionHandoffKeysForTest();
+    const unfenced = settleCompletionHandoffRetention(handoffKey, {
+      delivered: false,
+      path: "direct",
+      error: "transient network error",
+      disposition: "retryable",
+    });
+    expect(unfenced.terminal).toBeUndefined();
+  });
+
   it("releases retention on terminal non-retryable outcomes", () => {
     retainCompletionHandoffKey(handoffKey);
     settleCompletionHandoffRetention(handoffKey, {

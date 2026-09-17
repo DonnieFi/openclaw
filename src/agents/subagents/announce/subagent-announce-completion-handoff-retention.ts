@@ -84,6 +84,9 @@ export function releaseAnnounceCompletionHandoffForRequesterSettleBatch(params: 
 
 /**
  * Keep ownership across retryable attempts; release on every terminal outcome.
+ * While ownership remains, mark retryable results terminal so dispatch cannot
+ * steer-fallback into a successor requester after an original-handoff replay
+ * failure (catch returns retryable without terminal).
  */
 export function settleCompletionHandoffRetention(
   key: string | undefined,
@@ -91,6 +94,10 @@ export function settleCompletionHandoffRetention(
 ): SubagentAnnounceDeliveryResult {
   if (result.disposition !== "retryable") {
     releaseCompletionHandoffKey(key);
+    return result;
+  }
+  if (!result.terminal && shouldJoinOriginalCompletionHandoff(key)) {
+    return { ...result, terminal: true };
   }
   return result;
 }
