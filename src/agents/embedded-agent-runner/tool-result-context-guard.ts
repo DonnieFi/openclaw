@@ -325,6 +325,7 @@ export function installContextEngineLoopHook(params: {
   let lastSeenLength: number | null = null;
   let lastAssembledView: AgentMessage[] | null = null;
   let lastSourceMessages: AgentMessage[] | null = null;
+  let deferredHistoryLength: number | null = null;
   const transcriptProjectionCache = new WeakMap<AgentMessage, AgentMessage>();
 
   mutableAgent.transformContext = (async (messages: AgentMessage[], signal: AbortSignal) => {
@@ -347,6 +348,7 @@ export function installContextEngineLoopHook(params: {
     if (sourceHistoryChanged) {
       lastSeenLength = null;
       lastAssembledView = null;
+      deferredHistoryLength = null;
     }
 
     // Seed the loop fence from the attempt's pre-prompt message count when available.
@@ -359,6 +361,12 @@ export function installContextEngineLoopHook(params: {
         lastSeenLength ?? params.getPrePromptMessageCount?.() ?? transcriptMessages.length,
       ),
     );
+    if (params.deferredTurn && deferredHistoryLength == null) {
+      deferredHistoryLength = Math.max(
+        0,
+        Math.min(prePromptMessageCount, params.getPrePromptMessageCount?.() ?? 0),
+      );
+    }
 
     if (transcriptMessages.length <= prePromptMessageCount) {
       lastSeenLength = prePromptMessageCount;
@@ -413,7 +421,7 @@ export function installContextEngineLoopHook(params: {
       // An admitted turn is not in the engine's store yet. Assemble accepted
       // history separately, then retain the host-owned user/tool exchange.
       const historyLength = params.deferredTurn
-        ? (params.getPrePromptMessageCount?.() ?? 0)
+        ? (deferredHistoryLength ?? 0)
         : providerMessages.length;
       const pendingMessages = providerMessages.slice(historyLength);
       const pendingTokens = pendingMessages.reduce(
