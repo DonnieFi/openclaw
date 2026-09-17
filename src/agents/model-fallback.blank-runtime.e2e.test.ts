@@ -1,7 +1,10 @@
 // Exercises blank runtime recovery through the production embedded-runner loop.
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createFailureMessage } from "../../packages/agent-core/src/turn-interruption.js";
 import { createApiRegistry } from "../../packages/ai/src/api-registry.js";
+import { streamOpenAICompletions } from "../../packages/ai/src/providers/openai-completions.js";
 import { createLlmRuntime } from "../../packages/ai/src/stream.js";
 import type { Context, Model } from "../../packages/ai/src/types.js";
 import type { OpenClawConfig } from "../config/config.js";
@@ -14,7 +17,6 @@ import {
   writeFallbackAuthStore,
 } from "./model-fallback.run-embedded.e2e.test-support.js";
 import {
-  buildEmbeddedRunnerAssistant,
   createResolvedEmbeddedRunnerModel,
   makeEmbeddedRunnerAttempt,
 } from "./test-helpers/embedded-agent-runner-e2e-fixtures.js";
@@ -25,6 +27,13 @@ import {
 } from "./test-helpers/embedded-agent-runner-e2e-mocks.js";
 
 const runEmbeddedAttemptMock = vi.fn<(params: unknown) => Promise<EmbeddedRunAttemptResult>>();
+let fallbackTransportBaseUrl: string | undefined;
+let fallbackTransportRequests: Array<{
+  method?: string;
+  url?: string;
+  model?: string;
+  authorization?: string;
+}> = [];
 const computeBackoffMock = vi.fn(
   (
     _policy: { initialMs: number; maxMs: number; factor: number; jitter: number },
@@ -55,8 +64,20 @@ function installRunEmbeddedMocks() {
     sleepWithAbort: (ms, abortSignal) => sleepWithAbortMock(ms, abortSignal),
   });
   vi.doMock("./embedded-agent-runner/model.js", () => ({
-    resolveModelAsync: async (provider: string, modelId: string) =>
-      createResolvedEmbeddedRunnerModel(provider, modelId),
+    resolveModelAsync: async (provider: string, modelId: string) => {
+      const resolved = createResolvedEmbeddedRunnerModel(provider, modelId);
+      if (provider === "groq" && fallbackTransportBaseUrl) {
+        return {
+          ...resolved,
+          model: {
+            ...resolved.model,
+            api: "openai-completions",
+            baseUrl: fallbackTransportBaseUrl,
+          },
+        };
+      }
+      return resolved;
+    },
   }));
   vi.doMock("./session-suspension.js", async () => {
     const actual =
@@ -126,16 +147,83 @@ function makeRuntimeBlankContentFailureAttempt(): EmbeddedRunAttemptResult {
   });
 }
 
-function makeFallbackSuccessAttempt(): EmbeddedRunAttemptResult {
+async function makeFallbackTransportAttempt(params: {
+  model: Model;
+}): Promise<EmbeddedRunAttemptResult> {
+  const model = params.model as Model<"openai-completions">;
+  const stream = streamOpenAICompletions(
+    model,
+    { messages: [{ role: "user", content: "hello", timestamp: 1 }] },
+    { apiKey: "groq-test-key" },
+  );
+  const assistant = await stream.result();
+  const assistantText = assistant.content
+    .filter((part): part is { type: "text"; text: string } => part.type === "text")
+    .map((part) => part.text)
+    .join("");
   return makeEmbeddedRunnerAttempt({
-    assistantTexts: ["fallback ok"],
-    lastAssistant: buildEmbeddedRunnerAssistant({
-      provider: "groq",
-      model: "mock-2",
-      stopReason: "stop",
-      content: [{ type: "text", text: "fallback ok" }],
-    }),
+    assistantTexts: assistantText ? [assistantText] : [],
+    lastAssistant: assistant,
+    currentAttemptAssistant: assistant,
   });
+}
+
+async function withFallbackTransportServer<T>(fn: () => Promise<T>): Promise<T> {
+  const server: Server = createServer((request, response) => {
+    const chunks: Buffer[] = [];
+    request.on("data", (chunk: Buffer) => chunks.push(chunk));
+    request.on("end", () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString()) as { model?: string };
+      fallbackTransportRequests.push({
+        method: request.method,
+        url: request.url,
+        model: body.model,
+        authorization: request.headers.authorization,
+      });
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      const common = {
+        id: "blank-runtime-fallback-response",
+        object: "chat.completion.chunk",
+        created: 1,
+        model: body.model,
+      };
+      for (const row of [
+        {
+          ...common,
+          choices: [
+            {
+              index: 0,
+              delta: { role: "assistant", content: "fallback ok" },
+              finish_reason: null,
+            },
+          ],
+        },
+        {
+          ...common,
+          choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+          usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
+        },
+      ]) {
+        response.write(`data: ${JSON.stringify(row)}\n\n`);
+      }
+      response.end("data: [DONE]\n\n");
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address() as AddressInfo;
+  fallbackTransportBaseUrl = `http://127.0.0.1:${address.port}/v1`;
+  fallbackTransportRequests = [];
+  try {
+    return await fn();
+  } finally {
+    fallbackTransportBaseUrl = undefined;
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+  }
 }
 
 async function runEmbeddedFallback(params: {
@@ -176,60 +264,77 @@ async function runEmbeddedFallback(params: {
 
 describe("blank runtime errors through the production embedded runner", () => {
   it("spends bounded retries before executing a configured fallback", async () => {
-    await withModelFallbackWorkspace(async ({ agentDir, workspaceDir }) => {
-      const config = makeModelFallbackConfig("anthropic");
-      await writeFallbackAuthStore(agentDir, undefined, { primaryProvider: "anthropic" });
-      runEmbeddedAttemptMock.mockImplementation(async (params: unknown) => {
-        const attempt = params as { provider: string; modelId: string };
-        if (attempt.provider === "anthropic") {
-          return makeRuntimeBlankContentFailureAttempt();
-        }
-        if (attempt.provider === "groq") {
-          return makeFallbackSuccessAttempt();
-        }
-        throw new Error(`Unexpected provider ${attempt.provider}`);
-      });
-
-      const result = await runEmbeddedFallback({
-        agentDir,
-        workspaceDir,
-        provider: "anthropic",
-        config,
-        sessionKey: "agent:test:blank-runtime-error-fallback",
-        runId: "run:blank-runtime-error-fallback",
-      });
-
-      expect(result.provider).toBe("groq");
-      expect(result.model).toBe("mock-2");
-      expect(result.result.payloads?.[0]?.text ?? "").toContain("fallback ok");
-      expect(result.attempts).toMatchObject([
-        { provider: "anthropic", model: "mock-1", reason: "unknown" },
-      ]);
-      expect(
-        runEmbeddedAttemptMock.mock.calls.map(([params]) => {
-          const attempt = params as { provider: string; modelId: string };
-          return `${attempt.provider}/${attempt.modelId}`;
-        }),
-      ).toEqual([
-        "anthropic/mock-1",
-        "anthropic/mock-1",
-        "anthropic/mock-1",
-        "anthropic/mock-1",
-        "groq/mock-2",
-      ]);
-      console.log(
-        `[blank-runtime fallback proof] ${JSON.stringify({
-          primaryAttempts: 4,
-          fallbackAttempts: 1,
-          calls: runEmbeddedAttemptMock.mock.calls.map(([params]) => {
+    await withFallbackTransportServer(
+      async () =>
+        await withModelFallbackWorkspace(async ({ agentDir, workspaceDir }) => {
+          const config = makeModelFallbackConfig("anthropic");
+          await writeFallbackAuthStore(agentDir, undefined, { primaryProvider: "anthropic" });
+          runEmbeddedAttemptMock.mockImplementation(async (params: unknown) => {
             const attempt = params as { provider: string; modelId: string };
-            return `${attempt.provider}/${attempt.modelId}`;
-          }),
-          finalProvider: result.provider,
-          finalModel: result.model,
-          finalText: result.result.payloads?.[0]?.text ?? "",
-        })}`,
-      );
-    });
+            if (attempt.provider === "anthropic") {
+              return makeRuntimeBlankContentFailureAttempt();
+            }
+            if (attempt.provider === "groq") {
+              return await makeFallbackTransportAttempt(params as { model: Model });
+            }
+            throw new Error(`Unexpected provider ${attempt.provider}`);
+          });
+
+          const result = await runEmbeddedFallback({
+            agentDir,
+            workspaceDir,
+            provider: "anthropic",
+            config,
+            sessionKey: "agent:test:blank-runtime-error-fallback",
+            runId: "run:blank-runtime-error-fallback",
+          });
+
+          expect(result.provider).toBe("groq");
+          expect(result.model).toBe("mock-2");
+          expect(result.result.payloads?.[0]?.text ?? "").toContain("fallback ok");
+          expect(result.attempts).toMatchObject([
+            { provider: "anthropic", model: "mock-1", reason: "unknown" },
+          ]);
+          expect(
+            runEmbeddedAttemptMock.mock.calls.map(([params]) => {
+              const attempt = params as { provider: string; modelId: string };
+              return `${attempt.provider}/${attempt.modelId}`;
+            }),
+          ).toEqual([
+            "anthropic/mock-1",
+            "anthropic/mock-1",
+            "anthropic/mock-1",
+            "anthropic/mock-1",
+            "groq/mock-2",
+          ]);
+          expect(fallbackTransportRequests).toEqual([
+            {
+              method: "POST",
+              url: "/v1/chat/completions",
+              model: "mock-2",
+              authorization: "Bearer groq-test-key",
+            },
+          ]);
+          console.log(
+            `[blank-runtime fallback proof] ${JSON.stringify({
+              primaryAttempts: 4,
+              fallbackAttempts: 1,
+              calls: runEmbeddedAttemptMock.mock.calls.map(([params]) => {
+                const attempt = params as { provider: string; modelId: string };
+                return `${attempt.provider}/${attempt.modelId}`;
+              }),
+              finalProvider: result.provider,
+              finalModel: result.model,
+              finalText: result.result.payloads?.[0]?.text ?? "",
+              fallbackRequest: {
+                method: fallbackTransportRequests[0]?.method,
+                url: fallbackTransportRequests[0]?.url,
+                model: fallbackTransportRequests[0]?.model,
+                authorization: "<redacted>",
+              },
+            })}`,
+          );
+        }),
+    );
   });
 });
