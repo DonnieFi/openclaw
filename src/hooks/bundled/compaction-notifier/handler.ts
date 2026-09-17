@@ -24,6 +24,14 @@ const handler: HookHandler = async (event) => {
     }
 
     if (event.type === "session" && event.action === "compact:after") {
+      // compactedCount: 0 is the shared no-op completion signal (native skip, queued
+      // compacted:false). Observers still need after_compaction; the notice must not claim
+      // summarization happened.
+      const compactedCount = readOptionalNumber(context, "compactedCount");
+      if (compactedCount === 0) {
+        event.messages.push("✅ Nothing to compact. Continuing from where I left off.");
+        return;
+      }
       const tokensBefore = readOptionalNumber(context, "tokensBefore");
       const tokensAfter = readOptionalNumber(context, "tokensAfter");
       const tokenDelta =
