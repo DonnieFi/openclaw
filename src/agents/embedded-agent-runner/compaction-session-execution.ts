@@ -66,7 +66,10 @@ import {
   resolveCompactionTimeoutMs,
 } from "./compaction-safety-timeout.js";
 import { prepareCompactionSessionAgent } from "./compaction-session-agent.js";
-import { runPreparedAfterCompactionHooks } from "./compaction-session-hooks.js";
+import {
+  completeNativeSkippedCompaction,
+  runPreparedAfterCompactionHooks,
+} from "./compaction-session-hooks.js";
 import { buildEmbeddedExtensionFactories } from "./extensions.js";
 import { getHistoryLimitFromSessionKey, limitHistoryTurns } from "./history.js";
 import { log } from "./logger.js";
@@ -472,23 +475,16 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
           log.info(
             `[compaction] skipping — no real conversation messages (sessionKey=${params.sessionKey ?? params.sessionId})`,
           );
-          await runPreparedAfterCompactionHooks({
+          return await completeNativeSkippedCompaction({
             runtime,
             hookRunner,
             hookState,
             messageCountAfter: beforeHookMetrics.messageCountBefore,
             tokensAfter: beforeHookMetrics.tokenCountBefore,
-            compactedCount: 0,
-            compactionOutcome: "skipped",
             sessionFile: params.sessionFile,
             tokensBefore: limitedTranscriptTokensBefore,
             assertActive,
           });
-          return {
-            ok: true,
-            compacted: false,
-            reason: "no real conversation messages",
-          };
         }
 
         const compactStartedAt = Date.now();

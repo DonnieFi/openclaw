@@ -48,3 +48,26 @@ export async function runPreparedAfterCompactionHooks(
     onHookMessages: runtime.params.onCompactionHookMessages,
   });
 }
+
+/** Completes a native no-conversation skip with one after_compaction and no rewrite. */
+export async function completeNativeSkippedCompaction(params: {
+  runtime: PreparedCompactionRuntime;
+  hookRunner: ReturnType<typeof asCompactionHookRunner>;
+  hookState: Awaited<ReturnType<typeof runBeforeCompactionHooks>>;
+  messageCountAfter: number;
+  tokensAfter?: number;
+  sessionFile: string;
+  tokensBefore?: number;
+  assertActive: () => void;
+}): Promise<{ ok: true; compacted: false; reason: "no real conversation messages" }> {
+  await runPreparedAfterCompactionHooks({
+    ...params,
+    compactedCount: 0,
+    compactionOutcome: "skipped",
+  });
+  return {
+    ok: true,
+    compacted: false,
+    reason: "no real conversation messages",
+  };
+}
