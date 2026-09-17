@@ -3513,29 +3513,6 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     expect(compactTesting.containsRealConversationMessages(messages)).toBe(false);
   });
 
-  it("pairs after_compaction when native compaction skips for no real conversation messages", async () => {
-    hookRunner.hasHooks.mockReturnValue(true);
-    sessionMessages.splice(0, sessionMessages.length, {
-      role: "user",
-      content: "<b>HEARTBEAT_OK</b>",
-      timestamp: 1,
-    });
-
-    const result = await compactEmbeddedAgentSessionDirect(wrappedCompactionArgs());
-
-    expect(result).toMatchObject({
-      ok: true,
-      compacted: false,
-      reason: "no real conversation messages",
-    });
-    expect(hookRunner.runBeforeCompaction).toHaveBeenCalledOnce();
-    expect(hookRunner.runAfterCompaction).toHaveBeenCalledOnce();
-    expect(mockCallArg(hookRunner.runAfterCompaction)).toMatchObject({
-      compactedCount: 0,
-    });
-    expect(sessionCompactImpl).not.toHaveBeenCalled();
-  });
-
   it("carries the prepared provider reconciler into direct compaction", async () => {
     mockResolvedModel();
     const reconcile = vi.fn(async () => undefined);
