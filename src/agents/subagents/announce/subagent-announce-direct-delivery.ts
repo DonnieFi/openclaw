@@ -52,11 +52,10 @@ import {
   runAnnounceAgentCall,
 } from "./subagent-announce-completion-delivery.js";
 import {
-  normalizeCompletionHandoffKey,
   releaseCompletionHandoffKey,
-  retainCompletionHandoffKey,
+  resolvePendingGatewayCompletionHandoff,
   settleCompletionHandoffRetention,
-  shouldJoinOriginalCompletionHandoff,
+  shouldPreferOriginalCompletionHandoff,
 } from "./subagent-announce-completion-handoff-retention.js";
 import {
   hasAnnounceSendEvidence,
@@ -296,22 +295,15 @@ async function sendSubagentAnnounceDirectlyUnchecked(params: {
         directOrigin?.channel,
       sessionEntry: requesterEntry,
     });
-    // Prefer joining the original Gateway handoff (same idempotency key) over
-    // steering into whatever requester run is active. A prior in_flight retains
-    // ownership even after that handle settles and a successor run becomes
-    // active; first-attempt steering still applies when nothing is retained.
-    const pendingHandoffRunId = normalizeCompletionHandoffKey(params.directIdempotencyKey);
-    const joinOriginalHandoff = Boolean(
-      pendingHandoffRunId &&
-      (requesterActivity.runId === pendingHandoffRunId ||
-        shouldJoinOriginalCompletionHandoff(pendingHandoffRunId)),
-    );
     if (
       !parentOnly &&
       params.expectsCompletionMessage &&
       requesterActivity.sessionId &&
       requesterActivity.isActive &&
-      !joinOriginalHandoff
+      !shouldPreferOriginalCompletionHandoff({
+        directIdempotencyKey: params.directIdempotencyKey,
+        requesterRunId: requesterActivity.runId,
+      })
     ) {
       const wakeOptions: EmbeddedAgentQueueMessageOptions = {
         deliveryTimeoutMs: announceTimeoutMs,
@@ -487,35 +479,13 @@ async function sendSubagentAnnounceDirectlyUnchecked(params: {
     }
 
     if (isGatewayAgentRunPending(directAnnounceResponse)) {
-      // Idempotent replay can return in_flight / admissionPending while the
-      // original handoff is still running. Do not credit delivery yet; keep
-      // custody retryable and suppress same-attempt media fallback. Retain the
-      // key so a later retry rejoins this handoff instead of steering into a
-      // successor requester run after settlement.
-      if (parentOnly) {
-        retainCompletionHandoffKey(params.directIdempotencyKey);
-        return {
-          delivered: false,
-          path: "direct",
-          reason: "requester_turn_pending",
-          disposition: "retryable",
-        };
-      }
-      if (params.expectsCompletionMessage) {
-        retainCompletionHandoffKey(params.directIdempotencyKey);
-        return {
-          delivered: false,
-          path: "direct",
-          reason: "completion_handoff_pending",
-          disposition: "retryable",
-          terminal: true,
-        };
-      }
-      return { delivered: true, path: "direct" };
+      return resolvePendingGatewayCompletionHandoff({
+        parentOnly,
+        expectsCompletionMessage: params.expectsCompletionMessage,
+        directIdempotencyKey: params.directIdempotencyKey,
+      });
     }
 
-    // Gateway produced a terminal (non-pending) result for this key — release
-    // retained ownership so later unrelated turns can steer normally.
     releaseCompletionHandoffKey(params.directIdempotencyKey);
 
     const directAnnounceResult = getGatewayAgentResult(directAnnounceResponse);

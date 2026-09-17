@@ -10,9 +10,11 @@ import {
   clearRetainedCompletionHandoffKeysForTest,
   releaseAnnounceCompletionHandoffForChildRun,
   releaseAnnounceCompletionHandoffForRequesterSettleBatch,
+  resolvePendingGatewayCompletionHandoff,
   retainCompletionHandoffKey,
   settleCompletionHandoffRetention,
   shouldJoinOriginalCompletionHandoff,
+  shouldPreferOriginalCompletionHandoff,
 } from "./subagent-announce-completion-handoff-retention.js";
 
 vi.mock("../../embedded-agent-runner/runs.js", async (importOriginal) => {
@@ -180,5 +182,27 @@ describe("completion handoff retention lifecycle", () => {
       rearmGeneration: 1,
     });
     expect(shouldJoinOriginalCompletionHandoff(yieldKey)).toBe(false);
+  });
+
+  it("maps pending Gateway responses into undelivered retained custody", () => {
+    expect(
+      resolvePendingGatewayCompletionHandoff({
+        parentOnly: false,
+        expectsCompletionMessage: true,
+        directIdempotencyKey: handoffKey,
+      }),
+    ).toMatchObject({
+      delivered: false,
+      reason: "completion_handoff_pending",
+      disposition: "retryable",
+      terminal: true,
+    });
+    expect(shouldJoinOriginalCompletionHandoff(handoffKey)).toBe(true);
+    expect(
+      shouldPreferOriginalCompletionHandoff({
+        directIdempotencyKey: handoffKey,
+        requesterRunId: "successor",
+      }),
+    ).toBe(true);
   });
 });

@@ -115,3 +115,47 @@ export function shouldJoinOriginalCompletionHandoff(key: string | undefined): bo
   // key, or the original run is still the active embedded handle.
   return retainedCompletionHandoffKeys.has(normalized) || isActiveEmbeddedRunId(normalized);
 }
+
+/** Prefer same-key Gateway replay over steering into an active requester run. */
+export function shouldPreferOriginalCompletionHandoff(params: {
+  directIdempotencyKey?: string;
+  requesterRunId?: string;
+}): boolean {
+  const pendingHandoffRunId = normalizeCompletionHandoffKey(params.directIdempotencyKey);
+  return Boolean(
+    pendingHandoffRunId &&
+    (params.requesterRunId === pendingHandoffRunId ||
+      shouldJoinOriginalCompletionHandoff(pendingHandoffRunId)),
+  );
+}
+
+/**
+ * Map a nonterminal Gateway agent response into announce delivery custody.
+ * Public completion announces stay undelivered and retain the handoff key.
+ */
+export function resolvePendingGatewayCompletionHandoff(params: {
+  parentOnly: boolean;
+  expectsCompletionMessage?: boolean;
+  directIdempotencyKey?: string;
+}): SubagentAnnounceDeliveryResult {
+  if (params.parentOnly) {
+    retainCompletionHandoffKey(params.directIdempotencyKey);
+    return {
+      delivered: false,
+      path: "direct",
+      reason: "requester_turn_pending",
+      disposition: "retryable",
+    };
+  }
+  if (params.expectsCompletionMessage) {
+    retainCompletionHandoffKey(params.directIdempotencyKey);
+    return {
+      delivered: false,
+      path: "direct",
+      reason: "completion_handoff_pending",
+      disposition: "retryable",
+      terminal: true,
+    };
+  }
+  return { delivered: true, path: "direct" };
+}
