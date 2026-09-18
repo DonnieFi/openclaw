@@ -2036,7 +2036,13 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
       error: "original handoff replay failed",
     });
     expect(sendMessage).not.toHaveBeenCalled();
-    expect(callGateway).toHaveBeenCalledTimes(2);
+    expect(
+      vi
+        .mocked(callGateway)
+        .mock.calls.map(
+          (call) => (call[0] as { params?: Record<string, unknown> })?.params?.idempotencyKey,
+        ),
+    ).toEqual([directIdempotencyKey, directIdempotencyKey]);
   });
 
   it.each(["error", "timeout", "unknown"] as const)(
