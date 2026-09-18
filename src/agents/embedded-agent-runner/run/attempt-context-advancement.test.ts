@@ -29,6 +29,47 @@ import { installEmbeddedAttemptContextGuards } from "./attempt-setup.js";
 
 registerAgentSessionLoopTestLifecycle();
 
+function redactedModelRequestSummary(messages: Message[]): Array<Record<string, unknown>> {
+  return messages.map((message) => {
+    if (message.role === "user") {
+      const content = (message as { content?: unknown }).content;
+      let text = "";
+      if (typeof content === "string") {
+        text = content;
+      } else if (Array.isArray(content)) {
+        text = content
+          .filter(
+            (block) =>
+              block &&
+              typeof block === "object" &&
+              (block as { type?: unknown }).type === "text" &&
+              typeof (block as { text?: unknown }).text === "string",
+          )
+          .map((block) => (block as { text: string }).text)
+          .join("");
+      }
+      return { role: "user", text };
+    }
+    if (message.role === "toolResult") {
+      return {
+        role: "toolResult",
+        toolCallId: (message as { toolCallId?: string }).toolCallId,
+      };
+    }
+    if (message.role === "assistant") {
+      const content = (message as { content?: unknown }).content;
+      const hasToolCall =
+        Array.isArray(content) &&
+        content.some(
+          (block) =>
+            block && typeof block === "object" && (block as { type?: unknown }).type === "toolCall",
+        );
+      return { role: "assistant", hasToolCall };
+    }
+    return { role: message.role };
+  });
+}
+
 const model: Model = makeProviderModelFixture({
   id: "synthetic-model",
   name: "Synthetic",
@@ -297,6 +338,41 @@ describe("context advancement through embedded attempt guards", () => {
         );
       };
       const sessionPromptState = getEmbeddedSessionPromptState(sessionId);
+      const sessionRuntimeState = { prePromptMessageCount: session.messages.length };
+      const guards = installEmbeddedAttemptContextGuards({
+        activeContextEngine: engine,
+        activeSession: session,
+        agentDir: process.cwd(),
+        attempt: {
+          config: {},
+          prompt,
+          contextTokenBudget: 8192,
+          model,
+          modelId: model.id,
+          provider: model.provider,
+          sessionId,
+          sessionKey: `agent:${sessionId}:main`,
+          sessionFile: "unused",
+          onContextEngineTurnCandidate: vi.fn(),
+        },
+        computerContextEpoch: { value: 0 },
+        dropThinkingBlocksForEstimate: false,
+        effectiveCwd: process.cwd(),
+        effectiveFsWorkspaceOnly: true,
+        effectiveWorkspace: process.cwd(),
+        getPrePromptMessageCount: () => sessionRuntimeState.prePromptMessageCount,
+        getPromptCache: () => ({ retention: "none" }),
+        getPromptCacheRetention: () => "none",
+        getCompactionReplayEnabled: () => false,
+        getServerToolClearingEnabled: () => false,
+        toolResultPromptProjectionState: sessionPromptState.toolResults,
+        getSystemPrompt: () => "",
+        isOpenAIResponsesApi: false,
+        repairToolUseResultPairing: false,
+        sessionAgentId: "synthetic",
+        sessionManager: {},
+        settingsManager: { getBlockImages: () => false, getCompactionReserveTokens: () => 64 },
+      } as never);
       const promptContext = await prepareEmbeddedAttemptPromptContext({
         attempt: { config: {}, contextTokenBudget: 8192, sessionId },
         capabilityToolNames: new Set(["read_fixture"]),
@@ -311,16 +387,7 @@ describe("context advancement through embedded attempt guards", () => {
         systemPromptText: "",
         toolResultPromptProjectionState: sessionPromptState.toolResults,
       });
-      const removeLoopHook = installContextEngineLoopHook({
-        agent: session.agent,
-        contextEngine: engine,
-        sessionId,
-        sessionFile: "unused",
-        tokenBudget: 8192,
-        modelId: model.id,
-        getPrePromptMessageCount: () => promptContext.prePromptMessageCount,
-        deferredTurn: { prompt, availableTools: new Set(["read_fixture"]) },
-      });
+      sessionRuntimeState.prePromptMessageCount = promptContext.prePromptMessageCount;
       try {
         await submitEmbeddedAttemptPrompt({
           attempt: { sessionId },
@@ -372,7 +439,7 @@ describe("context advancement through embedded attempt guards", () => {
           }
         }
       } finally {
-        removeLoopHook();
+        guards.remove();
         clearEmbeddedSessionPromptStates([sessionId]);
       }
     },
@@ -523,12 +590,9 @@ describe("context advancement through embedded attempt guards", () => {
     }
   });
 
-  it("freezes deferred history from the prepare-time fence before prompt-phase rebase", async () => {
-    // Production window: prepare publishes messages.length as prePromptMessageCount
-    // and installs the loop-hook getter; prompt-phase later rebases to the prepared
-    // count. Deferred transformContext in between must freeze the clamped fence.
+  it("records redacted model requests through production context guards and prompt phase", async () => {
     const prompt = "Perform task with tools.";
-    const sessionId = "replay-boundary-prepare-window";
+    const sessionId = "replay-boundary-production-runner";
     const storedPrefix: AgentMessage[] = [
       { role: "user", content: "Summary of accepted history.", timestamp: 0 },
     ];
@@ -570,8 +634,8 @@ describe("context advancement through embedded attempt guards", () => {
         createAssistant(model, [{ type: "text", text: "NO_REPLY" }]),
       ),
     ];
-    const runtimeState = { prePromptMessageCount: session.messages.length };
-    const prepareTimeFence = runtimeState.prePromptMessageCount;
+    const sessionRuntimeState = { prePromptMessageCount: session.messages.length };
+    const rawTranscriptFence = sessionRuntimeState.prePromptMessageCount;
     const modelRequests: Message[][] = [];
     session.agent.streamFn = (_model, context) => {
       modelRequests.push(structuredClone(context.messages));
@@ -587,16 +651,40 @@ describe("context advancement through embedded attempt guards", () => {
       );
     };
     const sessionPromptState = getEmbeddedSessionPromptState(sessionId);
-    const removeLoopHook = installContextEngineLoopHook({
-      agent: session.agent,
-      contextEngine: engine,
-      sessionId,
-      sessionFile: "unused",
-      tokenBudget: 8192,
-      modelId: model.id,
-      getPrePromptMessageCount: () => runtimeState.prePromptMessageCount,
-      deferredTurn: { prompt, availableTools: new Set(["read_fixture"]) },
-    });
+    const guards = installEmbeddedAttemptContextGuards({
+      activeContextEngine: engine,
+      activeSession: session,
+      agentDir: process.cwd(),
+      attempt: {
+        config: {},
+        prompt,
+        contextTokenBudget: 8192,
+        model,
+        modelId: model.id,
+        provider: model.provider,
+        sessionId,
+        sessionKey: `agent:${sessionId}:main`,
+        sessionFile: "unused",
+        onContextEngineTurnCandidate: vi.fn(),
+      },
+      computerContextEpoch: { value: 0 },
+      dropThinkingBlocksForEstimate: false,
+      effectiveCwd: process.cwd(),
+      effectiveFsWorkspaceOnly: true,
+      effectiveWorkspace: process.cwd(),
+      getPrePromptMessageCount: () => sessionRuntimeState.prePromptMessageCount,
+      getPromptCache: () => ({ retention: "none" }),
+      getPromptCacheRetention: () => "none",
+      getCompactionReplayEnabled: () => false,
+      getServerToolClearingEnabled: () => false,
+      toolResultPromptProjectionState: sessionPromptState.toolResults,
+      getSystemPrompt: () => "",
+      isOpenAIResponsesApi: false,
+      repairToolUseResultPairing: false,
+      sessionAgentId: "synthetic",
+      sessionManager: {},
+      settingsManager: { getBlockImages: () => false, getCompactionReserveTokens: () => 64 },
+    } as never);
     try {
       const promptContext = await prepareEmbeddedAttemptPromptContext({
         attempt: { config: {}, contextTokenBudget: 8192, sessionId },
@@ -612,13 +700,10 @@ describe("context advancement through embedded attempt guards", () => {
         systemPromptText: "",
         toolResultPromptProjectionState: sessionPromptState.toolResults,
       });
-      expect(prepareTimeFence).toBeGreaterThan(promptContext.prePromptMessageCount);
-      expect(runtimeState.prePromptMessageCount).toBe(prepareTimeFence);
+      expect(rawTranscriptFence).toBeGreaterThan(promptContext.prePromptMessageCount);
+      sessionRuntimeState.prePromptMessageCount = promptContext.prePromptMessageCount;
+      expect(sessionRuntimeState.prePromptMessageCount).toBe(promptContext.prePromptMessageCount);
 
-      await session.agent.transformContext?.(session.messages);
-
-      // Prompt-phase rebase to the prepared count.
-      runtimeState.prePromptMessageCount = promptContext.prePromptMessageCount;
       await submitEmbeddedAttemptPrompt({
         attempt: { sessionId },
         activeSession: session,
@@ -639,39 +724,32 @@ describe("context advancement through embedded attempt guards", () => {
         transcriptLeafId: null,
         transcriptPrompt: promptContext.promptForSession,
       });
+
+      const redacted = modelRequests.map((messages) => redactedModelRequestSummary(messages));
+      expect(redacted).toEqual([
+        [
+          { role: "user", text: "Summary of accepted history." },
+          { role: "user", text: prompt },
+        ],
+        [
+          { role: "user", text: "Summary of accepted history." },
+          { role: "user", text: prompt },
+          { role: "assistant", hasToolCall: true },
+          { role: "toolResult", toolCallId: "call-1" },
+        ],
+        [
+          { role: "user", text: "Summary of accepted history." },
+          { role: "user", text: prompt },
+          { role: "assistant", hasToolCall: true },
+          { role: "toolResult", toolCallId: "call-1" },
+          { role: "assistant", hasToolCall: true },
+          { role: "toolResult", toolCallId: "call-2" },
+        ],
+      ]);
       expect(modelRequests).toHaveLength(3);
       expect(toolCalls).toBe(2);
-      for (const messages of modelRequests) {
-        expect(messages).toContainEqual(
-          expect.objectContaining({
-            role: "user",
-            content: [{ type: "text", text: prompt }],
-          }),
-        );
-      }
-      expect(modelRequests[1]).toContainEqual(
-        expect.objectContaining({
-          role: "toolResult",
-          toolCallId: "call-1",
-          content: [{ type: "text", text: "fixture observation 1" }],
-        }),
-      );
-      expect(modelRequests[2]).toContainEqual(
-        expect.objectContaining({
-          role: "toolResult",
-          toolCallId: "call-1",
-          content: [{ type: "text", text: "fixture observation 1" }],
-        }),
-      );
-      expect(modelRequests[2]).toContainEqual(
-        expect.objectContaining({
-          role: "toolResult",
-          toolCallId: "call-2",
-          content: [{ type: "text", text: "fixture observation 2" }],
-        }),
-      );
     } finally {
-      removeLoopHook();
+      guards.remove();
       clearEmbeddedSessionPromptStates([sessionId]);
     }
   });

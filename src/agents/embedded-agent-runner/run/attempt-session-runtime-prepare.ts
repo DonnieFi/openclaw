@@ -4,6 +4,7 @@ import { createCacheTrace } from "../../cache-trace.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../../defaults.js";
 import type { AgentSession } from "../../sessions/index.js";
 import { getProviderPromptState } from "../provider-prompt-state.js";
+import { normalizeAssistantReplayContent } from "../replay-history.js";
 import { getEmbeddedSessionPromptState } from "../session-prompt-state.js";
 import { restoreCacheTtlToolResultProjections } from "../tool-result-truncation.js";
 import type { prepareEmbeddedAttemptBundleTools } from "./attempt-bundle-tools.js";
@@ -171,6 +172,13 @@ export async function prepareEmbeddedAttemptSessionRuntime(input: {
       setActiveSessionSystemPrompt,
     }),
   );
+  const replayNormalizedMessages = normalizeAssistantReplayContent(activeSession.messages);
+  if (
+    replayNormalizedMessages.length !== activeSession.messages.length ||
+    replayNormalizedMessages.some((message, index) => message !== activeSession.messages[index])
+  ) {
+    activeSession.agent.state.messages = replayNormalizedMessages;
+  }
   state.prePromptMessageCount = activeSession.messages.length;
 
   // Session-owned projections survive attempt teardown so already-sent tool results
