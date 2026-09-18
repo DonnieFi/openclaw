@@ -522,4 +522,157 @@ describe("context advancement through embedded attempt guards", () => {
       clearEmbeddedSessionPromptStates([sessionId]);
     }
   });
+
+  it("freezes deferred history from the prepare-time fence before prompt-phase rebase", async () => {
+    // Production window: prepare publishes messages.length as prePromptMessageCount
+    // and installs the loop-hook getter; prompt-phase later rebases to the prepared
+    // count. Deferred transformContext in between must freeze the clamped fence.
+    const prompt = "Perform task with tools.";
+    const sessionId = "replay-boundary-prepare-window";
+    const storedPrefix: AgentMessage[] = [
+      { role: "user", content: "Summary of accepted history.", timestamp: 0 },
+    ];
+    const engine: ContextEngine = {
+      info: {
+        id: "synthetic-engine",
+        name: "Synthetic",
+        ownsCompaction: true,
+        transcriptSemantics: {
+          currentTurnFence: "before-current-turn-entry-v1",
+          turnAdvancementIdempotency: "atomic-idempotent-v1",
+        },
+      },
+      ingest: async () => ({ ingested: true }),
+      assemble: async () => ({ messages: storedPrefix, estimatedTokens: 0 }),
+      compact: async () => ({ ok: true, compacted: false, reason: "fits" }),
+      commitTurn: async () => ({ status: "committed" }),
+    };
+    let toolCalls = 0;
+    const { session } = await createTestSession({
+      model,
+      customTools: [
+        {
+          name: "read_fixture",
+          label: "Read fixture",
+          description: "Read fixture",
+          parameters: Type.Object({}),
+          execute: async () => ({
+            content: [{ type: "text", text: `fixture observation ${++toolCalls}` }],
+            details: {},
+          }),
+        },
+      ],
+    });
+    session.agent.state.messages = [
+      { role: "user", content: "Earlier accepted request.", timestamp: 0 },
+      createAssistant(model, [{ type: "text", text: "Earlier accepted answer." }]),
+      ...Array.from({ length: 6 }, () =>
+        createAssistant(model, [{ type: "text", text: "NO_REPLY" }]),
+      ),
+    ];
+    const runtimeState = { prePromptMessageCount: session.messages.length };
+    const prepareTimeFence = runtimeState.prePromptMessageCount;
+    const modelRequests: Message[][] = [];
+    session.agent.streamFn = (_model, context) => {
+      modelRequests.push(structuredClone(context.messages));
+      const round = modelRequests.length;
+      return createAssistantResultStream(
+        createAssistant(
+          model,
+          round <= 2
+            ? [{ type: "toolCall", id: `call-${round}`, name: "read_fixture", arguments: {} }]
+            : [{ type: "text", text: "done" }],
+          round <= 2 ? "toolUse" : "stop",
+        ),
+      );
+    };
+    const sessionPromptState = getEmbeddedSessionPromptState(sessionId);
+    const removeLoopHook = installContextEngineLoopHook({
+      agent: session.agent,
+      contextEngine: engine,
+      sessionId,
+      sessionFile: "unused",
+      tokenBudget: 8192,
+      modelId: model.id,
+      getPrePromptMessageCount: () => runtimeState.prePromptMessageCount,
+      deferredTurn: { prompt, availableTools: new Set(["read_fixture"]) },
+    });
+    try {
+      const promptContext = await prepareEmbeddedAttemptPromptContext({
+        attempt: { config: {}, contextTokenBudget: 8192, sessionId },
+        capabilityToolNames: new Set(["read_fixture"]),
+        includeBoundaryTimestamp: false,
+        isRawModelRun: false,
+        messages: session.messages,
+        prompt: { effectivePrompt: prompt, effectiveTranscriptPrompt: prompt },
+        replaceSessionMessages: (messages) => {
+          session.agent.state.messages = messages;
+        },
+        sessionAgentId: "synthetic",
+        systemPromptText: "",
+        toolResultPromptProjectionState: sessionPromptState.toolResults,
+      });
+      expect(prepareTimeFence).toBeGreaterThan(promptContext.prePromptMessageCount);
+      expect(runtimeState.prePromptMessageCount).toBe(prepareTimeFence);
+
+      await session.agent.transformContext?.(session.messages);
+
+      // Prompt-phase rebase to the prepared count.
+      runtimeState.prePromptMessageCount = promptContext.prePromptMessageCount;
+      await submitEmbeddedAttemptPrompt({
+        attempt: { sessionId },
+        activeSession: session,
+        contextTokenBudget: promptContext.contextTokenBudget,
+        images: [],
+        modelPrompt: promptContext.promptForModel,
+        onFinalPromptText: () => {},
+        onSteeringAcknowledged: () => {},
+        persistToolResultProjections: async () => {},
+        promptActiveSession: (text, options) => session.prompt(text, options),
+        runtimeOnly: false,
+        sessionPromptState,
+        systemPrompt: "",
+        toolResultAggregateMaxChars: promptContext.promptToolResultAggregateMaxChars,
+        toolResultMaxChars: promptContext.promptToolResultMaxChars,
+        toolResultPromptProjectionState: sessionPromptState.toolResults,
+        trajectoryRecorder: null,
+        transcriptLeafId: null,
+        transcriptPrompt: promptContext.promptForSession,
+      });
+      expect(modelRequests).toHaveLength(3);
+      expect(toolCalls).toBe(2);
+      for (const messages of modelRequests) {
+        expect(messages).toContainEqual(
+          expect.objectContaining({
+            role: "user",
+            content: [{ type: "text", text: prompt }],
+          }),
+        );
+      }
+      expect(modelRequests[1]).toContainEqual(
+        expect.objectContaining({
+          role: "toolResult",
+          toolCallId: "call-1",
+          content: [{ type: "text", text: "fixture observation 1" }],
+        }),
+      );
+      expect(modelRequests[2]).toContainEqual(
+        expect.objectContaining({
+          role: "toolResult",
+          toolCallId: "call-1",
+          content: [{ type: "text", text: "fixture observation 1" }],
+        }),
+      );
+      expect(modelRequests[2]).toContainEqual(
+        expect.objectContaining({
+          role: "toolResult",
+          toolCallId: "call-2",
+          content: [{ type: "text", text: "fixture observation 2" }],
+        }),
+      );
+    } finally {
+      removeLoopHook();
+      clearEmbeddedSessionPromptStates([sessionId]);
+    }
+  });
 });
