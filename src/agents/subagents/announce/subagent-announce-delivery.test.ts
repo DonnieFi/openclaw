@@ -57,6 +57,14 @@ import {
 } from "./subagent-announce-delivery.test-support.js";
 import { runDescendantWake } from "./subagent-announce-descendant-wake.js";
 
+const RETRYABLE_PENDING_COMPLETION_HANDOFF = {
+  delivered: false,
+  path: "direct",
+  reason: "completion_handoff_pending",
+  disposition: "retryable",
+  terminal: true,
+} as const;
+
 const sessionDeliveryQueueMocks = vi.hoisted(() => ({
   enqueueClaimedSessionDelivery: vi.fn(
     (_payload: unknown, _leaseMs: number, _queueContext: OpenClawStateWorkerContext) => ({
@@ -2011,13 +2019,7 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
       sourceSessionKey: childSessionKey,
       internalEvents,
     });
-    expect(pending).toMatchObject({
-      delivered: false,
-      path: "direct",
-      reason: "completion_handoff_pending",
-      disposition: "retryable",
-      terminal: true,
-    });
+    expect(pending).toMatchObject(RETRYABLE_PENDING_COMPLETION_HANDOFF);
     expect(sendMessage).not.toHaveBeenCalled();
 
     const failedReplay = await deliverDiscordDirectMessageCompletion({
@@ -2028,11 +2030,7 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
       internalEvents,
     });
     expect(failedReplay).toMatchObject({
-      delivered: false,
-      path: "direct",
-      reason: "completion_handoff_pending",
-      disposition: "retryable",
-      terminal: true,
+      ...RETRYABLE_PENDING_COMPLETION_HANDOFF,
       error: "original handoff replay failed",
     });
     expect(sendMessage).not.toHaveBeenCalled();
@@ -3954,13 +3952,7 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
       }),
     });
 
-    expect(result).toMatchObject({
-      delivered: false,
-      path: "direct",
-      reason: "completion_handoff_pending",
-      disposition: "retryable",
-      terminal: true,
-    });
+    expect(result).toMatchObject(RETRYABLE_PENDING_COMPLETION_HANDOFF);
     expect(callGateway).toHaveBeenCalledTimes(1);
     expect(sendMessage).not.toHaveBeenCalled();
   });
@@ -4220,13 +4212,7 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
               reason: "completion_handoff_pending",
               disposition: "session_queued",
             }
-          : {
-              delivered: false,
-              path: "direct",
-              reason: "completion_handoff_pending",
-              disposition: "retryable",
-              terminal: true,
-            },
+          : RETRYABLE_PENDING_COMPLETION_HANDOFF,
       );
       expect(result.phases?.map((phase) => phase.phase)).toEqual(["direct-primary"]);
       expect(callGateway).toHaveBeenCalledTimes(1);

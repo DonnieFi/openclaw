@@ -427,9 +427,8 @@ export async function sendSubagentAnnounceDirectlyImpl(params: {
             // lifecycle deadline; settle batches can observe and replay admission.
             timeoutMs: parentOnly && isSubagentCompletion ? undefined : announceTimeoutMs,
             isExecutionAllowed: isCompletionDeliveryAllowed,
-            ...(params.isSourceSessionAdmissionAllowed
-              ? { isSourceSessionAdmissionAllowed: isCompletionAdmissionAllowed }
-              : {}),
+            isSourceSessionAdmissionAllowed:
+              params.isSourceSessionAdmissionAllowed && isCompletionAdmissionAllowed,
             resolveGatewayContext: params.resolveGatewayContext,
           });
         },

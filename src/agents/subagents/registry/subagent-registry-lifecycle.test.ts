@@ -54,6 +54,7 @@ import {
 } from "../../cron-creator-authority-context.js";
 import { withGatewayToolCallerIdentity } from "../../tools/gateway-caller-context.js";
 import { createStructuredOutputTool } from "../../tools/structured-output-tool.js";
+import { retainRequesterSettleCompletionHandoffForTest } from "../announce/subagent-announce-completion-handoff-retention.test-support.js";
 import {
   runSubagentAnnounceDispatch,
   type SubagentAnnounceDeliveryResult,
@@ -77,6 +78,7 @@ import {
   setSubagentRegistryDepsForTest,
   subagentRegistryDeps,
 } from "./subagent-registry-deps.js";
+import { mockBlockedCompletionDeliveryOwner } from "./subagent-registry-lifecycle-completion.test-support.js";
 import { loadPendingFinalDeliveryPayload } from "./subagent-registry-lifecycle-delivery.js";
 import {
   SubagentLifecycleController,
@@ -93,6 +95,12 @@ import {
   settleRequesterTurnAfterSessionSpawns,
 } from "./subagent-registry-requester-yield.js";
 import { markSubagentRunPausedAfterYield } from "./subagent-registry-run-pause.js";
+import {
+  expectFields,
+  findCallArg,
+  firstCall,
+  firstCallArg,
+} from "./subagent-registry.mock-call.test-support.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
 type LifecycleControllerParams = SubagentLifecycleOptions;
@@ -154,40 +162,9 @@ const taskExecutorMocks = vi.hoisted(() => ({
 
 const completionDeliveryMocks = vi.hoisted(() => ({
   blockSubagentCompletionDelivery: vi.fn(),
+  settleRequesterCompletionBatch: vi.fn(),
+  runsByEntry: new WeakMap<SubagentRunRecord, Map<string, SubagentRunRecord>>(),
 }));
-
-function mockBlockedCompletionDeliveryOwner(): void {
-  completionDeliveryMocks.blockSubagentCompletionDelivery.mockImplementation(
-    ({
-      subagent,
-      reason,
-      suspendedReason,
-      disposition,
-    }: {
-      subagent: SubagentRunRecord;
-      reason: string;
-      suspendedReason?: "expiry" | "permanent_failure";
-      disposition?: NonNullable<SubagentRunRecord["delivery"]>["disposition"];
-    }) => {
-      subagent.delivery ??= { status: "pending" };
-      subagent.delivery.lastError = reason;
-      subagent.delivery.deliveredAt = undefined;
-      subagent.delivery.announcedAt = undefined;
-      if (suspendedReason) {
-        subagent.delivery.status = "suspended";
-        subagent.delivery.suspendedReason = suspendedReason;
-        subagent.delivery.suspendedAt = Date.now();
-        subagent.cleanupHandled = false;
-        subagent.requesterSettleWake ??= { status: "pending", attemptCount: 0 };
-      } else {
-        subagent.delivery.status = "failed";
-        subagent.delivery.disposition = disposition ?? subagent.delivery.disposition;
-        subagent.suppressCompletionDelivery = true;
-      }
-      return true;
-    },
-  );
-}
 
 const gatewayMocks = vi.hoisted(() => ({
   callGateway: vi.fn(async (_opts: CallGatewayOptions) => ({})),
@@ -234,6 +211,7 @@ vi.mock("../completion/subagent-completion-admission.store.js", async (importOri
     typeof import("../completion/subagent-completion-admission.store.js")
   >()),
   blockSubagentCompletionDelivery: completionDeliveryMocks.blockSubagentCompletionDelivery,
+  settleRequesterCompletionBatch: completionDeliveryMocks.settleRequesterCompletionBatch,
 }));
 
 vi.mock("../../../sessions/session-lifecycle-events.js", () => ({
@@ -439,44 +417,6 @@ function makeInterruptedSubagentCompletion(
   });
 }
 
-function expectFields(value: unknown, expected: Record<string, unknown>): void {
-  if (!value || typeof value !== "object") {
-    throw new Error("expected fields object");
-  }
-  const record = value as Record<string, unknown>;
-  for (const [key, expectedValue] of Object.entries(expected)) {
-    expect(record[key], key).toEqual(expectedValue);
-  }
-}
-
-function firstCall(mock: ReturnType<typeof vi.fn>): ReadonlyArray<unknown> {
-  const call = mock.mock.calls[0];
-  if (!call) {
-    throw new Error("expected first mock call");
-  }
-  return call;
-}
-
-function firstCallArg(mock: ReturnType<typeof vi.fn>): Record<string, unknown> {
-  const [arg] = firstCall(mock);
-  if (!arg || typeof arg !== "object") {
-    throw new Error("expected first call argument object");
-  }
-  return arg as Record<string, unknown>;
-}
-
-function findCallArg(
-  mock: ReturnType<typeof vi.fn>,
-  predicate: (arg: Record<string, unknown>) => boolean,
-): Record<string, unknown> {
-  for (const [arg] of mock.mock.calls) {
-    if (arg && typeof arg === "object" && predicate(arg as Record<string, unknown>)) {
-      return arg as Record<string, unknown>;
-    }
-  }
-  throw new Error("expected matching mock call");
-}
-
 function hasDeliveredTaskStatusUpdate(runId: string): boolean {
   return taskExecutorMocks.setDetachedTaskDeliveryStatusByRunId.mock.calls.some(([arg]) => {
     const record = arg as { runId?: unknown; deliveryStatus?: unknown } | undefined;
@@ -538,6 +478,9 @@ function createLifecycleController({
     warn: vi.fn(),
   };
   Object.assign(params, overrides);
+  for (const run of runs.values()) {
+    completionDeliveryMocks.runsByEntry.set(run, runs);
+  }
   return new SubagentLifecycleController(params);
 }
 
@@ -613,7 +556,7 @@ describe("subagent registry lifecycle hardening", () => {
     taskExecutorMocks.completeTaskRunByRunId.mockReset();
     taskExecutorMocks.failTaskRunByRunId.mockReset();
     taskExecutorMocks.setDetachedTaskDeliveryStatusByRunId.mockReset();
-    mockBlockedCompletionDeliveryOwner();
+    mockBlockedCompletionDeliveryOwner(completionDeliveryMocks, taskExecutorMocks);
     gatewayMocks.callGateway.mockReset();
     gatewayMocks.callGateway.mockResolvedValue({});
     browserLifecycleCleanupMocks.cleanupBrowserSessionsForLifecycleEnd.mockClear();
@@ -1522,6 +1465,7 @@ describe("subagent registry lifecycle hardening", () => {
   it.each([false, true])(
     "resumes an ancestor after requester-settle retirement (persistence fails: %s)",
     async (persistenceFails) => {
+      vi.useFakeTimers();
       const ancestor = createRunEntry({
         runId: "retirement-ancestor",
         childSessionKey: "agent:main:subagent:retirement-ancestor",
@@ -1543,6 +1487,11 @@ describe("subagent registry lifecycle hardening", () => {
           attemptCount: 1,
           batchRunIds: ["retirement-intermediate"],
         },
+      });
+      const retainedHandoff = retainRequesterSettleCompletionHandoffForTest({
+        requesterAgentId: "main",
+        requesterSessionKey: intermediate.requesterSessionKey,
+        batchRunIds: [intermediate.runId],
       });
       const descendant = createRunEntry({
         runId: "retirement-descendant",
@@ -1588,10 +1537,17 @@ describe("subagent registry lifecycle hardening", () => {
           await waitForLifecycleState(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
           expect(subagentRuns.has(intermediate.runId)).toBe(true);
           expect(ancestor.cleanupCompletedAt).toBeUndefined();
+          expect(retainedHandoff.isRetained()).toBe(true);
           failRetirement = false;
+          const deadline = controller.getRequesterSettleWakeTimer(intermediate.runId)!.deadline;
           controller.resumeRequesterSettleWake(intermediate.runId, intermediate);
+          await vi.advanceTimersByTimeAsync(deadline - Date.now() - 1);
+          expect(subagentRuns.has(intermediate.runId)).toBe(true);
+          expect(ancestor.cleanupCompletedAt).toBeUndefined();
+          await vi.advanceTimersByTimeAsync(1);
         }
         await waitForLifecycleState(() => expect(subagentRuns.has(intermediate.runId)).toBe(false));
+        expect(retainedHandoff.isRetained()).toBe(false);
         await completeRun(controller, descendant, {
           endedAt: Date.now(),
           triggerCleanup: true,
@@ -1602,6 +1558,8 @@ describe("subagent registry lifecycle hardening", () => {
         for (const entry of [ancestor, intermediate, descendant]) {
           subagentRuns.delete(entry.runId);
         }
+        retainedHandoff.release();
+        vi.useRealTimers();
       }
     },
   );
@@ -5308,7 +5266,7 @@ describe("subagent registry lifecycle hardening", () => {
 
 describe("requester settle wake trigger", () => {
   beforeEach(() => {
-    mockBlockedCompletionDeliveryOwner();
+    mockBlockedCompletionDeliveryOwner(completionDeliveryMocks, taskExecutorMocks);
     helperMocks.safeRemoveAttachmentsDir.mockClear();
     helperMocks.logAnnounceGiveUp.mockClear();
     taskExecutorMocks.setDetachedTaskDeliveryStatusByRunId.mockClear();
@@ -6231,7 +6189,7 @@ describe("requester settle wake trigger", () => {
     },
   );
 
-  it("keeps committed blocked state when requester-settle bookkeeping persistence fails", async () => {
+  it("keeps the complete requester batch unchanged when its atomic settlement fails", async () => {
     const entry = createRunEntry({
       endedAt: 4_000,
       expectsCompletionMessage: true,
@@ -6255,7 +6213,8 @@ describe("requester settle wake trigger", () => {
       terminalReply: { disposition: "empty" },
     });
     await waitForLifecycleState(() => expect(settleParams).toBeDefined());
-    persistOrThrow.mockImplementationOnce(() => {
+    const before = structuredClone(entry);
+    completionDeliveryMocks.settleRequesterCompletionBatch.mockImplementationOnce(() => {
       throw new Error("bookkeeping write failed");
     });
 
@@ -6266,11 +6225,7 @@ describe("requester settle wake trigger", () => {
         error: "requester settle wake failed",
       }),
     ).toThrow("bookkeeping write failed");
-    expect(entry).toMatchObject({
-      delivery: { status: "failed", lastError: "requester settle wake failed" },
-      suppressCompletionDelivery: true,
-      requesterSettleWake: { status: "pending", attemptCount: 0, rearmGeneration: 1 },
-    });
+    expect(entry).toEqual(before);
   });
 
   it("retains a delete-mode child after no-wake until its requester turn settles", async () => {
@@ -7021,6 +6976,7 @@ describe("requester settle wake trigger", () => {
         runId: `run-live-admission-${index}`,
         requesterSessionKey: `agent:main:live-requester-${index}`,
         endedAt: 4_000,
+        requesterSettleWake: { status: "pending", attemptCount: 0 },
       }),
     );
     const runs = new Map(entries.map((entry) => [entry.runId, entry] as const));
