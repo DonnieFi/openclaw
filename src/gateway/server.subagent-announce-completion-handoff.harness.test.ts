@@ -1,6 +1,7 @@
 // Real Gateway admission proof for public completion announces: same-key
 // in_flight is not credited delivered, retained handoff rejoins instead of
-// steering into a successor, and terminal settlement releases registry custody.
+// steering into a successor, and registry delivery custody settles through
+// success, terminal failure/abort, and announce-deadline expiry.
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
@@ -18,6 +19,20 @@ import {
   deliverSubagentAnnouncement,
   testing as announceTesting,
 } from "../agents/subagents/announce/subagent-announce-delivery.test-support.js";
+import type { SubagentAnnounceDeliveryResult } from "../agents/subagents/announce/subagent-announce-dispatch.js";
+import { ensureDeliveryState } from "../agents/subagents/registry/subagent-delivery-state.js";
+import { SUBAGENT_ENDED_REASON_COMPLETE } from "../agents/subagents/registry/subagent-lifecycle-events.js";
+import { ANNOUNCE_COMPLETION_HARD_EXPIRY_MS } from "../agents/subagents/registry/subagent-registry-helpers.js";
+import {
+  markPendingFinalDelivery,
+  recordAnnounceDeliveryResult,
+} from "../agents/subagents/registry/subagent-registry-lifecycle-delivery.js";
+import { SubagentLifecycleController } from "../agents/subagents/registry/subagent-registry-lifecycle.js";
+import { subagentRuns } from "../agents/subagents/registry/subagent-registry-memory.js";
+import {
+  persistSubagentRunsToDisk,
+  persistSubagentRunsToDiskOrThrow,
+} from "../agents/subagents/registry/subagent-registry-state.js";
 import {
   getSubagentRunByRunId,
   initSubagentRegistry,
@@ -29,6 +44,10 @@ import {
 } from "../agents/subagents/registry/subagent-registry.persistence.test-support.js";
 import { loadSubagentRegistryFromSqlite } from "../agents/subagents/registry/subagent-registry.store.sqlite.js";
 import { resetSubagentRegistryForTests } from "../agents/subagents/registry/subagent-registry.test-helpers.js";
+import type { SubagentRunRecord } from "../agents/subagents/registry/subagent-registry.types.js";
+import { completeTaskRunByRunId, createRunningTaskRun } from "../tasks/detached-task-runtime.js";
+import { createSubagentTaskBackingDetail } from "../tasks/task-backing-authority.js";
+import { findTaskByRunId } from "../tasks/task-executor.js";
 import { dispatchGatewayMethodInProcess } from "./server-plugin-in-process-dispatch.js";
 import { startGatewayServerHarness, type GatewayServerHarness } from "./server.e2e-ws-harness.js";
 import {
@@ -50,6 +69,8 @@ describe("public completion handoff real Gateway admission", () => {
   let handoffKey: string;
   let storePath: string;
   let steer: ReturnType<typeof vi.fn>;
+  let sendMessage: ReturnType<typeof vi.fn>;
+  let releaseHeldTurn: (() => void) | undefined;
 
   async function start() {
     const module = await import("./server-kernel.js");
@@ -82,13 +103,7 @@ describe("public completion handoff real Gateway admission", () => {
           isActive: false,
         })),
       getRuntimeConfig: () => ({}) as never,
-      sendMessage: vi.fn(async () => ({
-        channel: "slack",
-        to: "channel:C-handoff",
-        via: "direct" as const,
-        mediaUrl: null,
-        result: { messageId: "msg-handoff" },
-      })) as never,
+      sendMessage: sendMessage as never,
       queueEmbeddedAgentMessageWithOutcome: steer as never,
     });
   }
@@ -127,14 +142,24 @@ describe("public completion handoff real Gateway admission", () => {
       enqueuedAtMs: Date.now(),
       deliveredAtMs: Date.now(),
     }));
+    sendMessage = vi.fn(async () => ({
+      channel: "slack",
+      to: "channel:C-handoff",
+      via: "direct" as const,
+      mediaUrl: null,
+      result: { messageId: "msg-handoff" },
+    }));
     installAnnounceDeps();
     agentCommandMock.mockReset();
     await prepareGatewayReplyRuntimeForTest();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    releaseHeldTurn?.();
+    releaseHeldTurn = undefined;
     announceTesting.setDepsForTest();
     clearRetainedCompletionHandoffKeysForTest();
+    await settleSubagentRegistryPersistenceWork();
   });
 
   function agentParams(message: string) {
@@ -193,89 +218,153 @@ describe("public completion handoff real Gateway admission", () => {
     });
   }
 
+  function requireChildRun(): SubagentRunRecord {
+    const entry = getSubagentRunByRunId(childRunId);
+    expect(entry, "child registry row").toBeDefined();
+    return entry!;
+  }
+
+  function persistChildCustody() {
+    persistSubagentRunsToDisk(subagentRuns, [childRunId]);
+  }
+
+  function settleAnnounceCustody(delivery: SubagentAnnounceDeliveryResult) {
+    const entry = requireChildRun();
+    recordAnnounceDeliveryResult(entry, delivery, subagentRuns);
+    if (delivery.delivered) {
+      const deliveryState = ensureDeliveryState(entry);
+      deliveryState.status = "delivered";
+      deliveryState.announcedAt = deliveryState.deliveredAt ?? Date.now();
+    } else {
+      markPendingFinalDelivery({
+        entry,
+        error: delivery.error ?? delivery.reason,
+      });
+    }
+    persistChildCustody();
+  }
+
+  function expectRegistryCustody(expected: Record<string, unknown>) {
+    expect(getSubagentRunByRunId(childRunId)?.delivery).toMatchObject(expected);
+    expect(loadSubagentRegistryFromSqlite().get(childRunId)?.delivery).toMatchObject(expected);
+  }
+
+  async function expectRegistryCustodyAfterReload(expected: Record<string, unknown>) {
+    await settleSubagentRegistryPersistenceWork();
+    expectRegistryCustody(expected);
+    resetSubagentRegistryForTests({ persist: false });
+    initSubagentRegistry();
+    expectRegistryCustody(expected);
+  }
+
+  function registerChildRun(task: string) {
+    registerSubagentRun({
+      runId: childRunId,
+      childSessionKey,
+      requesterSessionKey,
+      requesterDisplayKey: requesterSessionKey,
+      task,
+      cleanup: "keep",
+      expectsCompletionMessage: true,
+      spawnMode: "run",
+    });
+  }
+
+  function holdOriginalTurn(params: { fail?: boolean; message: string }) {
+    const held = createDeferred();
+    const release = createDeferred();
+    releaseHeldTurn = () => release.resolve();
+    agentCommandMock.mockImplementationOnce(async (input: unknown) => {
+      const command = input as AgentCommandOpts;
+      command.onExecutionStarted?.();
+      held.resolve();
+      await release.promise;
+      if (params.fail) {
+        throw new Error("original handoff execution failed");
+      }
+      return {
+        payloads: [{ text: "The delegated task is complete." }],
+        meta: { durationMs: 1 },
+        deliverySucceeded: true,
+        deliveryStatus: {
+          requested: true,
+          attempted: true,
+          status: "sent",
+          succeeded: true,
+          resultCount: 1,
+        },
+      } as never;
+    });
+    const original = dispatchGatewayMethodInProcess<Record<string, unknown>>(
+      "agent",
+      agentParams(params.message),
+      {
+        expectFinal: true,
+        forceSyntheticClient: true,
+        operatorRoleActor: { kind: "system" },
+        resolveGatewayContext: () => kernel.gatewayRequestContext,
+      },
+    );
+    return { held, original };
+  }
+
+  function activateSuccessorRequester() {
+    installAnnounceDeps({
+      requesterSessionActivity: () => ({
+        sessionId: requesterSessionId,
+        runId: "successor-requester-run",
+        isActive: true,
+      }),
+    });
+  }
+
+  function expectNoDuplicateFallback() {
+    expect(steer).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalled();
+  }
+
+  function expectPendingHandoff(result: SubagentAnnounceDeliveryResult) {
+    expect(result).toMatchObject({
+      delivered: false,
+      path: "direct",
+      reason: "completion_handoff_pending",
+      disposition: "retryable",
+      terminal: true,
+    });
+    expect(shouldPreferOriginalCompletionHandoff({ directIdempotencyKey: handoffKey })).toBe(true);
+  }
+
   it(
     "keeps same-key in_flight undelivered, rejoins under successor activity, and settles registry",
     { timeout: 30_000 },
     async () => {
-      const held = createDeferred();
-      const release = createDeferred();
-      agentCommandMock.mockImplementationOnce(async (input: unknown) => {
-        const command = input as AgentCommandOpts;
-        command.onExecutionStarted?.();
-        held.resolve();
-        await release.promise;
-        return {
-          payloads: [{ text: "The delegated task is complete." }],
-          meta: { durationMs: 1 },
-          deliverySucceeded: true,
-          deliveryStatus: {
-            requested: true,
-            attempted: true,
-            status: "sent",
-            succeeded: true,
-            resultCount: 1,
-          },
-        } as never;
-      });
-
-      registerSubagentRun({
-        runId: childRunId,
-        childSessionKey,
-        requesterSessionKey,
-        requesterDisplayKey: requesterSessionKey,
-        task: "handoff proof",
-        cleanup: "keep",
-        expectsCompletionMessage: true,
-        spawnMode: "run",
-      });
+      const { held, original } = holdOriginalTurn({ message: "original completion handoff" });
+      registerChildRun("handoff proof");
       await settleSubagentRegistryPersistenceWork();
-      expect(getSubagentRunByRunId(childRunId)?.runId).toBe(childRunId);
+      expectRegistryCustody({ status: "pending" });
 
-      const original = dispatchGatewayMethodInProcess<Record<string, unknown>>(
-        "agent",
-        agentParams("original completion handoff"),
-        {
-          expectFinal: true,
-          forceSyntheticClient: true,
-          operatorRoleActor: { kind: "system" },
-          resolveGatewayContext: () => kernel.gatewayRequestContext,
-        },
-      );
       await held.promise;
 
       const pending = await announce();
-      expect(pending).toMatchObject({
-        delivered: false,
-        path: "direct",
-        reason: "completion_handoff_pending",
+      expectPendingHandoff(pending);
+      settleAnnounceCustody(pending);
+      expectRegistryCustody({
+        status: "pending",
         disposition: "retryable",
-        terminal: true,
       });
-      expect(shouldPreferOriginalCompletionHandoff({ directIdempotencyKey: handoffKey })).toBe(
-        true,
-      );
 
-      installAnnounceDeps({
-        requesterSessionActivity: () => ({
-          sessionId: requesterSessionId,
-          runId: "successor-requester-run",
-          isActive: true,
-        }),
-      });
+      activateSuccessorRequester();
       const rejoined = await announce();
-      expect(rejoined).toMatchObject({
-        delivered: false,
-        path: "direct",
-        reason: "completion_handoff_pending",
+      expectPendingHandoff(rejoined);
+      expectNoDuplicateFallback();
+      settleAnnounceCustody(rejoined);
+      expectRegistryCustody({
+        status: "pending",
         disposition: "retryable",
-        terminal: true,
       });
-      expect(steer).not.toHaveBeenCalled();
-      expect(shouldPreferOriginalCompletionHandoff({ directIdempotencyKey: handoffKey })).toBe(
-        true,
-      );
 
-      release.resolve();
+      releaseHeldTurn?.();
+      releaseHeldTurn = undefined;
       const terminal = await original;
       expect(terminal).toMatchObject({ runId: handoffKey, status: "ok" });
 
@@ -284,19 +373,184 @@ describe("public completion handoff real Gateway admission", () => {
         delivered: true,
         path: "direct",
       });
-      expect(steer).not.toHaveBeenCalled();
+      expectNoDuplicateFallback();
       expect(shouldPreferOriginalCompletionHandoff({ directIdempotencyKey: handoffKey })).toBe(
         false,
       );
+      settleAnnounceCustody(settled);
+      await expectRegistryCustodyAfterReload({
+        status: "delivered",
+        disposition: "delivered",
+        deliveredAt: expect.any(Number),
+      });
+    },
+  );
 
+  it(
+    "keeps retained handoff and pending custody when the original Gateway turn fails",
+    { timeout: 30_000 },
+    async () => {
+      const { held, original } = holdOriginalTurn({
+        fail: true,
+        message: "failed completion handoff",
+      });
+      registerChildRun("handoff failure proof");
       await settleSubagentRegistryPersistenceWork();
-      expect(getSubagentRunByRunId(childRunId)?.runId).toBe(childRunId);
-      expect(loadSubagentRegistryFromSqlite().get(childRunId)?.runId).toBe(childRunId);
+      expectRegistryCustody({ status: "pending" });
 
-      resetSubagentRegistryForTests({ persist: false });
-      initSubagentRegistry();
-      expect(getSubagentRunByRunId(childRunId)?.runId).toBe(childRunId);
-      expect(loadSubagentRegistryFromSqlite().get(childRunId)?.runId).toBe(childRunId);
+      await held.promise;
+      const pending = await announce();
+      expectPendingHandoff(pending);
+      settleAnnounceCustody(pending);
+      expectRegistryCustody({
+        status: "pending",
+        disposition: "retryable",
+      });
+
+      releaseHeldTurn?.();
+      releaseHeldTurn = undefined;
+      await expect(original).rejects.toThrow(/original handoff execution failed/);
+      await settleSubagentRegistryPersistenceWork();
+
+      activateSuccessorRequester();
+      const failedReplay = await announce();
+      expect(failedReplay).toMatchObject({
+        delivered: false,
+        path: "direct",
+        disposition: "retryable",
+        terminal: true,
+      });
+      expectNoDuplicateFallback();
+      expect(shouldPreferOriginalCompletionHandoff({ directIdempotencyKey: handoffKey })).toBe(
+        true,
+      );
+      settleAnnounceCustody(failedReplay);
+      await expectRegistryCustodyAfterReload({
+        status: "pending",
+        disposition: "retryable",
+        lastError: failedReplay.error ?? failedReplay.reason,
+      });
+      expect(getSubagentRunByRunId(childRunId)?.delivery?.status).not.toBe("delivered");
+      expect(loadSubagentRegistryFromSqlite().get(childRunId)?.delivery?.status).not.toBe(
+        "delivered",
+      );
+    },
+  );
+
+  it(
+    "suspends pending retained custody on announce deadline expiry without successor steer",
+    { timeout: 30_000 },
+    async () => {
+      const { held, original } = holdOriginalTurn({ message: "expiring completion handoff" });
+      registerChildRun("handoff expiry proof");
+      await settleSubagentRegistryPersistenceWork();
+      expectRegistryCustody({ status: "pending" });
+
+      await held.promise;
+      const pending = await announce();
+      expectPendingHandoff(pending);
+      settleAnnounceCustody(pending);
+      expectRegistryCustody({
+        status: "pending",
+        disposition: "retryable",
+      });
+
+      const startedAt = Date.now() - ANNOUNCE_COMPLETION_HARD_EXPIRY_MS - 2_000;
+      const endedAt = Date.now() - ANNOUNCE_COMPLETION_HARD_EXPIRY_MS - 1_000;
+      const task = createRunningTaskRun({
+        runtime: "subagent",
+        sourceId: childRunId,
+        runId: childRunId,
+        ownerKey: requesterSessionKey,
+        scopeKind: "session",
+        childSessionKey,
+        task: "handoff expiry proof",
+        startedAt,
+        lastEventAt: startedAt,
+        deliveryStatus: "pending",
+        detail: createSubagentTaskBackingDetail(1),
+      });
+      expect(task).not.toBeNull();
+      completeTaskRunByRunId({
+        runId: childRunId,
+        runtime: "subagent",
+        sessionKey: childSessionKey,
+        endedAt,
+        lastEventAt: endedAt,
+        terminalOutcome: "succeeded",
+        suppressDelivery: true,
+      });
+
+      const entry = requireChildRun();
+      entry.endedReason = SUBAGENT_ENDED_REASON_COMPLETE;
+      entry.execution = {
+        ...entry.execution,
+        status: "terminal",
+        startedAt,
+        endedAt,
+        outcome: { status: "ok" },
+      };
+      const delivery = ensureDeliveryState(entry);
+      delivery.windowStartedAt = endedAt;
+      delivery.deadlineAt = endedAt + ANNOUNCE_COMPLETION_HARD_EXPIRY_MS;
+      persistChildCustody();
+
+      activateSuccessorRequester();
+      const expiryController = new SubagentLifecycleController({
+        runs: subagentRuns,
+        resumedRuns: new Set(),
+        subagentAnnounceTimeoutMs: 1_000,
+        getRuntimeConfig: () => ({}) as never,
+        persist: (...runIds) => persistSubagentRunsToDisk(subagentRuns, runIds),
+        persistOrThrow: (...runIds) => persistSubagentRunsToDiskOrThrow(subagentRuns, runIds),
+        clearPendingLifecycleError: () => {},
+        countPendingDescendantRuns: () => 0,
+        getLatestRunForChildSession: (sessionKey) => {
+          for (const candidate of subagentRuns.values()) {
+            if (candidate.childSessionKey === sessionKey) {
+              return candidate;
+            }
+          }
+          return null;
+        },
+        suppressAnnounceForSteerRestart: () => false,
+        resolveSubagentTask: (candidate) => {
+          const resolved = findTaskByRunId(candidate.taskRunId ?? candidate.runId);
+          return resolved ? { lookup: "available", task: resolved } : { lookup: "available" };
+        },
+        shouldEmitEndedHookForRun: () => false,
+        emitSubagentEndedHookForRun: async () => {},
+        emitSubagentProgressEndedForRun: async () => {},
+        notifyContextEngineSubagentEnded: async () => {},
+        retireSupersededRun: async () => {},
+        resumeSubagentRun: () => {},
+        callGateway: async () => ({}) as never,
+        captureSubagentCompletionReply: async () => undefined,
+        runSubagentAnnounceFlow: async () => "retryable",
+        maybeWakeRequesterAfterAllChildrenSettled: async () => false,
+        warn: () => {},
+      });
+      await expiryController.finalizeResumedAnnounceGiveUp({
+        runId: childRunId,
+        entry,
+        reason: "expiry",
+      });
+
+      expectNoDuplicateFallback();
+      expect(shouldPreferOriginalCompletionHandoff({ directIdempotencyKey: handoffKey })).toBe(
+        false,
+      );
+      await expectRegistryCustodyAfterReload({
+        status: "suspended",
+        suspendedReason: "expiry",
+        suspendedAt: expect.any(Number),
+      });
+      expectNoDuplicateFallback();
+
+      releaseHeldTurn?.();
+      releaseHeldTurn = undefined;
+      const terminal = await original;
+      expect(terminal).toMatchObject({ runId: handoffKey, status: "ok" });
     },
   );
 });
