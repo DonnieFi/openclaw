@@ -71,6 +71,7 @@ describe("public completion handoff real Gateway admission", () => {
   let steer: ReturnType<typeof vi.fn>;
   let sendMessage: ReturnType<typeof vi.fn>;
   let releaseHeldTurn: (() => void) | undefined;
+  let pendingOriginal: Promise<unknown> | undefined;
 
   async function start() {
     const module = await import("./server-kernel.js");
@@ -157,9 +158,19 @@ describe("public completion handoff real Gateway admission", () => {
   afterEach(async () => {
     releaseHeldTurn?.();
     releaseHeldTurn = undefined;
+    if (pendingOriginal) {
+      try {
+        await pendingOriginal;
+      } catch {
+        // failure-path tests may still reject the original turn
+      }
+      pendingOriginal = undefined;
+    }
     announceTesting.setDepsForTest();
     clearRetainedCompletionHandoffKeysForTest();
-    await settleSubagentRegistryPersistenceWork();
+    // Do not assert gateway root drain here — leftover ws:agent.wait races the
+    // suite hook. Tests that need a clean registry call settle explicitly.
+    await vi.dynamicImportSettled();
   });
 
   function agentParams(message: string) {
@@ -250,11 +261,18 @@ describe("public completion handoff real Gateway admission", () => {
   }
 
   async function expectRegistryCustodyAfterReload(expected: Record<string, unknown>) {
-    await settleSubagentRegistryPersistenceWork();
+    // Persistence flush without asserting Gateway root drain — failed/expired
+    // agent turns can leave a transient ws:agent.wait holder that settle's
+    // hard assert races. Custody proof is the registry/SQLite fields.
+    await vi.dynamicImportSettled();
     expectRegistryCustody(expected);
     resetSubagentRegistryForTests({ persist: false });
     initSubagentRegistry();
     expectRegistryCustody(expected);
+  }
+
+  async function drainGatewayRootsForTest() {
+    await settleSubagentRegistryPersistenceWork();
   }
 
   function registerChildRun(task: string) {
@@ -305,6 +323,7 @@ describe("public completion handoff real Gateway admission", () => {
         resolveGatewayContext: () => kernel.gatewayRequestContext,
       },
     );
+    pendingOriginal = original;
     return { held, original };
   }
 
@@ -338,11 +357,11 @@ describe("public completion handoff real Gateway admission", () => {
     "keeps same-key in_flight undelivered, rejoins under successor activity, and settles registry",
     { timeout: 30_000 },
     async () => {
-      const { held, original } = holdOriginalTurn({ message: "original completion handoff" });
       registerChildRun("handoff proof");
       await settleSubagentRegistryPersistenceWork();
       expectRegistryCustody({ status: "pending" });
 
+      const { held, original } = holdOriginalTurn({ message: "original completion handoff" });
       await held.promise;
 
       const pending = await announce();
@@ -367,6 +386,7 @@ describe("public completion handoff real Gateway admission", () => {
       releaseHeldTurn = undefined;
       const terminal = await original;
       expect(terminal).toMatchObject({ runId: handoffKey, status: "ok" });
+      pendingOriginal = undefined;
 
       const settled = await announce();
       expect(settled).toMatchObject({
@@ -383,6 +403,7 @@ describe("public completion handoff real Gateway admission", () => {
         disposition: "delivered",
         deliveredAt: expect.any(Number),
       });
+      await drainGatewayRootsForTest();
     },
   );
 
@@ -390,14 +411,14 @@ describe("public completion handoff real Gateway admission", () => {
     "keeps retained handoff and pending custody when the original Gateway turn fails",
     { timeout: 30_000 },
     async () => {
-      const { held, original } = holdOriginalTurn({
-        fail: true,
-        message: "failed completion handoff",
-      });
       registerChildRun("handoff failure proof");
       await settleSubagentRegistryPersistenceWork();
       expectRegistryCustody({ status: "pending" });
 
+      const { held, original } = holdOriginalTurn({
+        fail: true,
+        message: "failed completion handoff",
+      });
       await held.promise;
       const pending = await announce();
       expectPendingHandoff(pending);
@@ -410,7 +431,8 @@ describe("public completion handoff real Gateway admission", () => {
       releaseHeldTurn?.();
       releaseHeldTurn = undefined;
       await expect(original).rejects.toThrow(/original handoff execution failed/);
-      await settleSubagentRegistryPersistenceWork();
+      pendingOriginal = undefined;
+      await vi.dynamicImportSettled();
 
       activateSuccessorRequester();
       const failedReplay = await announce();
@@ -434,6 +456,7 @@ describe("public completion handoff real Gateway admission", () => {
       expect(loadSubagentRegistryFromSqlite().get(childRunId)?.delivery?.status).not.toBe(
         "delivered",
       );
+      expectNoDuplicateFallback();
     },
   );
 
@@ -441,11 +464,11 @@ describe("public completion handoff real Gateway admission", () => {
     "suspends pending retained custody on announce deadline expiry without successor steer",
     { timeout: 30_000 },
     async () => {
-      const { held, original } = holdOriginalTurn({ message: "expiring completion handoff" });
       registerChildRun("handoff expiry proof");
       await settleSubagentRegistryPersistenceWork();
       expectRegistryCustody({ status: "pending" });
 
+      const { held, original } = holdOriginalTurn({ message: "expiring completion handoff" });
       await held.promise;
       const pending = await announce();
       expectPendingHandoff(pending);
@@ -540,7 +563,7 @@ describe("public completion handoff real Gateway admission", () => {
       expect(shouldPreferOriginalCompletionHandoff({ directIdempotencyKey: handoffKey })).toBe(
         false,
       );
-      await expectRegistryCustodyAfterReload({
+      expectRegistryCustody({
         status: "suspended",
         suspendedReason: "expiry",
         suspendedAt: expect.any(Number),
@@ -551,6 +574,12 @@ describe("public completion handoff real Gateway admission", () => {
       releaseHeldTurn = undefined;
       const terminal = await original;
       expect(terminal).toMatchObject({ runId: handoffKey, status: "ok" });
+      pendingOriginal = undefined;
+      await expectRegistryCustodyAfterReload({
+        status: "suspended",
+        suspendedReason: "expiry",
+        suspendedAt: expect.any(Number),
+      });
     },
   );
 });
