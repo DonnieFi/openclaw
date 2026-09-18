@@ -35,7 +35,6 @@ import {
 } from "../agents/subagents/registry/subagent-registry-state.js";
 import {
   getSubagentRunByRunId,
-  initSubagentRegistry,
   registerSubagentRun,
 } from "../agents/subagents/registry/subagent-registry.js";
 import {
@@ -45,6 +44,11 @@ import {
 import { loadSubagentRegistryFromSqlite } from "../agents/subagents/registry/subagent-registry.store.sqlite.js";
 import { resetSubagentRegistryForTests } from "../agents/subagents/registry/subagent-registry.test-helpers.js";
 import type { SubagentRunRecord } from "../agents/subagents/registry/subagent-registry.types.js";
+import { emitAgentEvent } from "../infra/agent-events.js";
+import {
+  getActiveGatewayRootWorkCount,
+  getActiveGatewayRootWorkHolders,
+} from "../process/gateway-work-admission.js";
 import { completeTaskRunByRunId, createRunningTaskRun } from "../tasks/detached-task-runtime.js";
 import { createSubagentTaskBackingDetail } from "../tasks/task-backing-authority.js";
 import { findTaskByRunId } from "../tasks/task-executor.js";
@@ -261,18 +265,42 @@ describe("public completion handoff real Gateway admission", () => {
   }
 
   async function expectRegistryCustodyAfterReload(expected: Record<string, unknown>) {
-    // Persistence flush without asserting Gateway root drain — failed/expired
-    // agent turns can leave a transient ws:agent.wait holder that settle's
-    // hard assert races. Custody proof is the registry/SQLite fields.
+    // Flush microtasks, then prove live + on-disk custody. Do not re-init the
+    // registry against the live Gateway here: init resumes pending/suspended
+    // rows via agent.wait. SQLite load is the persistence proof; hard drain
+    // below ends any resume wait so zero-root settle can pass.
     await vi.dynamicImportSettled();
     expectRegistryCustody(expected);
-    resetSubagentRegistryForTests({ persist: false });
-    initSubagentRegistry();
-    expectRegistryCustody(expected);
+    expect(loadSubagentRegistryFromSqlite().get(childRunId)?.delivery).toMatchObject(expected);
   }
 
   async function drainGatewayRootsForTest() {
-    await settleSubagentRegistryPersistenceWork();
+    // Hard settle: resume waits end when their run lifecycle ends. Emit end for
+    // the child and the retained handoff key so ws:agent.wait releases, then
+    // wait out follow-on cleanup roots without re-init / soft flush.
+    await vi.dynamicImportSettled();
+    for (let i = 0; i < 5 && getActiveGatewayRootWorkCount() > 0; i++) {
+      const holders = getActiveGatewayRootWorkHolders();
+      if (holders.some((h) => h.includes("agent.wait"))) {
+        for (const runId of [childRunId, handoffKey]) {
+          emitAgentEvent({
+            runId,
+            stream: "lifecycle",
+            data: { phase: "end", endedAt: Date.now(), aborted: true, stopReason: "aborted" },
+          });
+        }
+      }
+      await vi.dynamicImportSettled();
+    }
+    await vi.waitFor(
+      () => {
+        expect(
+          getActiveGatewayRootWorkCount(),
+          `residual registry roots: ${getActiveGatewayRootWorkHolders().join(", ") || "unattributed"}`,
+        ).toBe(0);
+      },
+      { timeout: 15_000 },
+    );
   }
 
   function registerChildRun(task: string) {
@@ -452,6 +480,7 @@ describe("public completion handoff real Gateway admission", () => {
         disposition: "retryable",
         lastError: failedReplay.error ?? failedReplay.reason,
       });
+      await drainGatewayRootsForTest();
       expect(getSubagentRunByRunId(childRunId)?.delivery?.status).not.toBe("delivered");
       expect(loadSubagentRegistryFromSqlite().get(childRunId)?.delivery?.status).not.toBe(
         "delivered",
@@ -580,6 +609,7 @@ describe("public completion handoff real Gateway admission", () => {
         suspendedReason: "expiry",
         suspendedAt: expect.any(Number),
       });
+      await drainGatewayRootsForTest();
     },
   );
 });
