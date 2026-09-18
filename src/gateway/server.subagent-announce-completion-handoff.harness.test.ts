@@ -42,7 +42,6 @@ import {
   writeSubagentSessionEntry,
 } from "../agents/subagents/registry/subagent-registry.persistence.test-support.js";
 import { loadSubagentRegistryFromSqlite } from "../agents/subagents/registry/subagent-registry.store.sqlite.js";
-import { resetSubagentRegistryForTests } from "../agents/subagents/registry/subagent-registry.test-helpers.js";
 import type { SubagentRunRecord } from "../agents/subagents/registry/subagent-registry.types.js";
 import { emitAgentEvent } from "../infra/agent-events.js";
 import {

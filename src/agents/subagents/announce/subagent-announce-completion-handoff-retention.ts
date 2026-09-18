@@ -159,3 +159,25 @@ export function resolvePendingGatewayCompletionHandoff(params: {
   }
   return { delivered: true, path: "direct" };
 }
+
+/** Block :text-direct fallback while a retained original handoff may still settle. */
+export function resolveTextDirectBlockedByRetainedHandoff(params: {
+  directIdempotencyKey?: string;
+  error?: string;
+}): SubagentAnnounceDeliveryResult | undefined {
+  if (
+    !shouldPreferOriginalCompletionHandoff({
+      directIdempotencyKey: params.directIdempotencyKey,
+    })
+  ) {
+    return undefined;
+  }
+  return {
+    delivered: false,
+    path: "direct",
+    reason: "completion_handoff_pending",
+    ...(params.error ? { error: params.error } : {}),
+    disposition: "retryable",
+    terminal: true,
+  };
+}

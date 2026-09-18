@@ -3,21 +3,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { callGateway as runtimeCallGateway } from "../../../gateway/call.js";
 import { sendMessage as runtimeSendMessage } from "../../../infra/outbound/message.js";
-import type {
-  EmbeddedAgentQueueMessageOptions,
-  EmbeddedAgentQueueMessageOutcome,
-} from "../../embedded-agent-runner/runs.js";
+import type { EmbeddedAgentQueueMessageOutcome } from "../../embedded-agent-runner/runs.js";
 import { taskCompletionEvents } from "../../subagent-test-fixtures.test-helpers.js";
 import { deliverSlackChannelAnnouncement } from "./subagent-announce-delivery.slack-channel.test-support.js";
 import { testing } from "./subagent-announce-delivery.test-support.js";
 
 const sentDeliveryStatus = { status: "sent", resultCount: 1 } as const;
-
-type QueueEmbeddedAgentMessageWithOutcome = (
-  sessionId: string,
-  text: string,
-  options?: EmbeddedAgentQueueMessageOptions,
-) => EmbeddedAgentQueueMessageOutcome | Promise<EmbeddedAgentQueueMessageOutcome>;
 
 function createGatewayMock(response: Record<string, unknown> = {}) {
   return vi.fn(async () => response) as unknown as typeof runtimeCallGateway;
@@ -34,11 +25,23 @@ function createSendMessageMock() {
 }
 
 function createQueueOutcomeMock(queued: boolean) {
-  return vi.fn(async () =>
+  return vi.fn(async (): Promise<EmbeddedAgentQueueMessageOutcome> =>
     queued
-      ? { queued: true as const, enqueuedAtMs: Date.now(), deliveredAtMs: Date.now() }
-      : { queued: false as const, reason: "no_active_run" as const },
-  ) as QueueEmbeddedAgentMessageWithOutcome;
+      ? {
+          queued: true as const,
+          sessionId: "requester-session-channel",
+          target: "embedded_run",
+          gatewayHealth: "live",
+          enqueuedAtMs: Date.now(),
+          deliveredAtMs: Date.now(),
+        }
+      : {
+          queued: false as const,
+          sessionId: "requester-session-channel",
+          reason: "no_active_run",
+          gatewayHealth: "live",
+        },
+  );
 }
 
 beforeEach(() => {

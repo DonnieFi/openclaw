@@ -30,6 +30,7 @@ import {
 import { admitCorrelatedSubagentSessionDelivery } from "../completion/subagent-completion-delivery.js";
 import { getSubagentDepthFromSessionStore } from "../spawn/subagent-depth.js";
 import { maybeSteerSubagentAnnounce } from "./subagent-announce-active-wake.js";
+import { clearRetainedCompletionHandoffKeysForTest } from "./subagent-announce-completion-handoff-retention.js";
 import {
   hasAnnounceSendEvidence,
   isWriterClaimReboundAnnounceError,
@@ -45,10 +46,7 @@ import {
   setSubagentAnnounceDeliveryDepsForTest,
   type SubagentAnnounceDeliveryDeps,
 } from "./subagent-announce-delivery.runtime.js";
-import {
-  clearRetainedCompletionHandoffKeysForTest,
-  sendSubagentAnnounceDirectly,
-} from "./subagent-announce-direct-delivery.js";
+import { sendSubagentAnnounceDirectly } from "./subagent-announce-direct-delivery.js";
 import {
   runSubagentAnnounceDispatch,
   type SubagentAnnounceDeliveryResult,
