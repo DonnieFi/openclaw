@@ -109,7 +109,6 @@ export async function resolveLiveManagedGatewayDistFence(
   return {
     refuse: true,
     message: formatRefuseMessage({
-      checkoutRoot: root,
       ...(state.command ? { entrypoint: resolveServiceEntrypoint(state.command) } : {}),
       ...(state.runtime?.systemd?.unit ? { unit: state.runtime.systemd.unit } : {}),
     }),
