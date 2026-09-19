@@ -1,9 +1,11 @@
 // Source-runner recovery and profile selection for the live Gateway dist fence.
 import type { SpawnOptions } from "node:child_process";
 import fs from "node:fs/promises";
+import path from "node:path";
 import { describe, expect, vi } from "vitest";
 import {
   BUILD_STAMP,
+  DIST_ENTRY,
   ROOT_SRC,
   RUNTIME_POSTBUILD_STAMP,
   createCurrentGitSpawnRecorder,
@@ -13,6 +15,7 @@ import {
   runNodeCommand,
   runStatusCommand,
   setupStampedProject,
+  setupTrackedProject,
 } from "../../test/scripts/run-node.test-support.js";
 import { withTestDir } from "../test-helpers/temp-dir.js";
 
@@ -127,4 +130,62 @@ describe("run-node live Gateway dist fence", () => {
     expect(stderr.join("")).toContain("Refusing to rebuild dist");
     expect(spawnCalls).toEqual([]);
   });
+
+  it.each([
+    {
+      command: "parity-report",
+      reportScript: "qa-parity-report.ts",
+      reportArgs: [
+        "--candidate-summary",
+        ".artifacts/qa-e2e/openai-candidate/qa-suite-summary.json",
+        "--baseline-summary",
+        ".artifacts/qa-e2e/anthropic-baseline/qa-suite-summary.json",
+      ],
+    },
+    {
+      command: "coverage",
+      reportScript: "qa-coverage-report.ts",
+      reportArgs: [
+        "--json",
+        "--tools",
+        "--summary",
+        ".artifacts/qa-e2e/runtime-pair-core/qa-suite-summary.json",
+      ],
+    },
+  ])(
+    "dispatches source-only QA $command before the live dist fence",
+    async ({ command, reportScript, reportArgs }) => {
+      await withTestDir({ prefix: "openclaw-run-node-" }, async (tmp) => {
+        await setupTrackedProject(tmp, {
+          files: { "extensions/qa-lab/src/cli.runtime.ts": "export {};\n" },
+          buildPaths: [DIST_ENTRY, BUILD_STAMP],
+        });
+        const resolveLiveGatewayDistFence = vi.fn(async () => ({
+          refuse: true as const,
+          message: "[openclaw] Refusing to rebuild dist while a managed Gateway is still running.",
+        }));
+        const spawnCalls: string[][] = [];
+        const spawn = (cmd: string, args: string[]) => {
+          spawnCalls.push([cmd, ...args]);
+          return createExitedProcess(0);
+        };
+        const exitCode = await runNodeCommand(tmp, {
+          args: ["qa", command, ...reportArgs],
+          spawn,
+          resolveLiveGatewayDistFence,
+        });
+        expect(exitCode).toBe(0);
+        expect(resolveLiveGatewayDistFence).not.toHaveBeenCalled();
+        expect(spawnCalls).toEqual([
+          [
+            process.execPath,
+            "--import",
+            "tsx",
+            path.join(tmp, "scripts", reportScript),
+            ...reportArgs,
+          ],
+        ]);
+      });
+    },
+  );
 });

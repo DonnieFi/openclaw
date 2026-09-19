@@ -1554,6 +1554,16 @@ export async function runNodeMain(params: RunNodeMainParams = {}): Promise<RunNo
         formatBuildReason(buildRequirement.reason),
       );
     }
+    const qaReportScript = resolveQaReportSourceScript(deps, buildRequirement);
+    if (qaReportScript) {
+      const reportName = qaReportScript === "qa-parity-report.ts" ? "parity" : "coverage";
+      logRunner(
+        `Running QA ${reportName} report from source without rebuilding private QA dist.`,
+        deps,
+      );
+      exitCode = await runQaReportFromSource(deps, qaReportScript);
+      return await closeRunNodeOutputTee(deps, exitCode);
+    }
     // Early refuse before the build lock / "Building TypeScript..." log. build-all
     // and tsdown still own the same fence at their destructive entry points.
     if (buildRequirement.shouldBuild) {
@@ -1564,16 +1574,6 @@ export async function runNodeMain(params: RunNodeMainParams = {}): Promise<RunNo
         deps.outputTee?.write(message);
         return await closeRunNodeOutputTee(deps, 1);
       }
-    }
-    const qaReportScript = resolveQaReportSourceScript(deps, buildRequirement);
-    if (qaReportScript) {
-      const reportName = qaReportScript === "qa-parity-report.ts" ? "parity" : "coverage";
-      logRunner(
-        `Running QA ${reportName} report from source without rebuilding private QA dist.`,
-        deps,
-      );
-      exitCode = await runQaReportFromSource(deps, qaReportScript);
-      return await closeRunNodeOutputTee(deps, exitCode);
     }
     if (!buildRequirement.shouldBuild) {
       const runtimePostBuildRequirement = resolveRuntimePostBuildRequirement(deps);
