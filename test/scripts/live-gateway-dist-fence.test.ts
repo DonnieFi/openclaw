@@ -108,4 +108,14 @@ describe("live-gateway-dist-fence", () => {
     });
     expect(result).toEqual({ refuse: false });
   });
+
+  it("fails open when root matching throws after a successful state read", async () => {
+    const result = await resolveLiveManagedGatewayDistFence("/srv/openclaw", {
+      readState: async () => baseState({ running: true }),
+      matchesRoot: async () => {
+        throw new Error("realpath failed");
+      },
+    });
+    expect(result).toEqual({ refuse: false });
+  });
 });

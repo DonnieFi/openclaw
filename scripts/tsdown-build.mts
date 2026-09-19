@@ -21,6 +21,7 @@ import {
   withDistArtifactOwnership,
 } from "./lib/dist-artifact-ownership.mts";
 import { toErrorObject } from "./lib/error-format.mts";
+import { resolveLiveManagedGatewayDistFence } from "./lib/live-gateway-dist-fence.mts";
 import {
   inspectManagedProcessGroup,
   signalExitCode,
@@ -1414,12 +1415,21 @@ export async function runTsdownBuild(
   options: {
     cwd?: string;
     executeBuild?: (forwardedArgs: string[]) => Promise<number>;
+    resolveLiveGatewayDistFence?: typeof resolveLiveManagedGatewayDistFence;
   } = {},
 ): Promise<number> {
   const args = parseTsdownBuildArgs(argv);
   if (args.help) {
     console.log(tsdownBuildUsage());
     return 0;
+  }
+  // Shared destructive owner with build-all: refuse before cleanTsdownOutputRoots
+  // so a direct tsdown entry cannot wipe live managed Gateway modules either.
+  const resolveFence = options.resolveLiveGatewayDistFence ?? resolveLiveManagedGatewayDistFence;
+  const fence = await resolveFence(options.cwd ?? process.cwd(), { env: process.env });
+  if (fence.refuse) {
+    console.error(fence.message);
+    return 1;
   }
   let code: number;
   if (options.executeBuild) {

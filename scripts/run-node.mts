@@ -13,6 +13,7 @@ import process from "node:process";
 import { pathToFileURL } from "node:url";
 import { getCommandArgsWithRootOptions } from "../src/infra/cli-root-options.ts";
 import { withDistArtifactOwnership } from "./lib/dist-artifact-ownership.mts";
+import { resolveLiveManagedGatewayDistFence } from "./lib/live-gateway-dist-fence.mts";
 import {
   BUILD_STAMP_FILE,
   RUNTIME_POSTBUILD_STAMP_FILE,
@@ -79,6 +80,7 @@ type RunNodeMainParams = {
   env?: NodeJS.ProcessEnv;
   runRuntimePostBuild?: RunNodeRuntimePostBuild;
   platform?: NodeJS.Platform;
+  resolveLiveGatewayDistFence?: typeof resolveLiveManagedGatewayDistFence;
 };
 type RunNodeProgress = {
   clearLine(): void;
@@ -1475,6 +1477,8 @@ function createRunNodeDeps(params: RunNodeMainParams) {
     args: params.args ?? process.argv.slice(2),
     env,
     platform: params.platform ?? process.platform,
+    resolveLiveGatewayDistFence:
+      params.resolveLiveGatewayDistFence ?? resolveLiveManagedGatewayDistFence,
     signalProcess:
       params.signalProcess ??
       ((pid: number, signal?: NodeJS.Signals | number) => process.kill(pid, signal)),
@@ -1514,6 +1518,17 @@ export async function runNodeMain(params: RunNodeMainParams = {}): Promise<RunNo
         "build",
         formatBuildReason(buildRequirement.reason),
       );
+    }
+    // Early refuse before the build lock / "Building TypeScript..." log. build-all
+    // and tsdown still own the same fence at their destructive entry points.
+    if (buildRequirement.shouldBuild) {
+      const fence = await deps.resolveLiveGatewayDistFence(deps.cwd, { env: deps.env });
+      if (fence.refuse) {
+        const message = `${fence.message}\n`;
+        deps.stderr.write(message);
+        deps.outputTee?.write(message);
+        return await closeRunNodeOutputTee(deps, 1);
+      }
     }
     const qaReportScript = resolveQaReportSourceScript(deps, buildRequirement);
     if (qaReportScript) {
