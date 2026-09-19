@@ -1,5 +1,5 @@
 // Source-runner recovery and profile selection for the live Gateway dist fence.
-import { type SpawnOptions } from "node:child_process";
+import type { SpawnOptions } from "node:child_process";
 import fs from "node:fs/promises";
 import { describe, expect, vi } from "vitest";
 import {
