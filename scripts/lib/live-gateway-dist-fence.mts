@@ -1,13 +1,7 @@
 // Refuse dist mutation while a managed Gateway still runs from this checkout's dist.
 import fs from "node:fs/promises";
 import path from "node:path";
-import {
-  resolveServiceEntrypoint,
-  summarizeGatewayServiceLayout,
-} from "../../src/daemon/service-layout.ts";
 import type { GatewayServiceEnv, GatewayServiceState } from "../../src/daemon/service-types.ts";
-import { readGatewayServiceState, resolveGatewayService } from "../../src/daemon/service.ts";
-import { isPathInside } from "../../src/infra/path-guards.ts";
 
 export type LiveGatewayDistFenceDeps = {
   env?: NodeJS.ProcessEnv;
@@ -72,6 +66,25 @@ async function tryRealpath(value: string): Promise<string> {
   }
 }
 
+async function loadFenceRuntime() {
+  try {
+    const [layout, service, pathGuards] = await Promise.all([
+      import("../../src/daemon/service-layout.ts"),
+      import("../../src/daemon/service.ts"),
+      import("../../src/infra/path-guards.ts"),
+    ]);
+    return {
+      summarizeGatewayServiceLayout: layout.summarizeGatewayServiceLayout,
+      resolveServiceEntrypoint: layout.resolveServiceEntrypoint,
+      readGatewayServiceState: service.readGatewayServiceState,
+      resolveGatewayService: service.resolveGatewayService,
+      isPathInside: pathGuards.isPathInside,
+    };
+  } catch {
+    return null;
+  }
+}
+
 async function samePathIdentity(left: string, right: string): Promise<boolean> {
   if (left === right) {
     return true;
@@ -93,7 +106,11 @@ export async function gatewayServiceCommandOverlapsPhysicalCheckout(
   checkoutRoot: string,
   command: GatewayServiceState["command"],
 ): Promise<boolean | null> {
-  const layout = await summarizeGatewayServiceLayout(command);
+  const runtime = await loadFenceRuntime();
+  if (!runtime) {
+    return null;
+  }
+  const layout = await runtime.summarizeGatewayServiceLayout(command);
   const servingRoot = layout?.packageRootReal ?? layout?.packageRoot;
   const servingEntry = layout?.entrypointReal ?? layout?.entrypoint;
   if (
@@ -116,9 +133,9 @@ export async function gatewayServiceCommandOverlapsPhysicalCheckout(
     return true;
   }
   return (
-    isPathInside(checkoutDist, servingEntryReal) ||
-    isPathInside(checkoutDist, servingDist) ||
-    isPathInside(servingDist, checkoutDist)
+    runtime.isPathInside(checkoutDist, servingEntryReal) ||
+    runtime.isPathInside(checkoutDist, servingDist) ||
+    runtime.isPathInside(servingDist, checkoutDist)
   );
 }
 
@@ -137,10 +154,15 @@ export async function resolveLiveManagedGatewayDistFence(
 
   const readState =
     deps.readState ??
-    (async () =>
-      await readGatewayServiceState(resolveGatewayService(), {
+    (async () => {
+      const runtime = await loadFenceRuntime();
+      if (!runtime) {
+        throw new Error("gateway service inspection unavailable");
+      }
+      return await runtime.readGatewayServiceState(runtime.resolveGatewayService(), {
         env: env as GatewayServiceEnv,
-      }));
+      });
+    });
   const matchesRoot =
     deps.matchesRoot ??
     ((root, command) => gatewayServiceCommandOverlapsPhysicalCheckout(root, command));
@@ -168,10 +190,13 @@ export async function resolveLiveManagedGatewayDistFence(
     return { refuse: false };
   }
 
+  const runtime = await loadFenceRuntime();
   return {
     refuse: true,
     message: formatRefuseMessage({
-      ...(state.command ? { entrypoint: resolveServiceEntrypoint(state.command) } : {}),
+      ...(state.command && runtime
+        ? { entrypoint: runtime.resolveServiceEntrypoint(state.command) }
+        : {}),
       ...(state.runtime?.systemd?.unit ? { unit: state.runtime.systemd.unit } : {}),
     }),
   };
