@@ -1,11 +1,13 @@
 // Refuse dist mutation while a managed Gateway still runs from this checkout's dist.
+import fs from "node:fs/promises";
 import path from "node:path";
 import {
-  gatewayServiceCommandMatchesRoot,
   resolveServiceEntrypoint,
+  summarizeGatewayServiceLayout,
 } from "../../src/daemon/service-layout.ts";
 import type { GatewayServiceEnv, GatewayServiceState } from "../../src/daemon/service-types.ts";
 import { readGatewayServiceState, resolveGatewayService } from "../../src/daemon/service.ts";
+import { isPathInside } from "../../src/infra/path-guards.ts";
 
 export type LiveGatewayDistFenceDeps = {
   env?: NodeJS.ProcessEnv;
@@ -61,6 +63,65 @@ function formatRefuseMessage(params: { entrypoint?: string; unit?: string }): st
   );
 }
 
+async function tryRealpath(value: string): Promise<string> {
+  const resolved = path.resolve(value);
+  try {
+    return await fs.realpath(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+async function samePathIdentity(left: string, right: string): Promise<boolean> {
+  if (left === right) {
+    return true;
+  }
+  const [leftStat, rightStat] = await Promise.all([
+    fs.stat(left).catch(() => null),
+    fs.stat(right).catch(() => null),
+  ]);
+  return Boolean(
+    leftStat && rightStat && leftStat.dev === rightStat.dev && leftStat.ino === rightStat.ino,
+  );
+}
+
+/**
+ * True when this checkout's dist physically overlaps the serving Gateway
+ * artifacts. Logical current/releases ownership is not enough.
+ */
+export async function gatewayServiceCommandOverlapsPhysicalCheckout(
+  checkoutRoot: string,
+  command: GatewayServiceState["command"],
+): Promise<boolean | null> {
+  const layout = await summarizeGatewayServiceLayout(command);
+  const servingRoot = layout?.packageRootReal ?? layout?.packageRoot;
+  const servingEntry = layout?.entrypointReal ?? layout?.entrypoint;
+  if (
+    !servingRoot ||
+    !servingEntry ||
+    (!path.isAbsolute(servingEntry) && !path.win32.isAbsolute(servingEntry))
+  ) {
+    return null;
+  }
+
+  const checkoutReal = await tryRealpath(checkoutRoot);
+  const checkoutDist = await tryRealpath(path.join(checkoutRoot, "dist"));
+  const servingDist = await tryRealpath(path.join(servingRoot, "dist"));
+  const servingEntryReal = await tryRealpath(servingEntry);
+
+  if (await samePathIdentity(checkoutReal, servingRoot)) {
+    return true;
+  }
+  if (await samePathIdentity(checkoutDist, servingDist)) {
+    return true;
+  }
+  return (
+    isPathInside(checkoutDist, servingEntryReal) ||
+    isPathInside(checkoutDist, servingDist) ||
+    isPathInside(servingDist, checkoutDist)
+  );
+}
+
 /**
  * Returns a refuse decision when a managed Gateway ExecStart resolves into
  * `checkoutRoot` and the service still holds a live process.
@@ -81,7 +142,8 @@ export async function resolveLiveManagedGatewayDistFence(
         env: env as GatewayServiceEnv,
       }));
   const matchesRoot =
-    deps.matchesRoot ?? ((root, command) => gatewayServiceCommandMatchesRoot(root, command));
+    deps.matchesRoot ??
+    ((root, command) => gatewayServiceCommandOverlapsPhysicalCheckout(root, command));
 
   let state: GatewayServiceState;
   try {

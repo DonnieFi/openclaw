@@ -11,7 +11,11 @@ import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
-import { getCommandArgsWithRootOptions } from "../src/infra/cli-root-options.ts";
+import { applyCliProfileEnv, parseCliProfileArgs } from "../src/cli/profile.ts";
+import {
+  getCommandArgsWithRootOptions,
+  getRootOptionAwareCommandPath,
+} from "../src/infra/cli-root-options.ts";
 import { withDistArtifactOwnership } from "./lib/dist-artifact-ownership.mts";
 import { resolveLiveManagedGatewayDistFence } from "./lib/live-gateway-dist-fence.mts";
 import {
@@ -1388,16 +1392,44 @@ const shouldSkipWatchRuntimeSync = (deps: RunNodeDeps, requirement: RuntimePostB
   hasDirtyRuntimePostBuildInputs(deps) !== true &&
   !hasMissingRequiredRuntimePostBuildOutput(deps);
 
-const isGatewayClientCommand = (args: string[]) =>
-  args[0] === "dashboard" ||
-  (args[0] === "gateway" && (args[1] === "call" || args[1] === "status")) ||
-  (args[0] === "agent" && !args.includes("--local"));
+const resolveRunNodeCommandPath = (args: string[], depth: number) =>
+  getRootOptionAwareCommandPath(["node", "openclaw", ...args], depth);
+
+const isGatewayClientCommand = (args: string[]) => {
+  const [primary, secondary] = resolveRunNodeCommandPath(args, 2);
+  return (
+    primary === "dashboard" ||
+    (primary === "gateway" && (secondary === "call" || secondary === "status")) ||
+    (primary === "agent" && !args.includes("--local"))
+  );
+};
+
+const isGatewayRecoveryCommand = (args: string[]) => {
+  const [primary, secondary] = resolveRunNodeCommandPath(args, 2);
+  return primary === "gateway" && (secondary === "stop" || secondary === "restart");
+};
+
+const shouldFastPathExistingDistForGatewayRecovery = (deps: RunNodeDeps) =>
+  isGatewayRecoveryCommand(deps.args) &&
+  deps.env.OPENCLAW_FORCE_BUILD !== "1" &&
+  statMtime(deps.distEntry, deps.fs) != null;
 
 const shouldFastPathExistingDistForGatewayClient = (deps: RunNodeDeps) =>
   isGatewayClientCommand(deps.args) &&
   deps.env.OPENCLAW_FORCE_BUILD !== "1" &&
   statMtime(deps.distEntry, deps.fs) != null &&
   canUseStampedGatewayClientDist(deps);
+
+const shouldFastPathExistingDist = (deps: RunNodeDeps) =>
+  shouldFastPathExistingDistForGatewayRecovery(deps) ||
+  shouldFastPathExistingDistForGatewayClient(deps);
+
+const applyRunNodeCliProfile = (args: string[], env: NodeJS.ProcessEnv, execPath: string) => {
+  const parsed = parseCliProfileArgs([execPath, "openclaw", ...args]);
+  if (parsed.ok && parsed.profile) {
+    applyCliProfileEnv({ profile: parsed.profile, env });
+  }
+};
 
 const canUseStampedGatewayClientDist = (deps: RunNodeDeps) => {
   const currentHead = resolveGitHead(deps);
@@ -1458,9 +1490,12 @@ const runQaReportFromSource = (deps: RunNodeDeps, script: QaReportScript) => {
 function createRunNodeDeps(params: RunNodeMainParams) {
   const cwd = params.cwd ?? process.cwd();
   const distRoot = path.join(cwd, "dist");
+  const args = params.args ?? process.argv.slice(2);
+  const execPath = params.execPath ?? process.execPath;
   const env = params.env ? { ...params.env } : { ...process.env };
   // Select this checkout's plugins over tracked installs without changing source/dist loading.
   env.OPENCLAW_DEV_SOURCE_ROOT ??= cwd;
+  applyRunNodeCliProfile(args, env, execPath);
   const mutableState: RunNodeMutableState = {
     outputTee: null,
     runNodeProgress: undefined,
@@ -1472,9 +1507,9 @@ function createRunNodeDeps(params: RunNodeMainParams) {
     stderr: params.stderr ?? process.stderr,
     stdout: params.stdout ?? process.stdout,
     process: params.process ?? process,
-    execPath: params.execPath ?? process.execPath,
+    execPath,
     cwd,
-    args: params.args ?? process.argv.slice(2),
+    args,
     env,
     platform: params.platform ?? process.platform,
     resolveLiveGatewayDistFence:
@@ -1506,7 +1541,7 @@ export async function runNodeMain(params: RunNodeMainParams = {}): Promise<RunNo
 
   try {
     let exitCode: RunNodeExit = 1;
-    if (shouldFastPathExistingDistForGatewayClient(deps)) {
+    if (shouldFastPathExistingDist(deps)) {
       exitCode = await runOpenClaw(deps);
       return await closeRunNodeOutputTee(deps, exitCode);
     }
@@ -1573,7 +1608,7 @@ export async function runNodeMain(params: RunNodeMainParams = {}): Promise<RunNo
     }
 
     const buildExitCode = await withRunNodeBuildLock(deps, async () => {
-      if (shouldFastPathExistingDistForGatewayClient(deps)) {
+      if (shouldFastPathExistingDist(deps)) {
         return 0;
       }
       const lockedBuildRequirement = resolveBuildRequirement(deps);
