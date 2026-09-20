@@ -1866,6 +1866,7 @@ console.log(JSON.stringify({ ok: true, channels: {} }));
     process.exitCode = undefined;
     try {
       await runLiveUpdaterMain(["--checkout", mirror], {
+        assertManagedGatewayControlPlatform: () => {},
         inspectGatewayDeployment: () => null,
         runManagedCommand: async () => {
           throw managedTimeoutError();
@@ -3460,6 +3461,15 @@ console.log(JSON.stringify({ ok: true, channels: {} }));
       env: { ...process.env, PATH: `${binDir}:${process.env.PATH}` },
     });
 
+    if (process.platform !== "darwin") {
+      expect(result.status, result.stderr).toBe(1);
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        ok: false,
+        error: { code: "unsupported_gateway_control_platform" },
+      });
+      return;
+    }
+
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout.trim().split("\n")).toHaveLength(1);
     expect(JSON.parse(result.stdout)).toMatchObject({
@@ -3534,6 +3544,7 @@ console.log(JSON.stringify({ ok: true, channels: {} }));
             auditCalls += 1;
             return { entries: 1, errorCount: 0, warningCount: 0, errors: [], warnings: [] };
           },
+          assertManagedGatewayControlPlatform: () => {},
           inspectGatewayDeployment: () => null,
           sleep() {},
           verifyGatewayRuntime: () => null,

@@ -1472,7 +1472,7 @@ function readManagedGatewayLaunchAgent(checkout) {
   };
 }
 
-export function assertManagedGatewayControlPlatform() {
+function assertManagedGatewayControlPlatform() {
   if (process.platform === "darwin") {
     return;
   }
