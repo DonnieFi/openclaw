@@ -1,11 +1,14 @@
-// Refuse dist mutation while a managed Gateway still runs from this checkout's dist.
 import fs from "node:fs/promises";
 import path from "node:path";
+import type { ManagedGatewayBinding } from "../../src/daemon/inspect.ts";
 import type { GatewayServiceEnv, GatewayServiceState } from "../../src/daemon/service-types.ts";
+
+export type { ManagedGatewayBinding };
 
 export type LiveGatewayDistFenceDeps = {
   env?: NodeJS.ProcessEnv;
-  readState?: () => Promise<GatewayServiceState>;
+  listBindings?: (env: GatewayServiceEnv) => Promise<readonly ManagedGatewayBinding[]>;
+  readState?: (binding?: ManagedGatewayBinding) => Promise<GatewayServiceState>;
   matchesRoot?: (root: string, command: GatewayServiceState["command"]) => Promise<boolean | null>;
   isPidAlive?: (pid: number) => boolean;
 };
@@ -47,12 +50,64 @@ export function isLiveManagedGatewayHoldingDist(
   );
 }
 
-function formatRefuseMessage(params: { entrypoint?: string; unit?: string }): string {
+function normalizeFenceProfile(value: string | undefined): string {
+  const trimmed = value?.trim();
+  if (!trimmed || trimmed.toLowerCase() === "default") {
+    return "default";
+  }
+  return trimmed;
+}
+
+function bindingFromProcessEnv(env: NodeJS.ProcessEnv): ManagedGatewayBinding {
+  return {
+    profile: normalizeFenceProfile(env.OPENCLAW_PROFILE),
+    env: env as GatewayServiceEnv,
+  };
+}
+
+function bindingSelectorKey(binding: ManagedGatewayBinding): string {
+  return [
+    binding.profile,
+    binding.env.OPENCLAW_SYSTEMD_UNIT ?? "",
+    binding.env.OPENCLAW_LAUNCHD_LABEL ?? "",
+    binding.env.OPENCLAW_WINDOWS_TASK_NAME ?? "",
+  ].join("\0");
+}
+
+function dedupeBindings(bindings: readonly ManagedGatewayBinding[]): ManagedGatewayBinding[] {
+  const seen = new Set<string>();
+  const out: ManagedGatewayBinding[] = [];
+  for (const binding of bindings) {
+    const key = bindingSelectorKey(binding);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    out.push(binding);
+  }
+  return out;
+}
+
+function formatStopHint(profile: string): string {
+  return profile === "default"
+    ? "`openclaw gateway stop`"
+    : `\`openclaw gateway stop --profile ${profile}\``;
+}
+
+function formatRefuseMessage(params: {
+  profiles: readonly string[];
+  entrypoint?: string;
+  unit?: string;
+}): string {
+  const profiles = [...params.profiles].sort((left, right) => left.localeCompare(right));
+  const profileText =
+    profiles.length === 1 ? ` (profile ${profiles[0]})` : ` (profiles ${profiles.join(", ")})`;
   const entry = params.entrypoint ? ` (${params.entrypoint})` : "";
   const unit = params.unit ? ` unit ${params.unit}` : "";
+  const stopHints = profiles.map((profile) => formatStopHint(profile)).join(", ");
   return (
-    `[openclaw] Refusing to rebuild dist while a managed Gateway${unit} is still running from this checkout's dist${entry}. ` +
-    "Stop the Gateway first (`openclaw gateway stop` or the matching service stop), rebuild, then start. " +
+    `[openclaw] Refusing to rebuild dist while a managed Gateway${profileText}${unit} is still running from this checkout's dist${entry}. ` +
+    `Stop the Gateway first (${stopHints} or the matching service stop) or run \`openclaw update\`, then rebuild and start. ` +
     `Set ${ALLOW_ENV}=1 only for intentional live mutations.`
   );
 }
@@ -139,6 +194,26 @@ export async function gatewayServiceCommandOverlapsPhysicalCheckout(
   );
 }
 
+async function resolveFenceBindings(
+  env: NodeJS.ProcessEnv,
+  deps: LiveGatewayDistFenceDeps,
+): Promise<readonly ManagedGatewayBinding[] | null> {
+  try {
+    if (deps.listBindings) {
+      return await deps.listBindings(env as GatewayServiceEnv);
+    }
+    const current = bindingFromProcessEnv(env);
+    if (deps.readState) {
+      return [current];
+    }
+    const inspect = await import("../../src/daemon/inspect.ts");
+    const discovered = await inspect.discoverManagedGatewayBindings(env);
+    return dedupeBindings([current, ...discovered]);
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Returns a refuse decision when a managed Gateway ExecStart resolves into
  * `checkoutRoot` and the service still holds a live process.
@@ -152,52 +227,67 @@ export async function resolveLiveManagedGatewayDistFence(
     return { refuse: false };
   }
 
+  const bindings = await resolveFenceBindings(env, deps);
+  if (!bindings) {
+    return { refuse: false };
+  }
+
   const readState =
     deps.readState ??
-    (async () => {
+    (async (binding?: ManagedGatewayBinding) => {
       const runtime = await loadFenceRuntime();
       if (!runtime) {
         throw new Error("gateway service inspection unavailable");
       }
+      // Binding env is the selector census. Do not merge ambient profile/unit
+      // overrides on top or a discovered sibling inherits the caller selectors.
       return await runtime.readGatewayServiceState(runtime.resolveGatewayService(), {
-        env: env as GatewayServiceEnv,
+        env: (binding?.env ?? env) as GatewayServiceEnv,
       });
     });
   const matchesRoot =
     deps.matchesRoot ??
     ((root, command) => gatewayServiceCommandOverlapsPhysicalCheckout(root, command));
 
-  let state: GatewayServiceState;
-  try {
-    state = await readState();
-  } catch {
-    // Hosts without a managed service, or inspection failures, must not block
-    // ordinary builds. Only a positive live match refuses.
-    return { refuse: false };
-  }
-
   const root = path.resolve(checkoutRoot);
-  let matches: boolean | null;
-  try {
-    matches = await matchesRoot(root, state.command);
-  } catch {
-    return { refuse: false };
+  const holds: Array<{ profile: string; state: GatewayServiceState }> = [];
+  for (const binding of bindings) {
+    try {
+      const state = await readState(binding);
+      const matches = await matchesRoot(root, state.command);
+      if (matches !== true) {
+        continue;
+      }
+      if (!isLiveManagedGatewayHoldingDist(state, { isPidAlive: deps.isPidAlive })) {
+        continue;
+      }
+      holds.push({ profile: normalizeFenceProfile(binding.profile), state });
+    } catch {
+      // Fail open per binding.
+    }
   }
-  if (matches !== true) {
-    return { refuse: false };
-  }
-  if (!isLiveManagedGatewayHoldingDist(state, { isPidAlive: deps.isPidAlive })) {
+  if (holds.length === 0) {
     return { refuse: false };
   }
 
   const runtime = await loadFenceRuntime();
+  let entrypoint: string | undefined;
+  let unit: string | undefined;
+  for (const hold of holds) {
+    if (!entrypoint && hold.state.command && runtime) {
+      entrypoint = runtime.resolveServiceEntrypoint(hold.state.command);
+    }
+    if (!unit && hold.state.runtime?.systemd?.unit) {
+      unit = hold.state.runtime.systemd.unit;
+    }
+  }
+
   return {
     refuse: true,
     message: formatRefuseMessage({
-      ...(state.command && runtime
-        ? { entrypoint: runtime.resolveServiceEntrypoint(state.command) }
-        : {}),
-      ...(state.runtime?.systemd?.unit ? { unit: state.runtime.systemd.unit } : {}),
+      profiles: holds.map((hold) => hold.profile),
+      ...(entrypoint ? { entrypoint } : {}),
+      ...(unit ? { unit } : {}),
     }),
   };
 }
