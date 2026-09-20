@@ -288,10 +288,21 @@ describe("Talk client agent consult admission", () => {
             isCurrent: expect.any(Function),
           }),
           getToolAuthorityOverlay: expect.any(Function),
+          prepareUserTurnTranscriptRecorder: expect.any(Function),
           text: "latest task",
           mode: "steer",
         }),
       );
+      const prepareRecorder =
+        mocks.controlRealtimeVoiceAgentRun.mock.calls[0]?.[0]?.prepareUserTurnTranscriptRecorder;
+      expect(prepareRecorder).toEqual(expect.any(Function));
+      const prepared = await prepareRecorder!("generated steering envelope").resolveMessage();
+      expect(prepared).toMatchObject({
+        role: "user",
+        content: "generated steering envelope",
+        display: false,
+        excludeFromContext: true,
+      });
       core.resolve();
       await expect(run).resolves.toEqual({ text: "done" });
       expect(lifecycleRunner.claimAppend()).toBe(true);

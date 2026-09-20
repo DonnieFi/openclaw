@@ -567,6 +567,26 @@ export function createTalkClientAgentConsultRunner(params: {
       },
       text: prompt,
       getSteeringContext: () => confirmationRetryContext,
+      // Match initial consult: spoken ASR is mirrored separately; keep generated
+      // steering envelopes in current-turn custody without Chat display or replay.
+      prepareUserTurnTranscriptRecorder: (steerText) =>
+        createUserTurnTranscriptRecorder({
+          input: {
+            text: steerText,
+            display: false,
+            excludeFromContext: true,
+            idempotencyKey: buildRunUserTurnIdempotencyKey(identity.runId),
+          },
+          target: {
+            agentId,
+            sessionId: identity.sessionId,
+            sessionKey,
+            storePath,
+            expectedSessionId: identity.sessionId,
+            sessionEntry: undefined,
+            config: params.config,
+          },
+        }),
       mode: "steer",
     });
     if (!result.ok || result.queued !== true || !isOwnerCurrent(owner, identity.sessionId)) {

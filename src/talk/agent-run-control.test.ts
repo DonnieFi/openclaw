@@ -250,6 +250,35 @@ describe("controlRealtimeVoiceAgentRun", () => {
     );
   });
 
+  it("forwards producer-prepared transcript custody for generated steering text", async () => {
+    const deps = createDeps({ activeSessionId: "session-active" });
+    const recorder = {
+      resolveMessage: vi.fn(async () => ({ role: "user", content: [], display: false })),
+    };
+
+    await controlRealtimeVoiceAgentRun(
+      {
+        sessionKey: "agent:main:main",
+        text: "use the safer path",
+        mode: "steer",
+        getSteeringContext: () => "host-retry-context",
+        prepareUserTurnTranscriptRecorder: (steerText) => {
+          expect(steerText).toBe("host-retry-context\n\nuse the safer path");
+          return recorder as never;
+        },
+      },
+      deps,
+    );
+
+    expect(deps.queueEmbeddedAgentMessageWithOutcomeAsync).toHaveBeenCalledWith(
+      "session-active",
+      "host-retry-context\n\nuse the safer path",
+      expect.objectContaining({
+        userTurnTranscriptRecorder: recorder,
+      }),
+    );
+  });
+
   it.each(["steer", "followup"] as const)(
     "reports unconfirmed %s without claiming success or sending again",
     async (mode) => {

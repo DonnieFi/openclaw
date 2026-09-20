@@ -8,10 +8,14 @@ import type {
   ActiveEmbeddedRunOwner,
   EmbeddedAgentQueueMessageOutcome,
 } from "../agents/embedded-agent-runner/runs.js";
-import type { ReplyToolAuthorityOverlay } from "../auto-reply/reply/reply-run-registry.contracts.js";
+import type {
+  ReplyMessageInjectionOptions,
+  ReplyToolAuthorityOverlay,
+} from "../auto-reply/reply/reply-run-registry.contracts.js";
 import { isAbortError } from "../infra/abort-signal.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { getDiagnosticSessionActivitySnapshot } from "../logging/diagnostic-run-activity.js";
+import type { UserTurnTranscriptRecorder } from "../sessions/user-turn-transcript.js";
 import { captureRealtimeVoiceRunOwner } from "./agent-run-control-owner.js";
 import {
   buildRealtimeVoiceAgentCancelProviderResult,
@@ -53,19 +57,23 @@ export function buildRealtimeVoiceAgentErrorProviderResult(
     : { error: formatErrorMessage(error) };
 }
 
+type RealtimeVoiceAgentQueueOptions = Pick<
+  ReplyMessageInjectionOptions,
+  | "steeringMode"
+  | "debounceMs"
+  | "isInboundUserMessage"
+  | "taskSuggestionDeliveryMode"
+  | "toolAuthorityOverlay"
+  | "userTurnTranscriptRecorder"
+>;
+
 type RealtimeVoiceAgentControlDeps = {
   queueGuardedEmbeddedAgentMessageWithOutcomeAsync?: typeof import("../agents/embedded-agent-runner/runs.js").queueGuardedEmbeddedAgentMessageWithOutcomeAsync;
   abortEmbeddedAgentRun: (sessionId: string) => boolean;
   queueEmbeddedAgentMessageWithOutcomeAsync: (
     sessionId: string,
     text: string,
-    options?: {
-      steeringMode?: "all";
-      debounceMs?: number;
-      isInboundUserMessage?: boolean;
-      taskSuggestionDeliveryMode?: undefined;
-      toolAuthorityOverlay?: ReplyToolAuthorityOverlay;
-    },
+    options?: RealtimeVoiceAgentQueueOptions,
   ) => Promise<EmbeddedAgentQueueMessageOutcome>;
   getDiagnosticSessionActivitySnapshot: (params: {
     sessionId?: string;
@@ -92,6 +100,12 @@ export async function controlRealtimeVoiceAgentRun(
     getToolAuthorityOverlay?: () => ReplyToolAuthorityOverlay;
     /** Host context prepared by the validated authority callback, never provider text. */
     getSteeringContext?: () => string | undefined;
+    /**
+     * Producer-owned transcript custody for generated steering text. Called with the
+     * exact queued text after host context is composed so Chat can hide envelopes
+     * while the agent still receives them.
+     */
+    prepareUserTurnTranscriptRecorder?: (steerText: string) => UserTurnTranscriptRecorder;
     mode?: unknown;
     recentEvents?: readonly TalkEvent[];
   },
@@ -226,7 +240,8 @@ export async function controlRealtimeVoiceAgentRun(
   const steeringText = [params.getSteeringContext?.(), text].filter(Boolean).join("\n\n");
   const steerText =
     mode === "followup" ? buildRealtimeVoiceAgentFollowupSteeringText(steeringText) : steeringText;
-  const options = {
+  const userTurnTranscriptRecorder = params.prepareUserTurnTranscriptRecorder?.(steerText);
+  const options: RealtimeVoiceAgentQueueOptions = {
     steeringMode: "all" as const,
     debounceMs: 0,
     isInboundUserMessage: true,
@@ -234,6 +249,7 @@ export async function controlRealtimeVoiceAgentRun(
     // Talk cannot present task suggestions, so spoken user input must not inherit
     // a capable TUI run's model-facing task tools.
     taskSuggestionDeliveryMode: undefined,
+    ...(userTurnTranscriptRecorder ? { userTurnTranscriptRecorder } : {}),
   };
   const outcome: EmbeddedAgentQueueMessageOutcome =
     target || legacyOwner
