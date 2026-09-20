@@ -430,6 +430,51 @@ describe("findExtraGatewayServices (linux / scanSystemdDir) — real filesystem"
   );
 
   it.skipIf(!isLinux)(
+    "resolves a system template unit to this account's runnable instance",
+    async () => {
+      const tmpHome = tempDirs.make("openclaw-test-", os.tmpdir());
+      const systemdDir = path.join(tmpHome, ".config", "systemd", "user");
+      const systemDir = path.join(tmpHome, "etc", "systemd", "system");
+      await fs.mkdir(systemdDir, { recursive: true });
+      await fs.mkdir(systemDir, { recursive: true });
+      const userUnit = path.join(systemdDir, "openclaw-gateway.service");
+      const templateUnit = path.join(systemDir, "openclaw@.service");
+      await fs.writeFile(userUnit, GATEWAY_SERVICE_CONTENTS);
+      await fs.writeFile(templateUnit, GATEWAY_SERVICE_CONTENTS);
+      const instanceName = `openclaw@${os.userInfo().username}.service`;
+
+      const bindings = await discoverManagedGatewayBindings(
+        { HOME: tmpHome },
+        { systemUnitDirs: [systemDir] },
+      );
+      expect(bindings).toEqual(
+        expect.arrayContaining([
+          {
+            profile: "default",
+            scope: "user",
+            systemdReadTarget: {
+              scope: "user",
+              unitName: "openclaw-gateway.service",
+              unitPath: userUnit,
+            },
+            env: { HOME: tmpHome, OPENCLAW_SYSTEMD_UNIT: "openclaw-gateway.service" },
+          },
+          {
+            profile: "default",
+            scope: "system",
+            systemdReadTarget: {
+              scope: "system",
+              unitName: instanceName,
+              unitPath: templateUnit,
+            },
+            env: { HOME: tmpHome, OPENCLAW_SYSTEMD_UNIT: instanceName },
+          },
+        ]),
+      );
+    },
+  );
+
+  it.skipIf(!isLinux)(
     "reports a legacy clawdbot-gateway service as an extra gateway service",
     async () => {
       const tmpHome = tempDirs.make("openclaw-test-", os.tmpdir());

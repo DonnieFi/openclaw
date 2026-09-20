@@ -10,6 +10,7 @@ import {
 } from "./inspect.js";
 import { decodeLaunchdPlistMetadata } from "./launchd-plist.js";
 import type { GatewayServiceEnv, SystemdServiceReadTarget } from "./service-types.js";
+import { resolveSystemdRunnableUnitName } from "./systemd-scope.js";
 import { parseSystemdEnvAssignments, splitSystemdLogicalLines } from "./systemd-unit.js";
 
 export type ManagedGatewayBinding = {
@@ -137,16 +138,15 @@ async function bindingFromSystemdService(
   const profile = normalizeDiscoveredProfile(
     envProfile ?? inferProfileFromSystemdUnitName(svc.label) ?? "default",
   );
-  const systemdReadTarget = unitPath
-    ? { scope: svc.scope, unitName: svc.label, unitPath }
-    : undefined;
+  const unitName = resolveSystemdRunnableUnitName(svc.label);
+  const systemdReadTarget = unitPath ? { scope: svc.scope, unitName, unitPath } : undefined;
   return {
     profile,
     scope: svc.scope,
     ...(systemdReadTarget ? { systemdReadTarget } : {}),
     env: hostBindingEnv(env, {
       ...profileEnvFields(profile),
-      OPENCLAW_SYSTEMD_UNIT: svc.label,
+      OPENCLAW_SYSTEMD_UNIT: unitName,
     }),
   };
 }

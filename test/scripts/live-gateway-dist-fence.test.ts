@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -434,4 +435,98 @@ describe("live-gateway-dist-fence cross-profile overlap", () => {
       expect(result.refuse).toBe(true);
     });
   });
+
+  it.skipIf(process.platform !== "linux")(
+    "refuses a live system template instance while a separate user Gateway is installed",
+    async () => {
+      await withTestDir({ prefix: "openclaw-live-dist-template-instance-" }, async (tmp) => {
+        const home = path.join(tmp, "home");
+        const checkout = path.join(tmp, "checkout");
+        const other = path.join(tmp, "other");
+        const userDir = path.join(home, ".config", "systemd", "user");
+        const systemDir = path.join(tmp, "etc", "systemd", "system");
+        await writeOpenClawPackage(checkout);
+        await writeOpenClawPackage(other);
+        await fs.mkdir(userDir, { recursive: true });
+        await fs.mkdir(systemDir, { recursive: true });
+        const unitBody = [
+          "[Service]",
+          "ExecStart=/usr/bin/node /srv/openclaw/dist/index.js gateway",
+          "Environment=OPENCLAW_SERVICE_MARKER=openclaw",
+          "Environment=OPENCLAW_SERVICE_KIND=gateway",
+          "",
+        ].join("\n");
+        await fs.writeFile(path.join(userDir, "openclaw-gateway.service"), unitBody);
+        await fs.writeFile(path.join(systemDir, "openclaw@.service"), unitBody);
+        const instanceName = `openclaw@${os.userInfo().username}.service`;
+
+        const { discoverManagedGatewayBindings } =
+          await import("../../src/daemon/managed-gateway-bindings.ts");
+        const bindings = await discoverManagedGatewayBindings(
+          { HOME: home },
+          { systemUnitDirs: [systemDir] },
+        );
+        expect(bindings).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              scope: "user",
+              systemdReadTarget: expect.objectContaining({
+                unitName: "openclaw-gateway.service",
+              }),
+            }),
+            expect.objectContaining({
+              scope: "system",
+              systemdReadTarget: expect.objectContaining({
+                unitName: instanceName,
+                unitPath: path.join(systemDir, "openclaw@.service"),
+              }),
+            }),
+          ]),
+        );
+
+        const result = await resolveLiveManagedGatewayDistFence(checkout, {
+          env: { HOME: home },
+          listBindings: async () => bindings,
+          readState: async (binding) => {
+            const unitName = binding?.systemdReadTarget?.unitName ?? "";
+            expect(unitName.endsWith("@.service")).toBe(false);
+            if (binding?.scope === "system") {
+              expect(unitName).toBe(instanceName);
+              return baseState({
+                running: true,
+                command: {
+                  programArguments: [
+                    process.execPath,
+                    path.join(checkout, "dist", "index.js"),
+                    "gateway",
+                  ],
+                },
+                runtime: { status: "running", pid: 91, systemd: { unit: instanceName } },
+              });
+            }
+            return baseState({
+              running: true,
+              command: {
+                programArguments: [
+                  process.execPath,
+                  path.join(other, "dist", "index.js"),
+                  "gateway",
+                ],
+              },
+              runtime: {
+                status: "running",
+                pid: 90,
+                systemd: { unit: "openclaw-gateway.service" },
+              },
+            });
+          },
+        });
+        expect(result.refuse).toBe(true);
+        if (result.refuse) {
+          expect(result.message).toContain(instanceName);
+          expect(result.message).toContain("openclaw update");
+        }
+      });
+    },
+  );
 });
