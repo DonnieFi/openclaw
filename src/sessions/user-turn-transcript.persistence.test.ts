@@ -452,6 +452,45 @@ describe("persistUserTurnTranscript", () => {
     expect(await readTranscriptMessages(target)).toHaveLength(1);
   });
 
+  it("persists repeated generated inputs under distinct identities", async () => {
+    const target = createSqliteTranscriptTarget({
+      dir: tempDirs.make("repeated-generated-inputs-"),
+    });
+    await replaceSessionEntry(target, { sessionId: target.sessionId, updatedAt: 1 });
+    const recorders = [
+      createUserTurnTranscriptRecorder({
+        target,
+        input: {
+          text: "initial generated input",
+          display: false,
+          excludeFromContext: true,
+          idempotencyKey: "run-talk:user",
+        },
+      }),
+      ...["first generated redirect", "second generated redirect"].map((text) =>
+        createUserTurnTranscriptRecorder({
+          target,
+          input: { text, display: false, excludeFromContext: true },
+        }),
+      ),
+    ];
+    for (const recorder of recorders) {
+      await expect(recorder.persistApproved()).resolves.toMatchObject({ appended: true });
+    }
+    const persisted = await readTranscriptMessages(target);
+    expect(persisted.map((message) => message.content)).toEqual([
+      "initial generated input",
+      "first generated redirect",
+      "second generated redirect",
+    ]);
+    expect(persisted).toEqual(
+      persisted.map((message) =>
+        expect.objectContaining({ display: false, excludeFromContext: true }),
+      ),
+    );
+    expect(new Set(persisted.map((message) => message.idempotencyKey)).size).toBe(3);
+  });
+
   it.each([undefined, false, true])(
     "requires explicit runtime append freshness (%s), not an admission anchor",
     async (appended) => {

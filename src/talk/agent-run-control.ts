@@ -62,10 +62,11 @@ type RealtimeVoiceAgentQueueOptions = Pick<
   | "steeringMode"
   | "debounceMs"
   | "isInboundUserMessage"
-  | "taskSuggestionDeliveryMode"
   | "toolAuthorityOverlay"
   | "userTurnTranscriptRecorder"
->;
+> & {
+  taskSuggestionDeliveryMode?: undefined;
+};
 
 type RealtimeVoiceAgentControlDeps = {
   queueGuardedEmbeddedAgentMessageWithOutcomeAsync?: typeof import("../agents/embedded-agent-runner/runs.js").queueGuardedEmbeddedAgentMessageWithOutcomeAsync;

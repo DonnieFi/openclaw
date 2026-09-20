@@ -575,7 +575,6 @@ export function createTalkClientAgentConsultRunner(params: {
             text: steerText,
             display: false,
             excludeFromContext: true,
-            idempotencyKey: buildRunUserTurnIdempotencyKey(identity.runId),
           },
           target: {
             agentId,

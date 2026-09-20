@@ -10,7 +10,6 @@ import {
 } from "../../agents/embedded-agent-runner/runs.test-support.js";
 import { withGatewayToolCallerIdentity } from "../../agents/tools/gateway-caller-context.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import type { PluginRuntime } from "../../plugins/runtime/types.js";
 import {
   authorizeClientVoiceConfirmation,
   checkClientVoiceToolConfirmationPolicy,
@@ -24,14 +23,6 @@ import {
 type ConsultParams = Parameters<
   typeof import("../../talk/agent-consult-runtime.js").consultRealtimeVoiceAgent
 >[0];
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => {
-    resolve = done;
-  });
-  return { promise, resolve };
-}
 
 const mocks = vi.hoisted(() => ({
   close: vi.fn(),
@@ -63,26 +54,14 @@ vi.mock("../../talk/agent-run-control.js", async (importOriginal) => ({
 
 import { sharingPolicyClient } from "../session-sharing.test-utils.js";
 import { createTalkClientAgentConsultRunner } from "./client-agent-consult.js";
+import { createCoreParams, deferred } from "./client-agent-consult.test-support.js";
 import {
   resolveTalkAgentConsultAuthority,
   type TalkAgentConsultAuthority,
 } from "./client-gateway-control.js";
 
 const config = {} as OpenClawConfig;
-const coreParams = {
-  config,
-  prompt: "check",
-  runId: "run-talk",
-  sessionId: "session-talk",
-  sessionTarget: {
-    agentId: "researcher",
-    sessionId: "session-talk",
-    sessionKey: "agent:researcher:talk",
-    storePath: "/tmp/sessions",
-  },
-  timeoutMs: 1,
-  workspaceDir: "/tmp/workspace",
-} as Parameters<PluginRuntime["agent"]["runEmbeddedAgent"]>[0];
+const coreParams = createCoreParams(config);
 
 function createRunner(
   registerRun = vi.fn(),
@@ -293,16 +272,22 @@ describe("Talk client agent consult admission", () => {
           mode: "steer",
         }),
       );
-      const prepareRecorder =
+      const prepareFirst =
         mocks.controlRealtimeVoiceAgentRun.mock.calls[0]?.[0]?.prepareUserTurnTranscriptRecorder;
-      expect(prepareRecorder).toEqual(expect.any(Function));
-      const prepared = await prepareRecorder!("generated steering envelope").resolveMessage();
-      expect(prepared).toMatchObject({
-        role: "user",
-        content: "generated steering envelope",
-        display: false,
-        excludeFromContext: true,
-      });
+      expect(prepareFirst).toEqual(expect.any(Function));
+      await steer({ prompt: "another task" });
+      const prepareSecond =
+        mocks.controlRealtimeVoiceAgentRun.mock.calls[1]?.[0]?.prepareUserTurnTranscriptRecorder;
+      expect(prepareSecond).toEqual(expect.any(Function));
+      const prepared = await Promise.all([
+        prepareFirst!("generated steering envelope").resolveMessage(),
+        prepareSecond!("another generated steering envelope").resolveMessage(),
+      ]);
+      expect(prepared).toEqual([
+        expect.objectContaining({ display: false, excludeFromContext: true }),
+        expect.objectContaining({ display: false, excludeFromContext: true }),
+      ]);
+      expect(new Set(prepared.map((message) => message?.idempotencyKey)).size).toBe(2);
       core.resolve();
       await expect(run).resolves.toEqual({ text: "done" });
       expect(lifecycleRunner.claimAppend()).toBe(true);
