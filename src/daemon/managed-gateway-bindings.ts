@@ -2,19 +2,27 @@
 import fs from "node:fs/promises";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { resolveGatewayLaunchAgentLabel, resolveGatewayWindowsTaskName } from "./constants.js";
-import { listManagedOpenClawGatewayServices, type ExtraGatewayService } from "./inspect.js";
+import {
+  listManagedOpenClawGatewayServices,
+  type ExtraGatewayService,
+  type ListManagedOpenClawGatewayServicesOptions,
+} from "./inspect.js";
 import { decodeLaunchdPlistMetadata } from "./launchd-plist.js";
-import type { GatewayServiceEnv } from "./service-types.js";
+import type { GatewayServiceEnv, SystemdServiceReadTarget } from "./service-types.js";
 import { parseSystemdEnvAssignments, splitSystemdLogicalLines } from "./systemd-unit.js";
 
 export type ManagedGatewayBinding = {
   readonly profile: string;
   readonly env: GatewayServiceEnv;
+  readonly scope?: "user" | "system";
+  readonly systemdReadTarget?: SystemdServiceReadTarget;
 };
 
 function bindingSelectorKey(binding: ManagedGatewayBinding): string {
   return [
     binding.profile,
+    binding.scope ?? binding.systemdReadTarget?.scope ?? "",
+    binding.systemdReadTarget?.unitPath ?? "",
     binding.env.OPENCLAW_SYSTEMD_UNIT ?? "",
     binding.env.OPENCLAW_LAUNCHD_LABEL ?? "",
     binding.env.OPENCLAW_WINDOWS_TASK_NAME ?? "",
@@ -128,8 +136,13 @@ async function bindingFromSystemdService(
   const profile = normalizeDiscoveredProfile(
     envProfile ?? inferProfileFromSystemdUnitName(svc.label) ?? "default",
   );
+  const systemdReadTarget = unitPath
+    ? { scope: svc.scope, unitName: svc.label, unitPath }
+    : undefined;
   return {
     profile,
+    scope: svc.scope,
+    ...(systemdReadTarget ? { systemdReadTarget } : {}),
     env: hostBindingEnv(env, {
       ...profileEnvFields(profile),
       OPENCLAW_SYSTEMD_UNIT: svc.label,
@@ -160,6 +173,7 @@ async function bindingFromLaunchdService(
   const profile = normalizeDiscoveredProfile(envProfile ?? inferred ?? "default");
   return {
     profile,
+    scope: svc.scope,
     env: hostBindingEnv(env, {
       ...profileEnvFields(profile),
       OPENCLAW_LAUNCHD_LABEL: svc.label,
@@ -174,6 +188,7 @@ function bindingFromWindowsTask(
   const profile = normalizeDiscoveredProfile(inferProfileFromWindowsTaskName(name) ?? "default");
   return {
     profile,
+    scope: "system",
     env: hostBindingEnv(env, {
       ...profileEnvFields(profile),
       OPENCLAW_WINDOWS_TASK_NAME: name.replace(/^\\+/, "").trim() || name,
@@ -186,6 +201,7 @@ function bindingFromWindowsTask(
  */
 export async function discoverManagedGatewayBindings(
   env: Record<string, string | undefined>,
+  opts?: ListManagedOpenClawGatewayServicesOptions,
 ): Promise<ManagedGatewayBinding[]> {
   const results: ManagedGatewayBinding[] = [];
   const seen = new Set<string>();
@@ -199,7 +215,7 @@ export async function discoverManagedGatewayBindings(
   };
 
   try {
-    for (const svc of await listManagedOpenClawGatewayServices(env)) {
+    for (const svc of await listManagedOpenClawGatewayServices(env, opts)) {
       if (svc.platform === "linux") {
         push(await bindingFromSystemdService(svc, env));
         continue;

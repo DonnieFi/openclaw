@@ -283,11 +283,15 @@ describe("live-gateway-dist-fence cross-profile overlap", () => {
 
         const { discoverManagedGatewayBindings } =
           await import("../../src/daemon/managed-gateway-bindings.ts");
-        const bindings = await discoverManagedGatewayBindings({ HOME: home });
+        const bindings = await discoverManagedGatewayBindings(
+          { HOME: home },
+          { systemUnitDirs: [] },
+        );
         expect(bindings.map((binding) => binding.profile).toSorted()).toEqual([
           "default",
           "fenceproof",
         ]);
+        expect(bindings.every((binding) => binding.scope === "user")).toBe(true);
 
         const result = await resolveLiveManagedGatewayDistFence(checkout, {
           env: { HOME: home },
@@ -366,6 +370,65 @@ describe("live-gateway-dist-fence cross-profile overlap", () => {
         expect(result.message).toContain("openclaw gateway stop --profile fenceproof");
         expect(result.message).toContain("openclaw gateway stop --profile work");
       }
+    });
+  });
+
+  it("refuses when only a system-scope sibling overlaps this checkout", async () => {
+    await withTestDir({ prefix: "openclaw-live-dist-system-scope-" }, async (tmp) => {
+      await writeOpenClawPackage(tmp);
+      const userBinding = {
+        profile: "default",
+        scope: "user" as const,
+        systemdReadTarget: {
+          scope: "user" as const,
+          unitName: "openclaw-gateway.service",
+          unitPath: path.join(tmp, "user", "openclaw-gateway.service"),
+        },
+        env: { OPENCLAW_SYSTEMD_UNIT: "openclaw-gateway.service" },
+      };
+      const systemBinding = {
+        profile: "default",
+        scope: "system" as const,
+        systemdReadTarget: {
+          scope: "system" as const,
+          unitName: "openclaw-gateway.service",
+          unitPath: path.join(tmp, "system", "openclaw-gateway.service"),
+        },
+        env: { OPENCLAW_SYSTEMD_UNIT: "openclaw-gateway.service" },
+      };
+      const inspected: Array<string | undefined> = [];
+      const result = await resolveLiveManagedGatewayDistFence(tmp, {
+        listBindings: async () => [userBinding, systemBinding],
+        readState: async (binding) => {
+          inspected.push(binding?.systemdReadTarget?.scope);
+          if (binding?.scope === "system") {
+            return baseState({
+              running: true,
+              command: {
+                programArguments: [process.execPath, path.join(tmp, "dist", "index.js"), "gateway"],
+              },
+              runtime: {
+                status: "running",
+                pid: 88,
+                systemd: { unit: "openclaw-gateway.service" },
+              },
+            });
+          }
+          return baseState({
+            running: false,
+            command: {
+              programArguments: [
+                process.execPath,
+                path.join(tmp, "other", "dist", "index.js"),
+                "gateway",
+              ],
+            },
+            runtime: { status: "stopped", pid: undefined },
+          });
+        },
+      });
+      expect(inspected.toSorted()).toEqual(["system", "user"]);
+      expect(result.refuse).toBe(true);
     });
   });
 });

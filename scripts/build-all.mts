@@ -46,6 +46,12 @@ export type BuildAllStep = BuildCacheStep &
   );
 
 type BuildAllTiming = { label: string; durationMs: number; status: string };
+
+export type BuildAllResult = {
+  exitCode: number;
+  timings: BuildAllTiming[];
+  admissionRefused?: true;
+};
 type BuildAllStepParams = {
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
@@ -530,7 +536,7 @@ export async function runBuildAllSteps(
     ) => { status: number | null } | Promise<{ status: number | null }>;
     steps?: BuildAllStep[];
   } = {},
-) {
+): Promise<BuildAllResult> {
   const { env: buildEnv, heapShortfall } = resolveBuildAllTsdownPlan(
     profile,
     resolveBuildAllEnvironment(params.env),
@@ -545,7 +551,11 @@ export async function runBuildAllSteps(
   const fence = await resolveFence(params.cwd ?? process.cwd(), { env: buildEnv });
   if (fence.refuse) {
     logger.error(fence.message);
-    return { exitCode: 1, timings: [] satisfies BuildAllTiming[] };
+    return {
+      exitCode: 1,
+      timings: [] satisfies BuildAllTiming[],
+      admissionRefused: true,
+    };
   }
   const now = params.now ?? performance.now.bind(performance);
   const resolveCacheState = params.resolveCacheState ?? resolveBuildStepCacheState;

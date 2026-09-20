@@ -68,6 +68,8 @@ function bindingFromProcessEnv(env: NodeJS.ProcessEnv): ManagedGatewayBinding {
 function bindingSelectorKey(binding: ManagedGatewayBinding): string {
   return [
     binding.profile,
+    binding.scope ?? binding.systemdReadTarget?.scope ?? "",
+    binding.systemdReadTarget?.unitPath ?? "",
     binding.env.OPENCLAW_SYSTEMD_UNIT ?? "",
     binding.env.OPENCLAW_LAUNCHD_LABEL ?? "",
     binding.env.OPENCLAW_WINDOWS_TASK_NAME ?? "",
@@ -243,6 +245,7 @@ export async function resolveLiveManagedGatewayDistFence(
       // overrides on top or a discovered sibling inherits the caller selectors.
       return await runtime.readGatewayServiceState(runtime.resolveGatewayService(), {
         env: (binding?.env ?? env) as GatewayServiceEnv,
+        ...(binding?.systemdReadTarget ? { systemdReadTarget: binding.systemdReadTarget } : {}),
       });
     });
   const matchesRoot =
