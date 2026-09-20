@@ -483,11 +483,9 @@ describe("persistUserTurnTranscript", () => {
       "first generated redirect",
       "second generated redirect",
     ]);
-    expect(persisted).toEqual(
-      persisted.map((message) =>
-        expect.objectContaining({ display: false, excludeFromContext: true }),
-      ),
-    );
+    for (const message of persisted) {
+      expect(message).toMatchObject({ display: false, excludeFromContext: true });
+    }
     expect(new Set(persisted.map((message) => message.idempotencyKey)).size).toBe(3);
   });
 
