@@ -14,12 +14,7 @@ import { resolveLaunchAgentLabel } from "./launchd-label.js";
 import { decodeLaunchdPlistMetadata } from "./launchd-plist.js";
 import { resolveDaemonHomeDir } from "./paths.js";
 import { execSchtasks } from "./schtasks-exec.js";
-import type { GatewayServiceEnv } from "./service-types.js";
-import {
-  parseSystemdEnvAssignments,
-  parseSystemdExecStart,
-  splitSystemdLogicalLines,
-} from "./systemd-unit.js";
+import { parseSystemdExecStart, splitSystemdLogicalLines } from "./systemd-unit.js";
 
 export type ExtraGatewayService = {
   platform: "darwin" | "linux" | "win32";
@@ -32,11 +27,6 @@ export type ExtraGatewayService = {
 
 export type FindExtraGatewayServicesOptions = {
   deep?: boolean;
-};
-
-export type ManagedGatewayBinding = {
-  readonly profile: string;
-  readonly env: GatewayServiceEnv;
 };
 
 const EXTRA_MARKERS = ["openclaw", "clawdbot"] as const;
@@ -553,184 +543,14 @@ export async function findExtraGatewayServices(
   return results;
 }
 
-function bindingSelectorKey(binding: ManagedGatewayBinding): string {
-  return [
-    binding.profile,
-    binding.env.OPENCLAW_SYSTEMD_UNIT ?? "",
-    binding.env.OPENCLAW_LAUNCHD_LABEL ?? "",
-    binding.env.OPENCLAW_WINDOWS_TASK_NAME ?? "",
-  ].join("\0");
-}
-
-function normalizeDiscoveredProfile(value: string | undefined): string {
-  const trimmed = value?.trim();
-  if (!trimmed || normalizeLowercaseStringOrEmpty(trimmed) === "default") {
-    return "default";
-  }
-  return trimmed;
-}
-
-function hostBindingEnv(
-  env: Record<string, string | undefined>,
-  extras: GatewayServiceEnv,
-): GatewayServiceEnv {
-  return {
-    ...(env.HOME !== undefined ? { HOME: env.HOME } : {}),
-    ...(env.USERPROFILE !== undefined ? { USERPROFILE: env.USERPROFILE } : {}),
-    ...extras,
-  };
-}
-
-function profileEnvFields(profile: string): GatewayServiceEnv {
-  return profile === "default" ? {} : { OPENCLAW_PROFILE: profile };
-}
-
-function inferProfileFromSystemdUnitName(label: string): string | undefined {
-  const name = label.endsWith(".service") ? label.slice(0, -".service".length) : label;
-  if (name === "openclaw-gateway") {
-    return "default";
-  }
-  const prefix = "openclaw-gateway-";
-  if (name.startsWith(prefix) && name.length > prefix.length) {
-    return name.slice(prefix.length);
-  }
-  return undefined;
-}
-
-function inferProfileFromLaunchdLabel(label: string): string | undefined {
-  if (label === resolveGatewayLaunchAgentLabel()) {
-    return "default";
-  }
-  const prefix = "ai.openclaw.";
-  if (label.startsWith(prefix)) {
-    const rest = label.slice(prefix.length);
-    if (rest && rest !== "node") {
-      return rest;
-    }
-  }
-  return undefined;
-}
-
-function inferProfileFromWindowsTaskName(name: string): string | undefined {
-  const stripped = name.replace(/^\\+/, "").trim();
-  const defaultName = resolveGatewayWindowsTaskName();
-  if (normalizeLowercaseStringOrEmpty(stripped) === normalizeLowercaseStringOrEmpty(defaultName)) {
-    return "default";
-  }
-  const match = stripped.match(/^OpenClaw Gateway \((.+)\)$/i);
-  return match?.[1]?.trim() || undefined;
-}
-
-function readOpenClawProfileFromSystemdUnit(contents: string): string | undefined {
-  for (const line of splitSystemdLogicalLines(contents)) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith(";")) {
-      continue;
-    }
-    if (!trimmed.toLowerCase().startsWith("environment=")) {
-      continue;
-    }
-    for (const { key, value } of parseSystemdEnvAssignments(trimmed.slice("Environment=".length))) {
-      if (key === "OPENCLAW_PROFILE" && value.trim()) {
-        return value.trim();
-      }
-    }
-  }
-  return undefined;
-}
-
-function detailPath(prefix: string, detail: string): string | undefined {
-  if (!detail.startsWith(prefix)) {
-    return undefined;
-  }
-  return detail.slice(prefix.length).trim();
-}
-
-async function bindingFromSystemdService(
-  svc: ExtraGatewayService,
-  env: Record<string, string | undefined>,
-): Promise<ManagedGatewayBinding> {
-  const unitPath = detailPath("unit:", svc.detail);
-  let envProfile: string | undefined;
-  if (unitPath) {
-    const bytes = await readServiceFile(unitPath);
-    if (bytes) {
-      envProfile = readOpenClawProfileFromSystemdUnit(bytes.toString("utf8"));
-    }
-  }
-  const profile = normalizeDiscoveredProfile(
-    envProfile ?? inferProfileFromSystemdUnitName(svc.label) ?? "default",
-  );
-  return {
-    profile,
-    env: hostBindingEnv(env, {
-      ...profileEnvFields(profile),
-      OPENCLAW_SYSTEMD_UNIT: svc.label,
-    }),
-  };
-}
-
-async function bindingFromLaunchdService(
-  svc: ExtraGatewayService,
-  env: Record<string, string | undefined>,
-): Promise<ManagedGatewayBinding> {
-  const plistPath = detailPath("plist:", svc.detail);
-  let envProfile: string | undefined;
-  if (plistPath) {
-    const bytes = await readServiceFile(plistPath);
-    if (bytes) {
-      const plist = await decodeLaunchdPlistMetadata(bytes).catch(() => undefined);
-      const vars = plist?.EnvironmentVariables;
-      if (vars && typeof vars === "object" && vars !== null && !Array.isArray(vars)) {
-        const profileValue = (vars as Record<string, unknown>).OPENCLAW_PROFILE;
-        if (typeof profileValue === "string" && profileValue.trim()) {
-          envProfile = profileValue.trim();
-        }
-      }
-    }
-  }
-  const inferred = inferProfileFromLaunchdLabel(svc.label);
-  const profile = normalizeDiscoveredProfile(envProfile ?? inferred ?? "default");
-  return {
-    profile,
-    env: hostBindingEnv(env, {
-      ...profileEnvFields(profile),
-      OPENCLAW_LAUNCHD_LABEL: svc.label,
-    }),
-  };
-}
-
-function bindingFromWindowsTask(
-  name: string,
-  env: Record<string, string | undefined>,
-): ManagedGatewayBinding {
-  const profile = normalizeDiscoveredProfile(inferProfileFromWindowsTaskName(name) ?? "default");
-  return {
-    profile,
-    env: hostBindingEnv(env, {
-      ...profileEnvFields(profile),
-      OPENCLAW_WINDOWS_TASK_NAME: name.replace(/^\\+/, "").trim() || name,
-    }),
-  };
-}
-
 /**
- * Enumerate installed managed Gateway selectors for the live-dist fence.
+ * List installed managed OpenClaw Gateway services (user LaunchAgents / user
+ * systemd units / Windows Gateway tasks). Extra-service scans still skip these.
  */
-export async function discoverManagedGatewayBindings(
+export async function listManagedOpenClawGatewayServices(
   env: Record<string, string | undefined>,
-): Promise<ManagedGatewayBinding[]> {
-  const results: ManagedGatewayBinding[] = [];
-  const seen = new Set<string>();
-  const push = (binding: ManagedGatewayBinding) => {
-    const key = bindingSelectorKey(binding);
-    if (seen.has(key)) {
-      return;
-    }
-    seen.add(key);
-    results.push(binding);
-  };
-
+): Promise<ExtraGatewayService[]> {
+  const results: ExtraGatewayService[] = [];
   try {
     if (process.platform === "darwin") {
       const home = resolveDaemonHomeDir(env);
@@ -740,10 +560,9 @@ export async function discoverManagedGatewayBindings(
         scope: "user",
         includeManagedOpenClaw: true,
       })) {
-        if (svc.marker !== "openclaw") {
-          continue;
+        if (svc.marker === "openclaw") {
+          results.push(svc);
         }
-        push(await bindingFromLaunchdService(svc, env));
       }
       return results;
     }
@@ -756,10 +575,9 @@ export async function discoverManagedGatewayBindings(
         scope: "user",
         includeManagedOpenClaw: true,
       })) {
-        if (svc.marker !== "openclaw") {
-          continue;
+        if (svc.marker === "openclaw") {
+          results.push(svc);
         }
-        push(await bindingFromSystemdService(svc, env));
       }
       return results;
     }
@@ -774,7 +592,14 @@ export async function discoverManagedGatewayBindings(
         if (!name || !isOpenClawGatewayTaskName(name)) {
           continue;
         }
-        push(bindingFromWindowsTask(name, env));
+        results.push({
+          platform: "win32",
+          label: name,
+          detail: task.taskToRun ? `task: ${name}, run: ${task.taskToRun}` : name,
+          scope: "system",
+          marker: "openclaw",
+          legacy: false,
+        });
       }
       return results;
     }

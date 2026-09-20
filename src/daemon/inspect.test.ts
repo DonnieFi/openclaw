@@ -6,10 +6,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import {
   detectMarkerLineWithGateway,
-  discoverManagedGatewayBindings,
   findExtraGatewayServices,
   renderGatewayServiceCleanupHints,
 } from "./inspect.js";
+import { discoverManagedGatewayBindings } from "./managed-gateway-bindings.js";
 
 const { execSchtasksMock } = vi.hoisted(() => ({
   execSchtasksMock: vi.fn(),

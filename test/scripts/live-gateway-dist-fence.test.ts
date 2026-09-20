@@ -281,9 +281,10 @@ describe("live-gateway-dist-fence cross-profile overlap", () => {
           `${unitBody}Environment=OPENCLAW_PROFILE=fenceproof\n`,
         );
 
-        const { discoverManagedGatewayBindings } = await import("../../src/daemon/inspect.ts");
+        const { discoverManagedGatewayBindings } =
+          await import("../../src/daemon/managed-gateway-bindings.ts");
         const bindings = await discoverManagedGatewayBindings({ HOME: home });
-        expect(bindings.map((binding) => binding.profile).sort()).toEqual([
+        expect(bindings.map((binding) => binding.profile).toSorted()).toEqual([
           "default",
           "fenceproof",
         ]);

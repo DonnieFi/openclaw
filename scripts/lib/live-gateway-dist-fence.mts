@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { ManagedGatewayBinding } from "../../src/daemon/inspect.ts";
+import type { ManagedGatewayBinding } from "../../src/daemon/managed-gateway-bindings.ts";
 import type { GatewayServiceEnv, GatewayServiceState } from "../../src/daemon/service-types.ts";
 
 export type { ManagedGatewayBinding };
@@ -99,7 +99,7 @@ function formatRefuseMessage(params: {
   entrypoint?: string;
   unit?: string;
 }): string {
-  const profiles = [...params.profiles].sort((left, right) => left.localeCompare(right));
+  const profiles = params.profiles.toSorted((left, right) => left.localeCompare(right));
   const profileText =
     profiles.length === 1 ? ` (profile ${profiles[0]})` : ` (profiles ${profiles.join(", ")})`;
   const entry = params.entrypoint ? ` (${params.entrypoint})` : "";
@@ -206,7 +206,7 @@ async function resolveFenceBindings(
     if (deps.readState) {
       return [current];
     }
-    const inspect = await import("../../src/daemon/inspect.ts");
+    const inspect = await import("../../src/daemon/managed-gateway-bindings.ts");
     const discovered = await inspect.discoverManagedGatewayBindings(env);
     return dedupeBindings([current, ...discovered]);
   } catch {
