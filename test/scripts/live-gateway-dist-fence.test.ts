@@ -427,7 +427,7 @@ describe("live-gateway-dist-fence cross-profile overlap", () => {
           });
         },
       });
-      expect(inspected.toSorted((left, right) => left.localeCompare(right))).toEqual([
+      expect(inspected.toSorted((left, right) => (left ?? "").localeCompare(right ?? ""))).toEqual([
         "system",
         "user",
       ]);

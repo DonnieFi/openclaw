@@ -3,8 +3,6 @@ import path from "node:path";
 import type { ManagedGatewayBinding } from "../../src/daemon/managed-gateway-bindings.ts";
 import type { GatewayServiceEnv, GatewayServiceState } from "../../src/daemon/service-types.ts";
 
-export type { ManagedGatewayBinding };
-
 export type LiveGatewayDistFenceDeps = {
   env?: NodeJS.ProcessEnv;
   listBindings?: (env: GatewayServiceEnv) => Promise<readonly ManagedGatewayBinding[]>;
@@ -101,7 +99,9 @@ function formatRefuseMessage(params: {
   entrypoint?: string;
   unit?: string;
 }): string {
-  const profiles = params.profiles.toSorted((left, right) => left.localeCompare(right));
+  const profiles = params.profiles.toSorted((left, right) =>
+    (left ?? "").localeCompare(right ?? ""),
+  );
   const profileText =
     profiles.length === 1 ? ` (profile ${profiles[0]})` : ` (profiles ${profiles.join(", ")})`;
   const entry = params.entrypoint ? ` (${params.entrypoint})` : "";

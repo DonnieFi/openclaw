@@ -1,5 +1,6 @@
 /** Map installed managed Gateway services to profile-scoped inspection bindings. */
 import fs from "node:fs/promises";
+import { isRecord, readStringField } from "@openclaw/normalization-core/record-coerce";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { resolveGatewayLaunchAgentLabel, resolveGatewayWindowsTaskName } from "./constants.js";
 import {
@@ -161,9 +162,9 @@ async function bindingFromLaunchdService(
     if (bytes) {
       const plist = await decodeLaunchdPlistMetadata(bytes).catch(() => undefined);
       const vars = plist?.EnvironmentVariables;
-      if (vars && typeof vars === "object" && vars !== null && !Array.isArray(vars)) {
-        const profileValue = (vars as Record<string, unknown>).OPENCLAW_PROFILE;
-        if (typeof profileValue === "string" && profileValue.trim()) {
+      if (isRecord(vars)) {
+        const profileValue = readStringField(vars, "OPENCLAW_PROFILE");
+        if (profileValue?.trim()) {
           envProfile = profileValue.trim();
         }
       }
