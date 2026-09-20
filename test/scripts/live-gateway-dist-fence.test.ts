@@ -427,7 +427,10 @@ describe("live-gateway-dist-fence cross-profile overlap", () => {
           });
         },
       });
-      expect(inspected.toSorted()).toEqual(["system", "user"]);
+      expect(inspected.toSorted((left, right) => left.localeCompare(right))).toEqual([
+        "system",
+        "user",
+      ]);
       expect(result.refuse).toBe(true);
     });
   });
