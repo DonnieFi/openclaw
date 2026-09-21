@@ -17,6 +17,7 @@ import {
   bindCronJobAdmittedRun,
   bindCronSelfRemovalCommitGuard,
   captureCronJobMessageActionAuthority,
+  captureCronJobMessageSourceAuthority,
   markCronJobActive,
   noteActiveCronJobRemoval,
   requestActiveCronJobCancellation,
@@ -33,10 +34,10 @@ import { createCronServiceState } from "../service/state.js";
 import { loadCronStore, saveCronStore } from "../store.js";
 import type { CronJob, CronJobPatch, CronStoredJob, CronToolsAllowProvenance } from "../types.js";
 import { cronStoreKey } from "./key.js";
+import { bindCronRunReceiptExecution } from "./run-receipt-execution-binding.js";
 import {
   assertCronRunReceiptCurrent,
   activateCronRunReceiptInDatabase,
-  bindCronRunReceiptExecution,
   claimCronRunReceiptInDatabase,
   CronRunReceiptConflictError,
   CronRunReceiptRevisionError,
@@ -197,6 +198,7 @@ describe("cron run receipt store", () => {
           ownerSessionKey: originOwner.sessionKey,
           ownerAccountId: originOwner.accountId,
         };
+        job.schedule = { kind: "every", everyMs: 60_000, anchorMs: job.createdAtMs };
         job.toolsAllowProvenance = provenance;
       }
       await saveCronStore(storePath, { version: 1, jobs: [job] });
@@ -223,11 +225,16 @@ describe("cron run receipt store", () => {
       try {
         const admitted = await admission.admit("embedded");
         bindCronJobAdmittedRun(marker, admitted, controller.signal);
-        const assertCurrent = captureCronJobMessageActionAuthority({
+        const assertMessageCurrent = captureCronJobMessageActionAuthority({
           jobId: job.id,
           operationalRunInstance: admitted.operationalRunInstance,
         });
-        expect(assertCurrent).not.toThrow();
+        const assertSourceCurrent = captureCronJobMessageSourceAuthority({
+          jobId: job.id,
+          operationalRunInstance: admitted.operationalRunInstance,
+        });
+        expect(assertMessageCurrent).not.toThrow();
+        expect(assertSourceCurrent).not.toThrow();
         if (native) {
           await update(
             state,
@@ -240,7 +247,8 @@ describe("cron run receipt store", () => {
               },
             },
           );
-          expect(assertCurrent).not.toThrow();
+          expect(assertMessageCurrent).not.toThrow();
+          expect(assertSourceCurrent).not.toThrow();
           if (mutation === "native requester") {
             await update(
               state,
@@ -280,14 +288,21 @@ describe("cron run receipt store", () => {
           expect(restored.state.triggerState).toEqual(job.state.triggerState);
         } else {
           // An admission that began disabled and unrelated tool/delivery edits keep access.
-          await update(state, job.id, {
-            name: "renamed",
-            delivery: { mode: "none" },
-            ...(mutation === "tool policy"
-              ? { payload: { kind: "agentTurn" as const, toolsAllow: ["message"] } }
-              : {}),
-          });
-          expect(assertCurrent).not.toThrow();
+          await update(
+            state,
+            job.id,
+            mutation === "origin"
+              ? { description: "descriptive origin notes" }
+              : {
+                  name: "renamed",
+                  delivery: { mode: "none" },
+                  ...(mutation === "tool policy"
+                    ? { payload: { kind: "agentTurn" as const, toolsAllow: ["message"] } }
+                    : {}),
+                },
+          );
+          expect(assertMessageCurrent).not.toThrow();
+          expect(assertSourceCurrent).not.toThrow();
           if (mutation === "origin") {
             for (const channel of ["slack", "discord"]) {
               const originProvenance: CronToolsAllowProvenance = {
@@ -306,7 +321,7 @@ describe("cron run receipt store", () => {
                   version: 1,
                   jobs: [{ ...job, toolsAllowProvenance: originProvenance }],
                 });
-                expect(assertCurrent).toThrow();
+                expect(assertSourceCurrent).toThrow();
               }
             }
           } else if (writer === "service") {
@@ -319,11 +334,17 @@ describe("cron run receipt store", () => {
               version: 1,
               jobs: [{ ...job, payload: { kind: "command", argv: ["true"] } }],
             });
-            expect(assertCurrent).toThrow();
+            expect(assertSourceCurrent).toThrow();
+            expect(assertMessageCurrent).toThrow();
             await saveCronStore(storePath, { version: 1, jobs: [job] });
           }
         }
-        expect(assertCurrent).toThrow();
+        expect(assertSourceCurrent).toThrow();
+        if (mutation === "tool policy") {
+          expect(assertMessageCurrent).toThrow();
+        } else {
+          expect(assertMessageCurrent).not.toThrow();
+        }
         expect(controller.signal.aborted).toBe(false);
         expect(() => assertServiceCronRunReceiptCurrent(state, receipt, marker)).not.toThrow();
         expect(receipts(storePath, job.id)[0]?.status).toBe("running");
@@ -671,7 +692,7 @@ describe("cron run receipt store", () => {
       requestHeartbeat: vi.fn(),
       runIsolatedAgentJob: vi.fn(),
     });
-    const proposal = proposeCronRunRecovery(state, job.id, undefined, startedAtMs);
+    const proposal = await proposeCronRunRecovery(state, job.id, undefined, startedAtMs);
     expect(recoverCronRunProposal(state, proposal)).toMatchObject({ kind: "live" });
 
     foreign.startTimeProbe.mockImplementation((pid) =>
@@ -772,8 +793,8 @@ describe("cron run receipt store", () => {
       }),
     };
 
-    expect(bindCronRunReceiptExecution({ admitted, handle: abandoned })).toBe("missing");
-    expect(bindCronRunReceiptExecution({ admitted, handle: replacement })).toBe("bound");
+    expect(await bindCronRunReceiptExecution({ admitted, handle: abandoned })).toBe("missing");
+    expect(await bindCronRunReceiptExecution({ admitted, handle: replacement })).toBe("bound");
     expect(
       openOpenClawStateDatabase()
         .db.prepare(
@@ -811,7 +832,7 @@ describe("cron run receipt store", () => {
       const handle = claim(storePath, job, 1_000 + index * 2);
       finishedReceiptIds.push(handle.receiptId);
       if (index === 0 || index === 69) {
-        expect(bindCronRunReceiptExecution({ admitted, handle })).toBe("bound");
+        expect(await bindCronRunReceiptExecution({ admitted, handle })).toBe("bound");
         await retireTriggerState(handle);
       }
       finishCronRunReceipt({
@@ -828,7 +849,7 @@ describe("cron run receipt store", () => {
       }
     }
     const active = claim(storePath, job, 2_000);
-    expect(bindCronRunReceiptExecution({ admitted, handle: active })).toBe("bound");
+    expect(await bindCronRunReceiptExecution({ admitted, handle: active })).toBe("bound");
     await retireTriggerState(active);
 
     const retained = receipts(storePath, job.id);
