@@ -103,6 +103,9 @@ else process.exit(outcome);
         PNPM_CONFIG_MODULES_DIR: path.dirname(
           path.dirname(createRequire(import.meta.url).resolve("tsx/package.json")),
         ),
+        // The copied shim runs from a fixture cwd with no tsconfig; pin this
+        // checkout so run-node.mts's profile graph resolves workspace imports.
+        TSX_TSCONFIG_PATH: path.resolve("tsconfig.json"),
       };
       delete env.NODE_OPTIONS;
       delete env.NODE_DISABLE_COMPILE_CACHE;
@@ -277,6 +280,9 @@ else process.exit(outcome);
         PNPM_CONFIG_MODULES_DIR: path.dirname(
           path.dirname(createRequire(import.meta.url).resolve("tsx/package.json")),
         ),
+        // The copied shim runs from a fixture cwd with no tsconfig; pin this
+        // checkout so run-node.mts's profile graph resolves workspace imports.
+        TSX_TSCONFIG_PATH: path.resolve("tsconfig.json"),
       };
       delete env.NODE_OPTIONS;
       const command = runNode([wrapperPath], env, checkoutRoot);

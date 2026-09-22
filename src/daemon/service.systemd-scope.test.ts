@@ -21,6 +21,7 @@ vi.mock("./inspect.js", async (importOriginal) => {
 
 import { discoverManagedGatewayBindings } from "./managed-gateway-bindings.js";
 import { readGatewayServiceState, resolveGatewayService } from "./service.js";
+import { findSystemdGatewayInstallation, resolveSystemdRunnableUnitName } from "./systemd-scope.js";
 
 const dirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => vi.restoreAllMocks());
@@ -31,6 +32,7 @@ const success = (stdout: string): ExecResult => ({
   stdout,
   stderr: "",
 });
+const TEST_MANAGED_HOME = "/tmp/openclaw-test-home";
 
 it.each([
   { file: "openclaw.service", instance: "openclaw.service", running: false },
@@ -353,4 +355,37 @@ it("reads the system template instance while a separate user Gateway is installe
   expect(
     exec.mock.calls.some(([, args]) => args.includes(instanceName) || args.at(-1) === instanceName),
   ).toBe(true);
+});
+
+it("findSystemdGatewayInstallation expands a system template to this account's instance", async () => {
+  // No unit files exist anywhere; discovery supplies the system template unit.
+  vi.spyOn(fs, "access").mockRejectedValue(Object.assign(new Error("missing"), { code: "ENOENT" }));
+  vi.spyOn(os, "userInfo").mockReturnValue({
+    username: "gateway",
+    uid: 2001,
+    gid: 2001,
+    shell: "/bin/sh",
+    homedir: TEST_MANAGED_HOME,
+  });
+  discovery.mockResolvedValueOnce([
+    {
+      platform: "linux",
+      label: "openclaw@.service",
+      detail: "unit: /etc/systemd/system/openclaw@.service",
+      scope: "system",
+      marker: "openclaw",
+    },
+  ]);
+  await expect(findSystemdGatewayInstallation({ HOME: TEST_MANAGED_HOME })).resolves.toEqual({
+    kind: "system",
+    system: {
+      scope: "system",
+      unitName: "openclaw@gateway.service",
+      unitPath: "/etc/systemd/system/openclaw@.service",
+    },
+  });
+  expect(resolveSystemdRunnableUnitName("openclaw@.service")).toBe("openclaw@gateway.service");
+  expect(resolveSystemdRunnableUnitName("openclaw-gateway.service")).toBe(
+    "openclaw-gateway.service",
+  );
 });

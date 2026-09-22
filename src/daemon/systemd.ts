@@ -27,5 +27,4 @@ export {
   findSystemdGatewayInstallation,
   formatDuelingScopesWarning,
   isSystemUnitActiveAndEnabled,
-  resolveSystemdRunnableUnitName,
 } from "./systemd-scope.js";
