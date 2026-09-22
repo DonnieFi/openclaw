@@ -209,4 +209,95 @@ describe("CodexAppServerEventProjector nested tool-output media", () => {
       expect.objectContaining({ itemId: "call_invalid_images:image:3" }),
     );
   });
+
+  it("keeps host dynamic-tool output out of reply media", async () => {
+    const projector = await createProjector();
+    const dataUrl = `data:image/png;base64,${tinyPngBase64}`;
+    // The host executes this call and forwards its pixels to Codex for model
+    // use only; its raw echo must not republish them as reply attachments.
+    projector.recordDynamicToolCall({ callId: "call_browser_snapshot", tool: "browser" });
+    await projector.handleNotification(
+      forCurrentTurn("rawResponseItem/completed", {
+        item: {
+          type: "function_call_output",
+          call_id: "call_browser_snapshot",
+          output: [
+            { type: "input_text", text: "snapshot captured" },
+            { type: "input_image", image_url: dataUrl },
+          ],
+        },
+      }),
+    );
+
+    const result = projector.buildResult(buildEmptyToolTelemetry());
+
+    expect(result.toolMediaUrls).toBeUndefined();
+    expect(result.hostOwnedToolMediaUrls).toBeUndefined();
+    expect(JSON.stringify(result.messagesSnapshot)).not.toContain(tinyPngBase64);
+  });
+
+  it.each([{ order: "imageView first" as const }, { order: "raw output first" as const }])(
+    "suppresses a source reply that already sent the viewed image ($order)",
+    async ({ order }) => {
+      const projector = await createProjector();
+      const sourcePath = "/workspace/screenshot.png";
+      const imageViewCompleted = forCurrentTurn("item/completed", {
+        item: { type: "imageView", id: "call_view_source", path: sourcePath },
+      });
+      const rawOutputCompleted = forCurrentTurn("rawResponseItem/completed", {
+        item: {
+          type: "custom_tool_call_output",
+          call_id: "call_view_source",
+          output: [{ type: "input_image", image_url: `data:image/png;base64,${tinyPngBase64}` }],
+        },
+      });
+      if (order === "imageView first") {
+        await projector.handleNotification(imageViewCompleted);
+        await projector.handleNotification(rawOutputCompleted);
+      } else {
+        await projector.handleNotification(rawOutputCompleted);
+        await projector.handleNotification(imageViewCompleted);
+      }
+
+      const result = projector.buildResult({
+        ...buildEmptyToolTelemetry(),
+        confirmedMediaDeliveries: [
+          { kind: "sourceReply", sourceUrls: ["file:///workspace/screenshot.png"] },
+        ],
+      });
+
+      expect(result.toolMediaUrls).toBeUndefined();
+      expect(result.hostOwnedToolMediaUrls).toBeUndefined();
+    },
+  );
+
+  it("attributes a confirmed original-path send to its target once", async () => {
+    const projector = await createProjector();
+    const sourcePath = "/workspace/screenshot.png";
+    await projector.handleNotification(
+      forCurrentTurn("item/completed", {
+        item: { type: "imageView", id: "call_view_target", path: sourcePath },
+      }),
+    );
+    await projector.handleNotification(
+      forCurrentTurn("rawResponseItem/completed", {
+        item: {
+          type: "custom_tool_call_output",
+          call_id: "call_view_target",
+          output: [{ type: "input_image", image_url: `data:image/png;base64,${tinyPngBase64}` }],
+        },
+      }),
+    );
+
+    const target = { tool: "message", provider: "control-ui" };
+    const result = projector.buildResult({
+      ...buildEmptyToolTelemetry(),
+      messagingToolSentTargets: [target],
+      confirmedMediaDeliveries: [{ kind: "outbound", target, sourceUrls: [sourcePath] }],
+    });
+
+    expect(result.toolMediaUrls).toHaveLength(1);
+    expect(result.messagingToolSentTargets).toHaveLength(1);
+    expect(result.messagingToolSentTargets[0]?.mediaUrls).toEqual(result.toolMediaUrls);
+  });
 });

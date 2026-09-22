@@ -21,6 +21,8 @@ const MAX_TOOL_OUTPUT_IMAGE_DATA_URL_HEADER_CHARS = 256;
 export class CodexGeneratedMediaProjection {
   private readonly mediaItemIds = new Set<string>();
   private readonly generatedItemIds = new Set<string>();
+  private readonly hostDynamicToolCallIds = new Set<string>();
+  private readonly sourcePathByViewedImageCallId = new Map<string, string>();
   private readonly mediaByItemId = new Map<string, { mediaUrl?: string; savedPath?: string }>();
   private readonly gatewayMaterializedItemIds = new Set<string>();
   private readonly pendingMaterializationsByItemId = new Map<string, Promise<void>>();
@@ -39,7 +41,25 @@ export class CodexGeneratedMediaProjection {
     return this.generatedItemIds.size > 0;
   }
 
+  /**
+   * Host dynamic tools enforce their own outbound policy on result media, so
+   * raw Codex echoes of their call ids must never republish those bytes.
+   */
+  recordDynamicToolCall(params: { callId: string }): void {
+    this.hostDynamicToolCallIds.add(params.callId);
+  }
+
   async recordNative(item: CodexThreadItem | undefined): Promise<void> {
+    if (item?.type === "imageView") {
+      // Codex tags ImageView with the raw call id and image path
+      // (view_image.rs ImageViewItem), retaining the source identity that
+      // confirmed original-path delivery matching needs.
+      const sourcePath = readItemString(item, "path")?.trim();
+      if (sourcePath) {
+        this.recordViewedImageSourcePath(item.id, sourcePath);
+      }
+      return;
+    }
     if (item?.type !== "imageGeneration") {
       return;
     }
@@ -290,6 +310,11 @@ export class CodexGeneratedMediaProjection {
     if (!rawItemId) {
       return;
     }
+    if (this.hostDynamicToolCallIds.has(rawItemId)) {
+      // The host already applied media.outbound to this dynamic tool's result;
+      // its raw echo must not bypass that decision as a host-owned attachment.
+      return;
+    }
     for (const [index, part] of item.output.entries()) {
       if (!isInputImagePart(part)) {
         continue;
@@ -298,12 +323,35 @@ export class CodexGeneratedMediaProjection {
       if (!parsed) {
         continue;
       }
+      const itemId = `${rawItemId}:image:${index}`;
       await this.recordImage({
-        itemId: `${rawItemId}:image:${index}`,
+        itemId,
         result: parsed.base64,
         requireImageBytes: true,
         source: "tool-output",
       });
+      // Overlapping notifications may deliver the ImageView identity while this
+      // copy materializes, so read it after the await instead of caching it.
+      const sourcePath = this.sourcePathByViewedImageCallId.get(rawItemId);
+      if (sourcePath) {
+        this.attachViewedImageSourcePath(itemId, sourcePath);
+      }
+    }
+  }
+
+  private recordViewedImageSourcePath(callId: string, sourcePath: string): void {
+    this.sourcePathByViewedImageCallId.set(callId, sourcePath);
+    for (const itemId of this.mediaByItemId.keys()) {
+      if (itemId.startsWith(`${callId}:image:`)) {
+        this.attachViewedImageSourcePath(itemId, sourcePath);
+      }
+    }
+  }
+
+  private attachViewedImageSourcePath(itemId: string, sourcePath: string): void {
+    const media = this.mediaByItemId.get(itemId);
+    if (media?.mediaUrl && !media.savedPath) {
+      this.mediaByItemId.set(itemId, { ...media, savedPath: sourcePath });
     }
   }
 }
