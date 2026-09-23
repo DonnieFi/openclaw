@@ -490,7 +490,10 @@ export async function sendSubagentAnnounceDirectlyImpl(params: {
     const directAnnounceResult = getGatewayAgentResult(directAnnounceResponse);
     const directAnnounceRecord = asOptionalRecord(directAnnounceResponse);
     if (parentOnly) {
-      return resolvePrivateCompletionDeliveryResult(directAnnounceRecord);
+      return resolvePrivateCompletionDeliveryResult(
+        directAnnounceRecord,
+        params.requesterIsSubagent ? undefined : effectiveDirectOrigin,
+      );
     }
     const hasFinalMessagingToolDelivery = Boolean(
       directAnnounceResult &&

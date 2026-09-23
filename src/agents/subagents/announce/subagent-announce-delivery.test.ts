@@ -5115,11 +5115,11 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
       expected: missingRequesterFinal,
     })),
     ...["accepted", "in_flight"].map((status) => ({
-      name: `retains an ${status} settle handoff until terminal evidence`,
+      name: `does not record ${status} handoff as a visible final`,
       routes: requesterSettleRoutes,
       response: { status },
       requireVisibleReply: true,
-      expected: { delivered: false, reason: "requester_turn_pending", disposition: "retryable" },
+      expected: deliveredRequesterFinal,
     })),
     {
       name: "does not record a canceled partial answer as a visible final",
