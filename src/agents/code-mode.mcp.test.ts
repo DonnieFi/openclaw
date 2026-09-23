@@ -534,6 +534,66 @@ describe("Code Mode MCP namespace", () => {
     });
   });
 
+  it("surfaces a blocked MCP resources list as a guest error (#156765)", async () => {
+    const before = vi.fn(async (event: { toolName?: string }) => {
+      if (String(event.toolName).includes("resources_list")) {
+        return { block: true, blockReason: REPRO_POLICY_DENIED };
+      }
+      return undefined;
+    });
+    initializeGlobalHookRunner(
+      createMockPluginRegistry([
+        { hookName: "before_tool_call", handler: before as (...args: unknown[]) => unknown },
+      ]),
+    );
+    const executor = vi.fn(async () => {
+      throw new Error("blocked MCP resources list must not execute");
+    });
+    const { config, catalogRef, tools: codeModeTools } = createCodeModeHarness();
+    const source = mcpTool({
+      name: "docs__resources_list",
+      serverName: "docs",
+      toolName: "resources_list",
+      operation: "resources_list",
+      execute: executor,
+    });
+    const wrapped = wrapToolWithBeforeToolCallHook(source, {
+      runId: "run-code-mode",
+      sessionKey: "agent:main:main",
+      sessionId: "session-code-mode",
+    });
+    copyPluginToolMeta(source, wrapped);
+    applyCodeModeCatalog({
+      tools: [...codeModeTools, wrapped],
+      config,
+      sessionId: "session-code-mode",
+      sessionKey: "agent:main:main",
+      runId: "run-code-mode",
+      catalogRef,
+    });
+
+    const details = await runUntilCompleted({
+      execTool: expectDefined(codeModeTools[0], "Code Mode exec test invariant"),
+      waitTool: expectDefined(codeModeTools[1], "Code Mode wait test invariant"),
+      code: `
+        try {
+          const result = await MCP.docs.resources.list();
+          return { resources: result?.resources ?? null };
+        } catch (error) {
+          return { error: String(error?.message ?? error) };
+        }
+      `,
+    });
+
+    expect(details.status, JSON.stringify(details)).toBe("completed");
+    expect(executor).not.toHaveBeenCalled();
+    expect(before).toHaveBeenCalled();
+    expect(details.value).toEqual({
+      error: expect.stringContaining(REPRO_POLICY_DENIED),
+    });
+    expect(JSON.stringify(details.value)).not.toContain("missing its owned guest projection");
+  });
+
   it.each([
     {
       serverName: "constructor",

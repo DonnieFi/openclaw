@@ -535,12 +535,20 @@ export class ToolSearchRuntime {
       if (isPreExecutionBlockedToolResult(candidate)) {
         // The JSON-safe snapshot drops the private blocked-result marker.
         preExecutionBlocked = true;
-        await assertCatalogOutputMatchesSchema(entry, candidate);
-        // MCP namespace guests require owned projection; attach it while the
-        // trusted pre-execution marker is still on this object.
         if (entry.source === "mcp") {
-          setMcpCodeModeGuestResultFromAgentResult(candidate);
+          const operation = entry.mcp?.operation ?? "tool";
+          if (operation === "tool") {
+            setMcpCodeModeGuestResultFromAgentResult(candidate);
+          } else {
+            const details = isRecord(candidate.details) ? candidate.details : undefined;
+            const reason =
+              typeof details?.reason === "string" && details.reason.trim()
+                ? details.reason.trim()
+                : "Tool call blocked by policy";
+            throw new Error(`Tool "${entry.id}" was blocked before execution: ${reason}`);
+          }
         }
+        await assertCatalogOutputMatchesSchema(entry, candidate);
       }
       const snapshot =
         candidate === acceptedSnapshot
