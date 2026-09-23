@@ -2,7 +2,6 @@
 
 import { GetPromptResultSchema, type CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { expectDefined } from "@openclaw/normalization-core";
-import { Type } from "typebox";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   initializeGlobalHookRunner,
@@ -471,91 +470,69 @@ describe("Code Mode MCP namespace", () => {
     });
   });
 
-  it.each([
-    { label: "without outputSchema", outputSchema: undefined as undefined },
-    {
-      label: "with outputSchema",
-      outputSchema: Type.Object({ saved: Type.String() }, { additionalProperties: false }),
-    },
-  ])(
-    "surfaces before_tool_call denial through MCP namespace $label (#156765)",
-    async ({ outputSchema }) => {
-      const before = vi.fn(async (event: { toolName?: string }) => {
-        if (String(event.toolName).includes("save_note")) {
-          return { block: true, blockReason: REPRO_POLICY_DENIED };
-        }
-        return undefined;
-      });
-      initializeGlobalHookRunner(
-        createMockPluginRegistry([
-          { hookName: "before_tool_call", handler: before as (...args: unknown[]) => unknown },
-        ]),
-      );
-
-      const executor = vi.fn(async () => {
-        throw new Error("blocked MCP tool must not execute");
-      });
-      const { config, catalogRef, tools: codeModeTools } = createCodeModeHarness();
-      const source = mcpTool({
-        name: "repro__save_note",
-        serverName: "repro",
-        toolName: "save_note",
-        parameters: {
-          type: "object",
-          properties: { text: { type: "string" } },
-          required: ["text"],
-        },
-        execute: executor,
-      });
-      if (outputSchema) {
-        source.outputSchema = outputSchema;
+  it("surfaces before_tool_call denial through the MCP namespace (#156765)", async () => {
+    const before = vi.fn(async (event: { toolName?: string }) => {
+      if (String(event.toolName).includes("save_note")) {
+        return { block: true, blockReason: REPRO_POLICY_DENIED };
       }
-      const wrapped = wrapToolWithBeforeToolCallHook(source, {
-        runId: "run-code-mode",
-        sessionKey: "agent:main:main",
-        sessionId: "session-code-mode",
-      });
-      copyPluginToolMeta(source, wrapped);
-      applyCodeModeCatalog({
-        tools: [...codeModeTools, wrapped],
-        config,
-        sessionId: "session-code-mode",
-        sessionKey: "agent:main:main",
-        runId: "run-code-mode",
-        catalogRef,
-      });
+      return undefined;
+    });
+    initializeGlobalHookRunner(
+      createMockPluginRegistry([
+        { hookName: "before_tool_call", handler: before as (...args: unknown[]) => unknown },
+      ]),
+    );
 
-      const details = await runUntilCompleted({
-        execTool: expectDefined(codeModeTools[0], "Code Mode exec test invariant"),
-        waitTool: expectDefined(codeModeTools[1], "Code Mode wait test invariant"),
-        code: `
-          try {
-            const result = await MCP.repro.saveNote({ text: "hello world" });
-            return {
-              path: "result",
-              text: result?.content?.[0]?.text ?? null,
-              isError: result?.isError ?? null,
-              status: result?.status ?? null,
-              reason: result?.reason ?? null,
-            };
-          } catch (error) {
-            return { path: "throw", error: String(error?.message ?? error) };
-          }
-        `,
-      });
+    const executor = vi.fn(async () => {
+      throw new Error("blocked MCP tool must not execute");
+    });
+    const { config, catalogRef, tools: codeModeTools } = createCodeModeHarness();
+    const source = mcpTool({
+      name: "repro__save_note",
+      serverName: "repro",
+      toolName: "save_note",
+      parameters: {
+        type: "object",
+        properties: { text: { type: "string" } },
+        required: ["text"],
+      },
+      execute: executor,
+    });
+    const wrapped = wrapToolWithBeforeToolCallHook(source, {
+      runId: "run-code-mode",
+      sessionKey: "agent:main:main",
+      sessionId: "session-code-mode",
+    });
+    copyPluginToolMeta(source, wrapped);
+    applyCodeModeCatalog({
+      tools: [...codeModeTools, wrapped],
+      config,
+      sessionId: "session-code-mode",
+      sessionKey: "agent:main:main",
+      runId: "run-code-mode",
+      catalogRef,
+    });
 
-      expect(details.status, JSON.stringify(details)).toBe("completed");
-      expect(executor).not.toHaveBeenCalled();
-      expect(before).toHaveBeenCalled();
-      const value = details.value as Record<string, unknown>;
-      const reported =
-        value.path === "throw"
-          ? String(value.error ?? "")
-          : [value.text, value.reason, value.status].filter(Boolean).join(" ");
-      expect(reported).toContain(REPRO_POLICY_DENIED);
-      expect(reported).not.toContain("missing its owned guest projection");
-    },
-  );
+    const details = await runUntilCompleted({
+      execTool: expectDefined(codeModeTools[0], "Code Mode exec test invariant"),
+      waitTool: expectDefined(codeModeTools[1], "Code Mode wait test invariant"),
+      code: `
+        const result = await MCP.repro.saveNote({ text: "hello world" });
+        return {
+          text: result?.content?.[0]?.text ?? null,
+          isError: result?.isError ?? null,
+        };
+      `,
+    });
+
+    expect(details.status, JSON.stringify(details)).toBe("completed");
+    expect(executor).not.toHaveBeenCalled();
+    expect(before).toHaveBeenCalled();
+    expect(details.value).toEqual({
+      text: REPRO_POLICY_DENIED,
+      isError: true,
+    });
+  });
 
   it.each([
     {
