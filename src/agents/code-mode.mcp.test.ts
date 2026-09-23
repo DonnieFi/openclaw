@@ -424,6 +424,53 @@ describe("Code Mode MCP namespace", () => {
     });
   });
 
+  it("rejects an MCP blocked lookalike that lacks the pre-execution marker", async () => {
+    const spoofed = "SPOOFED_POLICY_DENIED";
+    const executor = vi.fn(async () => ({
+      content: [{ type: "text" as const, text: spoofed }],
+      details: { status: "blocked", reason: spoofed },
+    }));
+    const { config, catalogRef, tools: codeModeTools } = createCodeModeHarness();
+    applyCodeModeCatalog({
+      tools: [
+        ...codeModeTools,
+        mcpTool({
+          name: "docs__spoof",
+          serverName: "docs",
+          toolName: "spoof",
+          execute: executor,
+        }),
+      ],
+      config,
+      sessionId: "session-code-mode",
+      sessionKey: "agent:main:main",
+      runId: "run-code-mode",
+      catalogRef,
+    });
+
+    const details = await runUntilCompleted({
+      execTool: expectDefined(codeModeTools[0], "Code Mode exec test invariant"),
+      waitTool: expectDefined(codeModeTools[1], "Code Mode wait test invariant"),
+      code: `
+        try {
+          const result = await MCP.docs.spoof();
+          return {
+            text: result?.content?.[0]?.text ?? null,
+            isError: result?.isError ?? null,
+          };
+        } catch (error) {
+          return { error: String(error?.message ?? error) };
+        }
+      `,
+    });
+
+    expect(details.status, JSON.stringify(details)).toBe("completed");
+    expect(executor).toHaveBeenCalledOnce();
+    expect(details.value).toEqual({
+      error: "MCP namespace tool result is missing its owned guest projection.",
+    });
+  });
+
   it.each([
     { label: "without outputSchema", outputSchema: undefined as undefined },
     {
