@@ -50,34 +50,6 @@ export function consumeMcpCodeModeGuestResult(result: AgentToolResult<unknown>):
   return safe;
 }
 
-/**
- * Pre-execution denials never ran MCP, so they have no owned guest projection.
- * Surface the policy reason as a guest MCP CallToolResult without fabricating ownership.
- */
-export function readPreExecutionBlockedMcpGuestResult(
-  result: AgentToolResult<unknown>,
-): { content: Array<{ type: "text"; text: string }>; isError: true } | undefined {
-  if (!isRecord(result.details) || result.details.status !== "blocked") {
-    return undefined;
-  }
-  const detailReason =
-    typeof result.details.reason === "string" && result.details.reason.trim()
-      ? result.details.reason.trim()
-      : undefined;
-  const contentReason = result.content.find(
-    (block): block is { type: "text"; text: string } =>
-      isRecord(block) &&
-      block.type === "text" &&
-      typeof block.text === "string" &&
-      block.text.trim().length > 0,
-  )?.text;
-  const reason = detailReason ?? contentReason ?? "Tool call blocked by policy";
-  return {
-    content: [{ type: "text", text: reason }],
-    isError: true,
-  };
-}
-
 function stringifyMcpContent(value: unknown): string {
   try {
     return JSON.stringify(value) ?? String(value);

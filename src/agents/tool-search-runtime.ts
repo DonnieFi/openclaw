@@ -9,6 +9,7 @@ import {
 } from "./agent-tools.before-tool-call.js";
 import { runWithToolExecutionValidation } from "./agent-tools.execution-validation.js";
 import { getChannelAgentToolMeta } from "./channel-tool-metadata.js";
+import { setMcpCodeModeGuestResultFromAgentResult } from "./mcp-content.js";
 import { captureAgentPluginRuntimeRefresh } from "./plugin-runtime-refresh.js";
 import type { AgentToolResult } from "./runtime/index.js";
 import {
@@ -535,6 +536,11 @@ export class ToolSearchRuntime {
         // The JSON-safe snapshot drops the private blocked-result marker.
         preExecutionBlocked = true;
         await assertCatalogOutputMatchesSchema(entry, candidate);
+        // MCP namespace guests require owned projection; attach it while the
+        // trusted pre-execution marker is still on this object.
+        if (entry.source === "mcp") {
+          setMcpCodeModeGuestResultFromAgentResult(candidate);
+        }
       }
       const snapshot =
         candidate === acceptedSnapshot
