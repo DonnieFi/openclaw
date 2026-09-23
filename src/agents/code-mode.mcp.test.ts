@@ -2,9 +2,17 @@
 
 import { GetPromptResultSchema, type CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { expectDefined } from "@openclaw/normalization-core";
+import { Type } from "typebox";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  initializeGlobalHookRunner,
+  resetGlobalHookRunner,
+} from "../plugins/hook-runner-global.js";
+import { createMockPluginRegistry } from "../plugins/hooks.test-fixtures.js";
+import { copyPluginToolMeta } from "../plugins/tool-metadata.js";
 import { materializeBundleMcpToolsForRun } from "./agent-bundle-mcp-materialize.js";
 import type { McpToolCatalog, SessionMcpRuntime } from "./agent-bundle-mcp-types.js";
+import { wrapToolWithBeforeToolCallHook } from "./agent-tools.before-tool-call.js";
 import { applyCodeModeCatalog } from "./code-mode.js";
 import {
   resetCodeModeTestState,
@@ -15,6 +23,9 @@ import {
 } from "./code-mode.test-support.js";
 import { consumeMcpCodeModeGuestResult, projectMcpCallToolResult } from "./mcp-content.js";
 import { snapshotToolSearchTargetTranscriptResult } from "./tool-search-transcript.js";
+
+const REPRO_POLICY_DENIED =
+  "REPRO_POLICY_DENIED: this user may not save notes. Do not retry; tell the user.";
 
 function materializedMcpTool(params: Parameters<typeof mcpTool>[0]) {
   return mcpTool({
@@ -38,6 +49,7 @@ describe("Code Mode MCP namespace", () => {
   afterEach(async () => {
     vi.useRealTimers();
     await resetCodeModeTestState();
+    resetGlobalHookRunner();
   });
 
   it("discovers MCP tools while retaining namespaced invocation", async () => {
@@ -411,6 +423,92 @@ describe("Code Mode MCP namespace", () => {
       error: "MCP namespace tool result is missing its owned guest projection.",
     });
   });
+
+  it.each([
+    { label: "without outputSchema", outputSchema: undefined as undefined },
+    {
+      label: "with outputSchema",
+      outputSchema: Type.Object({ saved: Type.String() }, { additionalProperties: false }),
+    },
+  ])(
+    "surfaces before_tool_call denial through MCP namespace $label (#156765)",
+    async ({ outputSchema }) => {
+      const before = vi.fn(async (event: { toolName?: string }) => {
+        if (String(event.toolName).includes("save_note")) {
+          return { block: true, blockReason: REPRO_POLICY_DENIED };
+        }
+        return undefined;
+      });
+      initializeGlobalHookRunner(
+        createMockPluginRegistry([
+          { hookName: "before_tool_call", handler: before as (...args: unknown[]) => unknown },
+        ]),
+      );
+
+      const executor = vi.fn(async () => {
+        throw new Error("blocked MCP tool must not execute");
+      });
+      const { config, catalogRef, tools: codeModeTools } = createCodeModeHarness();
+      const source = mcpTool({
+        name: "repro__save_note",
+        serverName: "repro",
+        toolName: "save_note",
+        parameters: {
+          type: "object",
+          properties: { text: { type: "string" } },
+          required: ["text"],
+        },
+        execute: executor,
+      });
+      if (outputSchema) {
+        source.outputSchema = outputSchema;
+      }
+      const wrapped = wrapToolWithBeforeToolCallHook(source, {
+        runId: "run-code-mode",
+        sessionKey: "agent:main:main",
+        sessionId: "session-code-mode",
+      });
+      copyPluginToolMeta(source, wrapped);
+      applyCodeModeCatalog({
+        tools: [...codeModeTools, wrapped],
+        config,
+        sessionId: "session-code-mode",
+        sessionKey: "agent:main:main",
+        runId: "run-code-mode",
+        catalogRef,
+      });
+
+      const details = await runUntilCompleted({
+        execTool: expectDefined(codeModeTools[0], "Code Mode exec test invariant"),
+        waitTool: expectDefined(codeModeTools[1], "Code Mode wait test invariant"),
+        code: `
+          try {
+            const result = await MCP.repro.saveNote({ text: "hello world" });
+            return {
+              path: "result",
+              text: result?.content?.[0]?.text ?? null,
+              isError: result?.isError ?? null,
+              status: result?.status ?? null,
+              reason: result?.reason ?? null,
+            };
+          } catch (error) {
+            return { path: "throw", error: String(error?.message ?? error) };
+          }
+        `,
+      });
+
+      expect(details.status, JSON.stringify(details)).toBe("completed");
+      expect(executor).not.toHaveBeenCalled();
+      expect(before).toHaveBeenCalled();
+      const value = details.value as Record<string, unknown>;
+      const reported =
+        value.path === "throw"
+          ? String(value.error ?? "")
+          : [value.text, value.reason, value.status].filter(Boolean).join(" ");
+      expect(reported).toContain(REPRO_POLICY_DENIED);
+      expect(reported).not.toContain("missing its owned guest projection");
+    },
+  );
 
   it.each([
     {
