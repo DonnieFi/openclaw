@@ -101,6 +101,7 @@ export async function sendSubagentAnnounceDirectlyImpl(params: {
   requesterSessionOrigin?: DeliveryContext;
   sourceSessionKey?: string;
   sourceTool?: string;
+  settleWakeSourceSessionKeys?: readonly string[];
   isSourceSessionEffectsAllowed?: () => boolean;
   isSourceSessionAdmissionAllowed?: () => boolean;
   isCompletionOwnedByRequesterYield?: () => boolean;
@@ -404,6 +405,7 @@ export async function sendSubagentAnnounceDirectlyImpl(params: {
           }
           return await runAnnounceAgentCall({
             agentParams: directAgentParams,
+            settleWakeSourceSessionKeys: params.settleWakeSourceSessionKeys,
             ...(parentOnly ? { privateCompletion: true as const } : {}),
             delegatedToolPolicyHandoff:
               isSubagentCompletion &&

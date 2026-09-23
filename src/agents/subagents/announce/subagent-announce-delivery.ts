@@ -88,6 +88,7 @@ function createCompletionUserTurnTranscriptRecorderFactory(params: {
   requesterAgentId?: string;
   sourceSessionKey?: string;
   sourceTool?: string;
+  settleWakeSourceSessionKeys?: readonly string[];
   targetRequesterSessionKey: string;
   triggerMessage: string;
 }): (sessionId: string) => UserTurnTranscriptRecorder {
@@ -332,6 +333,7 @@ export async function deliverSubagentAnnouncement(params: {
         requesterSessionOrigin: params.requesterSessionOrigin,
         sourceSessionKey: params.sourceSessionKey,
         sourceTool: params.sourceTool,
+        settleWakeSourceSessionKeys: params.settleWakeSourceSessionKeys,
         isSourceSessionEffectsAllowed: params.isSourceSessionEffectsAllowed,
         isSourceSessionAdmissionAllowed: params.isSourceSessionAdmissionAllowed,
         isCompletionOwnedByRequesterYield: params.isCompletionOwnedByRequesterYield,

@@ -25,7 +25,11 @@ type PreparedModelRuntimePublicationEvent =
 type CatalogPublication = {
   catalog: ModelCatalogSnapshot | undefined;
 };
-type CatalogPublicationChange = { previous: CatalogPublication; current: CatalogPublication };
+type CatalogPublicationChange = {
+  previous: CatalogPublication;
+  current: CatalogPublication;
+  staticCatalog: ModelCatalogSnapshot;
+};
 
 /** Reports model changes only after the catalog owner commits its complete publication. */
 export function notifyPreparedModelCatalogPublication(
@@ -34,7 +38,10 @@ export function notifyPreparedModelCatalogPublication(
 ): void {
   notifyPreparedModelRuntimePublication({
     phase: "catalog-published",
-    modelFactsChanged: change !== undefined && change.previous.catalog !== change.current.catalog,
+    modelFactsChanged:
+      change !== undefined &&
+      (change.previous.catalog ?? change.staticCatalog) !==
+        (change.current.catalog ?? change.staticCatalog),
     ...(refreshStatusChanged ? { refreshStatusChanged: true } : {}),
   });
 }
@@ -104,8 +111,11 @@ export function createCatalogAttemptReporter(
       pendingKind = kind;
     },
     withRefreshStatus: (catalog) => {
+      const nativeFailed = Object.values(catalog.nativeProviderOutcomes ?? {}).some((outcomes) =>
+        outcomes.some((outcome) => outcome.status !== "ready"),
+      );
       // Provider renewal does not retry a failed native inventory.
-      if (attempt.failedProviders.native.size > 0) {
+      if (attempt.failedProviders.native.size > 0 || nativeFailed) {
         catalog.authoritative = false;
       }
       Object.defineProperty(catalog, "pendingProviders", {
@@ -119,6 +129,7 @@ export function createCatalogAttemptReporter(
         configurable: true,
         get: () =>
           hasFailedProviders() ||
+          nativeFailed ||
           catalog.providerOutcomes?.some((outcome) => outcome.status !== "ready") ||
           undefined,
       });
@@ -126,6 +137,7 @@ export function createCatalogAttemptReporter(
     },
     published: (providers, kind, publication) => {
       const previouslyFailed = hasFailedProviders();
+      const previouslyPendingCount = pendingProviders.length;
       const acquisitionKind = kind ?? "provider";
       pendingProviders = providers
         ? pendingProviders.filter((provider) => !providers.includes(provider))
@@ -138,7 +150,11 @@ export function createCatalogAttemptReporter(
         attempt.failedProviders[acquisitionKind].clear();
       }
       owner.catalogAttempt = attempt;
-      notifyPreparedModelCatalogPublication(publication, previouslyFailed !== hasFailedProviders());
+      notifyPreparedModelCatalogPublication(
+        publication,
+        previouslyPendingCount !== pendingProviders.length ||
+          previouslyFailed !== hasFailedProviders(),
+      );
     },
     failed,
     createFailureHandler: (providers, beforeProviderFailure) => {
