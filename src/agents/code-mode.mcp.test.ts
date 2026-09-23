@@ -21,6 +21,8 @@ import {
   runUntilCompleted,
 } from "./code-mode.test-support.js";
 import { consumeMcpCodeModeGuestResult, projectMcpCallToolResult } from "./mcp-content.js";
+import { resolveToolSearchConfig } from "./tool-search-config.js";
+import { ToolSearchRuntime } from "./tool-search-runtime.js";
 import { snapshotToolSearchTargetTranscriptResult } from "./tool-search-transcript.js";
 
 const REPRO_POLICY_DENIED =
@@ -592,6 +594,63 @@ describe("Code Mode MCP namespace", () => {
       error: expect.stringContaining(REPRO_POLICY_DENIED),
     });
     expect(JSON.stringify(details.value)).not.toContain("missing its owned guest projection");
+  });
+
+  it("keeps a blocked MCP resources list on the ordinary Tool Search result (#156765)", async () => {
+    const before = vi.fn(async (event: { toolName?: string }) => {
+      if (String(event.toolName).includes("resources_list")) {
+        return { block: true, blockReason: REPRO_POLICY_DENIED };
+      }
+      return undefined;
+    });
+    initializeGlobalHookRunner(
+      createMockPluginRegistry([
+        { hookName: "before_tool_call", handler: before as (...args: unknown[]) => unknown },
+      ]),
+    );
+    const executor = vi.fn(async () => {
+      throw new Error("blocked MCP resources list must not execute");
+    });
+    const { config, catalogRef, tools: codeModeTools } = createCodeModeHarness();
+    const source = mcpTool({
+      name: "docs__resources_list",
+      serverName: "docs",
+      toolName: "resources_list",
+      operation: "resources_list",
+      execute: executor,
+    });
+    const wrapped = wrapToolWithBeforeToolCallHook(source, {
+      runId: "run-code-mode",
+      sessionKey: "agent:main:main",
+      sessionId: "session-code-mode",
+    });
+    copyPluginToolMeta(source, wrapped);
+    applyCodeModeCatalog({
+      tools: [...codeModeTools, wrapped],
+      config,
+      sessionId: "session-code-mode",
+      sessionKey: "agent:main:main",
+      runId: "run-code-mode",
+      catalogRef,
+    });
+    const runtime = new ToolSearchRuntime(
+      {
+        catalogRef,
+        runId: "run-code-mode",
+        sessionKey: "agent:main:main",
+        sessionId: "session-code-mode",
+      },
+      resolveToolSearchConfig(config),
+    );
+
+    const called = await runtime.call("docs__resources_list");
+
+    expect(executor).not.toHaveBeenCalled();
+    expect(before).toHaveBeenCalled();
+    expect(called.result.details).toMatchObject({
+      status: "blocked",
+      reason: REPRO_POLICY_DENIED,
+    });
   });
 
   it.each([

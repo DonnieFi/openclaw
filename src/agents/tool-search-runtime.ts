@@ -423,6 +423,7 @@ export class ToolSearchRuntime {
       signal?: AbortSignal;
       onUpdate?: ToolSearchCallOptions["onUpdate"];
       recoverySurface?: UnknownToolRecoverySurface;
+      mcpNamespaceGuest?: boolean;
     },
   ) => {
     const catalog = resolveCatalog(this.ctx);
@@ -501,6 +502,7 @@ export class ToolSearchRuntime {
       parentToolCallId?: string;
       signal?: AbortSignal;
       onUpdate?: ToolSearchCallOptions["onUpdate"];
+      mcpNamespaceGuest?: boolean;
     },
   ) => {
     this.pluginRuntimeRefresh.assertCurrent();
@@ -539,7 +541,7 @@ export class ToolSearchRuntime {
           const operation = entry.mcp?.operation ?? "tool";
           if (operation === "tool") {
             setMcpCodeModeGuestResultFromAgentResult(candidate);
-          } else {
+          } else if (options?.mcpNamespaceGuest) {
             const details = isRecord(candidate.details) ? candidate.details : undefined;
             const reason =
               typeof details?.reason === "string" && details.reason.trim()
