@@ -17,7 +17,10 @@ import type { CodeModeResultsAccess } from "./code-mode-results.js";
 import type { PendingBridgeRequest } from "./code-mode-runtime.js";
 import { readCodeModeSkill } from "./code-mode-skills.js";
 import { createCodeModeToolApiFile } from "./code-mode-tool-api.js";
-import { consumeMcpCodeModeGuestResult } from "./mcp-content.js";
+import {
+  consumeMcpCodeModeGuestResult,
+  readPreExecutionBlockedMcpGuestResult,
+} from "./mcp-content.js";
 import type { AgentToolUpdateCallback } from "./runtime/index.js";
 import { isCollectorSpawnTool } from "./subagents/swarm/swarm-collector-capability.js";
 import { resolveSwarmConfig } from "./subagents/swarm/swarm-config.js";
@@ -381,12 +384,16 @@ export async function runBridgeRequest(params: {
               onUpdate: params.onUpdate,
             });
             const guestResult = consumeMcpCodeModeGuestResult(called.result);
-            if (guestResult === undefined) {
-              throw new ToolInputError(
-                "MCP namespace tool result is missing its owned guest projection.",
-              );
+            if (guestResult !== undefined) {
+              return guestResult;
             }
-            return guestResult;
+            const blockedGuest = readPreExecutionBlockedMcpGuestResult(called.result);
+            if (blockedGuest !== undefined) {
+              return blockedGuest;
+            }
+            throw new ToolInputError(
+              "MCP namespace tool result is missing its owned guest projection.",
+            );
           },
         );
         if (namespaceId === "mcp" && pathLocal.at(-1) === "$api") {
