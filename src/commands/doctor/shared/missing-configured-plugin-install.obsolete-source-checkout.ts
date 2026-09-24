@@ -1,12 +1,18 @@
 import type { PluginInstallRecord } from "../../../config/types.plugins.js";
 import { isPathInside } from "../../../infra/path-guards.js";
-import { listObsoleteSourceCheckoutPluginInstallRecords } from "../../../plugins/stale-local-bundled-plugin-install-records.js";
-import type { DownloadableInstallCandidate } from "./missing-configured-plugin-install.candidates.js";
+import {
+  listObsoleteSourceCheckoutPluginInstallRecords,
+  type ObsoleteSourceCheckoutPluginInstallRecord,
+} from "../../../plugins/stale-local-bundled-plugin-install-records.js";
 
 /** A configured plugin still recorded at an abandoned source-checkout copy. */
 export type ObsoleteSourceCheckoutInstall = {
   checkoutPluginDir: string;
-  candidate: DownloadableInstallCandidate;
+  candidate: ObsoleteSourceCheckoutPluginInstallRecord["official"] & {
+    pluginId: string;
+    trustedSourceLinkedOfficialInstall: true;
+    versionBoundToOpenClaw: true;
+  };
 };
 
 export function collectObsoleteSourceCheckoutInstalls(params: {
