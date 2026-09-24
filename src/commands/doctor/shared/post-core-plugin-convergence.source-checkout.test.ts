@@ -552,6 +552,13 @@ describe("post-core convergence of abandoned source-checkout path records", () =
       plugins: (checkout: string) => ({ load: { paths: [path.join(checkout, "extensions")] } }),
     },
     {
+      guard: "plugins.load.paths selects an entry file inside a checkout copy discovery rejects",
+      hardlinkedManifest: true,
+      plugins: (checkout: string) => ({
+        load: { paths: [path.join(checkout, "extensions", "discord", "index.js")] },
+      }),
+    },
+    {
       guard: "plugins.load.paths selects another Discord copy",
       hardlinkedManifest: false,
       plugins: (checkout: string) => {
@@ -597,7 +604,7 @@ describe("post-core convergence of abandoned source-checkout path records", () =
       failure: "the package install fails",
       checkoutLayout: "source" as const,
       update: undefined,
-      installerWarning: `Failed to install missing configured plugin "discord" from @openclaw/discord: npm install failed: EACCES`,
+      installerWarning: `Failed to replace source-checkout copy of plugin "discord" with @openclaw/discord: npm install failed: EACCES`,
     },
     {
       failure: "the beta registry cannot be reached for a copy with channel metadata",

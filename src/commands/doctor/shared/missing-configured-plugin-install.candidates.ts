@@ -165,9 +165,12 @@ export async function resolveConfiguredPluginInstallContext(params: {
           ({ pluginId, checkoutPluginDir }) =>
             !operatorManagedPluginIds.has(pluginId) &&
             !params.blockedPluginIds?.has(pluginId) &&
-            !loadPathIdentities.some((loadPath) =>
-              isPathInside(loadPath, resolvePathIdentity(checkoutPluginDir)),
-            ) &&
+            !loadPathIdentities.some((loadPath) => {
+              const checkoutIdentity = resolvePathIdentity(checkoutPluginDir);
+              return (
+                isPathInside(loadPath, checkoutIdentity) || isPathInside(checkoutIdentity, loadPath)
+              );
+            }) &&
             isConfiguredPluginRepairTarget({
               pluginId,
               configuredPluginIds: params.configuredPluginIds,

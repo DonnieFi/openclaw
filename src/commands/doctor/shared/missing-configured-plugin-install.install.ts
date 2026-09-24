@@ -321,7 +321,9 @@ async function installCandidatePackage(
       warnings: [
         ...warnings,
         ...channelNotices,
-        `Failed to install missing configured plugin "${candidate.pluginId}" from ${installedSource.spec}: ${installResult.error}`,
+        params.repairReason === "obsolete-source-checkout"
+          ? `Failed to replace source-checkout copy of plugin "${candidate.pluginId}" with ${installedSource.spec}: ${installResult.error}`
+          : `Failed to install missing configured plugin "${candidate.pluginId}" from ${installedSource.spec}: ${installResult.error}`,
       ],
       failedPluginId: candidate.pluginId,
     };
