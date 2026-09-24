@@ -57,10 +57,14 @@ async function withServiceHome(run: (home: string) => Promise<void>): Promise<vo
 }
 
 it.each([
-  { stage: "registration", responses: ["timeout", "found", "found", "found"], recovered: true },
+  {
+    stage: "registration",
+    responses: ["timeout", "found", "found", "found", "found", "found"],
+    recovered: true,
+  },
   {
     stage: "revalidation",
-    responses: ["found", "timeout", "found", "found", "found"],
+    responses: ["found", "timeout", "found", "found", "found", "found", "found"],
     recovered: true,
   },
   { stage: "registration", responses: ["timeout", "timeout"], recovered: false },

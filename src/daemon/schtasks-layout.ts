@@ -11,6 +11,7 @@ import {
   decodeWindowsLauncherScript,
   encodeWindowsLauncherScript,
 } from "../infra/windows-launcher-encoding.js";
+import { splitArgsPreservingQuotes } from "./arg-split.js";
 import { parseCmdScriptCommandLine, quoteCmdScriptArg } from "./cmd-argv.js";
 import { assertNoCmdLineBreak, parseCmdSetAssignment, renderCmdSetAssignment } from "./cmd-set.js";
 import { normalizeWindowsTaskIdentity, resolveGatewayWindowsTaskName } from "./constants.js";
@@ -435,17 +436,21 @@ export async function readScheduledTaskCommand(
         normalizeWindowsTaskIdentity(registered.taskPath) !==
           normalizeWindowsTaskIdentity(taskName) ||
         registered.actions?.length !== 1 ||
-        action?.type !== 0 ||
-        action.arguments.trim())
+        action?.type !== 0)
     ) {
       throw new Error("Scheduled Task action cannot be inspected");
     }
     if (action?.workingDirectory) {
       assertStaticTaskPath(action.workingDirectory);
     }
-    const launchers = registered
-      ? await readTaskLaunchers(env, action?.path, options?.onLauncherContent)
-      : undefined;
+    const directExecutable = action && /\.exe$/i.test(action.path);
+    if (action && !directExecutable && action.arguments.trim()) {
+      throw new Error("Scheduled Task launcher arguments cannot be inspected");
+    }
+    const launchers =
+      registered && !directExecutable
+        ? await readTaskLaunchers(env, action?.path, options?.onLauncherContent)
+        : undefined;
     const assertRegistrationCurrent = async (source?: { path: string; content: string }) => {
       if (!registered) {
         return;
@@ -473,6 +478,24 @@ export async function readScheduledTaskCommand(
         throw new Error("Scheduled Task registration changed during inspection");
       }
     };
+    if (directExecutable) {
+      assertStaticTaskPath(action.path);
+      const argumentsText = action.arguments.trim();
+      // Native executable arguments do not pass through CMD. Accept literal
+      // whole arguments; expansion and ambiguous native quoting remain unknown.
+      if (
+        /[%\r\n\0]|\\"/.test(argumentsText) ||
+        (argumentsText &&
+          !/^(?:"[^"]+"|[^\s"]+)(?:[ \t]+(?:"[^"]+"|[^\s"]+))*$/.test(argumentsText))
+      ) {
+        throw new Error("Scheduled Task executable arguments cannot be inspected");
+      }
+      await assertRegistrationCurrent();
+      return {
+        programArguments: [action.path, ...splitArgsPreservingQuotes(argumentsText)],
+        ...(action.workingDirectory ? { workingDirectory: action.workingDirectory } : {}),
+      };
+    }
     if (launchers?.length === 0) {
       await assertRegistrationCurrent();
       return null;
