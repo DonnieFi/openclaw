@@ -444,13 +444,13 @@ describe("post-core convergence of abandoned source-checkout path records", () =
       resolvedSpec: `@openclaw/discord@${DISCORD_CORE_VERSION}`,
     };
     mocks.resolveNpmSpecMetadata.mockResolvedValue({ ok: true, metadata });
-    mocks.installPluginFromNpmSpec.mockImplementation(async (options) => {
+    mocks.installPluginFromNpmSpec.mockImplementation(async (installOptions) => {
       writeDiscordPackage(npmDir, DISCORD_CORE_VERSION, "published");
-      await options.onBeforePluginArtifactCommit?.({
+      await installOptions.onBeforePluginArtifactCommit?.({
         pluginId: "discord",
         stagedArtifactDir: npmDir,
         mode: "install",
-        sourceRecord: { source: "npm", spec: options.spec, ...metadata },
+        sourceRecord: { source: "npm", spec: installOptions.spec, ...metadata },
       });
       return {
         ok: true,
