@@ -18,6 +18,8 @@ const ROUND_TRIP_VALUES = [
   "C:\\\\srv\\\\bin",
   'mix \\ and " here',
   "trailing\\",
+  "apostrophe's",
+  "'quoted'",
 ];
 
 describe("systemd logical lines", () => {

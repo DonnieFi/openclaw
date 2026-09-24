@@ -592,15 +592,44 @@ describe("Gateway inventory projections", () => {
       path.join(userDir, "openclaw-node.service"),
       '[Service]\nExecStart=/usr/bin/openclaw node run\nEnvironment="OPENCLAW_SERVICE_MARKER=openclaw" "OPENCLAW_SERVICE_KIND=node" "OPENCLAW_GATEWAY_TOKEN=synthetic-token"\n',
     );
+    for (const [name, args] of [
+      ["named-node", 'node run --display-name "Home Gateway"'],
+      ["exact-node", "node run --display-name gateway"],
+      ["profile-node", "--profile gateway node run"],
+    ]) {
+      await write(
+        path.join(userDir, `${name}.service`),
+        `[Service]\nExecStart=/usr/bin/node /opt/openclaw/openclaw.mjs ${args}\n`,
+      );
+    }
+    await write(
+      path.join(userDir, "runtime-options.service"),
+      "[Service]\nExecStart=/usr/bin/node -C development --import /opt/bootstrap.mjs /opt/clawdbot/dist/entry.js --profile rescue gateway run\n",
+    );
     await write(path.join(userDir, "clawdbot-gateway.service"), CLAWDBOT_GATEWAY_CONTENTS);
+    await write(
+      path.join(userDir, "shell.service"),
+      `[Service]\nExecStart=/bin/sh -c 'NODE_ENV=production exec /usr/bin/openclaw --profile rescue gateway run'\n`,
+    );
+    await write(
+      path.join(userDir, "shell-node.service"),
+      `[Service]\nExecStart=/bin/sh -c 'exec /usr/bin/openclaw node run --display-name "Home Gateway"'\n`,
+    );
+    await write(
+      path.join(userDir, "env.service"),
+      "[Service]\nExecStart=/usr/bin/env NODE_ENV=production node /opt/clawdbot/dist/entry.js gateway run\n",
+    );
     await write("/lib/systemd/system", "unreadable service directory");
 
     const extras = await findExtraGatewayServices({ HOME: home }, { deep: true });
 
     expect(extras.services.map((service) => service.label).toSorted()).toEqual([
       "clawdbot-gateway.service",
+      "env.service",
       "openclaw@.service",
       "rescue.service",
+      "runtime-options.service",
+      "shell.service",
       "vendor-gateway.service",
     ]);
     expect(extras.errors).toEqual([
@@ -623,6 +652,103 @@ describe("Gateway inventory projections", () => {
     }
     await write("/Library/LaunchAgents/org.example.global.plist", plist("org.example.global"));
     await write("/Library/LaunchDaemons/ai.openclaw.gateway.plist", plist("ai.openclaw.gateway"));
+    for (const [label, args] of [
+      [
+        "org.example.shell",
+        [
+          "/bin/sh",
+          "-c",
+          "NODE_ENV=production exec /usr/bin/openclaw --profile rescue gateway run",
+        ],
+      ],
+      [
+        "org.example.env",
+        ["/usr/bin/env", "NODE_ENV=production", "node", "/opt/openclaw/openclaw.mjs", "gateway"],
+      ],
+      [
+        "org.example.shell-node",
+        ["/bin/sh", "-c", 'exec /usr/bin/openclaw node run --display-name "Home Gateway"'],
+      ],
+      [
+        "org.example.named-node",
+        [
+          "/usr/bin/node",
+          "/opt/openclaw/openclaw.mjs",
+          "node",
+          "run",
+          "--display-name",
+          "Home Gateway",
+        ],
+      ],
+      [
+        "org.example.wrapped",
+        [
+          "/bin/sh",
+          "/opt/service-env/rescue-env-wrapper.sh",
+          "/opt/service-env/rescue.env",
+          "/usr/bin/node",
+          "--import",
+          "/opt/bootstrap.mjs",
+          "/opt/openclaw/openclaw.mjs",
+          "--profile",
+          "rescue",
+          "gateway",
+        ],
+      ],
+      [
+        "org.example.direct-wrapper",
+        [
+          "/opt/service-env/rescue-env-wrapper.sh",
+          "/opt/service-env/rescue.env",
+          "/usr/bin/openclaw",
+          "gateway",
+        ],
+      ],
+      [
+        "org.example.wrapped-node",
+        [
+          "/bin/sh",
+          "/opt/service-env/rescue-env-wrapper.sh",
+          "/opt/service-env/rescue.env",
+          "/usr/bin/openclaw",
+          "node",
+          "run",
+          "--display-name",
+          "gateway",
+        ],
+      ],
+      [
+        "org.example.direct-wrapped-node",
+        [
+          "/opt/service-env/rescue-env-wrapper.sh",
+          "/opt/service-env/rescue.env",
+          "/usr/bin/openclaw",
+          "--profile",
+          "gateway",
+          "node",
+          "run",
+        ],
+      ],
+    ] as const) {
+      await write(
+        path.join(userDir, `${label}.plist`),
+        `<plist><dict><key>Label</key><string>${label}</string><key>ProgramArguments</key><array>${args.map((arg) => `<string>${arg}</string>`).join("")}</array></dict></plist>`,
+      );
+    }
+    await write(
+      path.join(userDir, "org.example.program.plist"),
+      plist("org.example.program", "alias").replace(
+        "<key>ProgramArguments</key>",
+        "<key>Program</key><string>/usr/bin/openclaw</string><key>ProgramArguments</key>",
+      ),
+    );
+    await write(
+      path.join(userDir, "org.example.argv-alias.plist"),
+      plist("org.example.argv-alias").replace(
+        "<key>ProgramArguments</key>",
+        "<key>Program</key><string>/usr/bin/node</string><key>ProgramArguments</key>",
+      ),
+    );
     await write(
       "/Library/LaunchDaemons/ai.openclaw.node.plist",
       plist("ai.openclaw.node", "openclaw", "node").replace(
@@ -645,7 +771,12 @@ describe("Gateway inventory projections", () => {
       "system:ai.openclaw.gateway",
       "system:org.example.global",
       "user:com.clawdbot.gateway",
+      "user:org.example.direct-wrapper",
+      "user:org.example.env",
+      "user:org.example.program",
       "user:org.example.rescue",
+      "user:org.example.shell",
+      "user:org.example.wrapped",
     ]);
     expect(extras.errors).toEqual([
       { source: unreadable, message: expect.stringContaining("could not be inspected") },

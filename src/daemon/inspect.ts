@@ -4,7 +4,15 @@ import path from "node:path";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { quoteCliArg } from "../cli/quote-cli-arg.js";
+import { getRootOptionAwareCommandPath } from "../infra/cli-root-options.js";
+import { isEnvAssignmentToken, resolveCarrierCommandArgv } from "../infra/command-carriers.js";
 import { hasErrnoCode } from "../infra/errno.js";
+import {
+  POSIX_INLINE_COMMAND_FLAGS,
+  resolveInlineCommandMatch,
+} from "../infra/shell-inline-command.js";
+import { POSIX_SHELL_WRAPPERS } from "../infra/shell-wrapper-resolution.js";
+import { splitShellArgs } from "../utils/shell-argv.js";
 import { splitArgsPreservingQuotes } from "./arg-split.js";
 import { parseCmdSetAssignment } from "./cmd-set.js";
 import {
@@ -18,8 +26,9 @@ import {
   resolveNodeLaunchAgentLabel,
 } from "./constants.js";
 import { resolveLaunchAgentLabel } from "./launchd-label.js";
-import { decodeLaunchdPlistMetadata } from "./launchd-plist.js";
+import { decodeLaunchdPlistMetadata, resolveGeneratedEnvWrapperLayout } from "./launchd-plist.js";
 import { resolveDaemonHomeDir } from "./paths.js";
+import { resolveRuntimeScriptPosition } from "./runtime-binary.js";
 import { readScheduledTaskCommand, resolveTaskName } from "./schtasks-layout.js";
 import { listScheduledTasks } from "./schtasks-state-probe.js";
 import { resolveSystemdServiceName } from "./systemd-service-files.js";
@@ -107,24 +116,42 @@ export function renderGatewayServiceCleanupHints(
 
 type Marker = (typeof EXTRA_MARKERS)[number];
 
-function hasGatewaySubcommandArg(args: string[]): boolean {
-  return args.some((arg) => {
-    const normalized = normalizeLowercaseStringOrEmpty(arg);
-    return normalized === "gateway" || /(^|\s)gateway(\s|$)/.test(normalized);
-  });
+function hasGatewaySubcommandArg(programArguments: string[]): boolean {
+  let args =
+    resolveCarrierCommandArgv(programArguments, 0, { includeExec: true }) ?? programArguments;
+  if (POSIX_SHELL_WRAPPERS.has(path.posix.basename(args[0] ?? "").toLowerCase())) {
+    const { command } = resolveInlineCommandMatch(args, POSIX_INLINE_COMMAND_FLAGS, {
+      allowCombinedC: true,
+    });
+    const inner = command ? splitShellArgs(command) : null;
+    if (!inner) {
+      return false;
+    }
+    while (inner.length > 0 && isEnvAssignmentToken(inner[0]!)) {
+      inner.shift();
+    }
+    args = resolveCarrierCommandArgv(inner, 0, { includeExec: true }) ?? inner;
+  }
+  args = resolveCarrierCommandArgv(args, 0, { includeExec: true }) ?? args;
+  const position = resolveRuntimeScriptPosition(args);
+  if (typeof position !== "number" && position.kind !== "not-runtime") {
+    return false;
+  }
+  const entryIndex = typeof position === "number" ? position : 0;
+  return getRootOptionAwareCommandPath(["node", ...args.slice(entryIndex)], 1)[0] === "gateway";
 }
 
 export function detectMarkerLineWithGateway(contents: string): Marker | null {
   // Use the same physical-comment rules as service rewrites; comments must not
   // hide a runnable extra service from diagnostics.
   for (const line of splitSystemdLogicalLines(contents)) {
-    const trimmed = normalizeLowercaseStringOrEmpty(line);
+    const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith(";")) {
       continue;
     }
     const assignment = trimmed.indexOf("=");
     if (assignment > 0) {
-      const key = trimmed.slice(0, assignment).trim();
+      const key = normalizeLowercaseStringOrEmpty(trimmed.slice(0, assignment));
       if (
         key !== "execstart" ||
         !hasGatewaySubcommandArg(parseSystemdExecStart(trimmed.slice(assignment + 1).trim()))
@@ -132,11 +159,12 @@ export function detectMarkerLineWithGateway(contents: string): Marker | null {
         continue;
       }
     }
-    if (!trimmed.includes("gateway")) {
+    const normalized = normalizeLowercaseStringOrEmpty(trimmed);
+    if (!normalized.includes("gateway")) {
       continue;
     }
     for (const marker of EXTRA_MARKERS) {
-      if (trimmed.includes(marker)) {
+      if (normalized.includes(marker)) {
         return marker;
       }
     }
@@ -175,17 +203,23 @@ function hasSystemdGatewayServiceMarker(content: string): boolean {
 }
 
 function detectLaunchdGatewayExecutionMarker(plist: Record<string, unknown>): Marker | null {
-  const programArguments = Array.isArray(plist.ProgramArguments)
-    ? plist.ProgramArguments.filter((arg): arg is string => typeof arg === "string")
-    : [];
-  if (!hasGatewaySubcommandArg(programArguments)) {
+  const args = plist.ProgramArguments;
+  if (!Array.isArray(args) || !args.every((arg): arg is string => typeof arg === "string")) {
+    return null;
+  }
+  if (plist.Program !== undefined && typeof plist.Program !== "string") {
+    return null;
+  }
+  const programArguments =
+    typeof plist.Program === "string" ? [plist.Program, ...args.slice(1)] : args;
+  const layout = resolveGeneratedEnvWrapperLayout(programArguments);
+  const command = layout ? programArguments.slice(layout.commandStartIndex) : programArguments;
+  if (!hasGatewaySubcommandArg(command)) {
     return null;
   }
   // Only execution command fields identify gateway jobs; labels alone catch too
   // many unrelated helper jobs.
-  const launchCommand = normalizeLowercaseStringOrEmpty(
-    [typeof plist.Program === "string" ? plist.Program : "", ...programArguments].join("\n"),
-  );
+  const launchCommand = normalizeLowercaseStringOrEmpty(command.join("\n"));
   return EXTRA_MARKERS.find((marker) => launchCommand.includes(marker)) ?? null;
 }
 

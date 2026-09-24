@@ -113,7 +113,7 @@ function assertNoSystemdLineBreaks(value: string, label: string): void {
 
 function systemdEscapeArg(value: string): string {
   assertNoSystemdLineBreaks(value, "Systemd unit values");
-  if (!/[\s"\\]/.test(value)) {
+  if (!/[\s"'\\]/.test(value)) {
     return value;
   }
   // systemd ExecStart/Environment parsing consumes one backslash before the next
@@ -202,7 +202,11 @@ export function buildSystemdUnit({
 }
 
 export function parseSystemdExecStart(value: string): string[] {
-  return splitArgsPreservingQuotes(value, { escapeMode: "backslash" });
+  return splitArgsPreservingQuotes(value, {
+    escapeMode: "backslash",
+    quoteChars: ['"', "'"],
+    quoteStart: "item-start",
+  });
 }
 
 export function splitSystemdEnvironmentWords(value: string): string[] {
