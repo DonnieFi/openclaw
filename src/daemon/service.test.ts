@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { admitUpdateCommandRun } from "../cli/update-cli/update-command-run.js";
 import { clearConfigCache, clearRuntimeConfigSnapshot } from "../config/config.js";
+import * as containerEnvironment from "../infra/container-environment.js";
 import { getUpdateRun } from "../infra/update-run-ledger.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { makeTempWorkspace } from "../test-helpers/workspace.js";
@@ -57,6 +58,7 @@ describe("resolveGatewayService", () => {
     const service = resolveGatewayService();
     expect(service.label).toBe(label);
     expect(service.loadedText).toBe(loadedText);
+    expect(service.unsupportedReason).toBeUndefined();
   });
 
   it.each([
@@ -84,9 +86,11 @@ describe("resolveGatewayService", () => {
 
   it("keeps FreeBSD service ownership external and explains the package and foreground paths", async () => {
     mockProcessPlatform("freebsd");
+    vi.spyOn(containerEnvironment, "isContainerEnvironment").mockReturnValue(false);
     const service = resolveGatewayService();
     const runtime = await service.readRuntime(process.env);
     expect(runtime.status).toBe("unknown");
+    expect(service.unsupportedReason).toBe(runtime.detail);
     expect(runtime.detail).toContain("not supported by this CLI on FreeBSD");
     expect(runtime.detail).toContain("openclaw_user to your onboarding account");
     expect(runtime.detail).toContain('openclaw_enable="YES" in /etc/rc.conf');
@@ -110,6 +114,16 @@ describe("resolveGatewayService", () => {
       command: null,
       runtime,
     });
+    const { collectGatewayDaemonFindings } = await import("../flows/doctor-core-checks.runtime.js");
+    await expect(
+      collectGatewayDaemonFindings({ cfg: { gateway: { mode: "local" } } }),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        checkId: "core/doctor/gateway-daemon",
+        severity: "warning",
+        fixHint: runtime.detail,
+      }),
+    ]);
   });
 
   it("gives FreeBSD node hosts their own foreground recovery command", async () => {
@@ -117,6 +131,7 @@ describe("resolveGatewayService", () => {
     const service = resolveNodeService();
     const runtime = await service.readRuntime(process.env);
     expect(runtime.status).toBe("unknown");
+    expect(service.unsupportedReason).toBe(runtime.detail);
     expect(runtime.detail).toContain("Node service management is not supported");
     expect(runtime.detail).toContain("`openclaw node run`");
     expect(runtime.detail).not.toContain("service openclaw");

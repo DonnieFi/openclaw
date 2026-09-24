@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
+import { quoteCliArg } from "../cli/quote-cli-arg.js";
 import { hasErrnoCode } from "../infra/errno.js";
 import { splitArgsPreservingQuotes } from "./arg-split.js";
 import { parseCmdSetAssignment } from "./cmd-set.js";
@@ -59,10 +60,6 @@ function projectService({
 
 const EXTRA_MARKERS = ["openclaw", "clawdbot"] as const;
 
-function quotePosixCleanupArgument(value: string): string {
-  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`;
-}
-
 export function renderGatewayServiceCleanupHints(
   services: readonly ExtraGatewayService[] = [],
 ): string[] {
@@ -81,18 +78,16 @@ export function renderGatewayServiceCleanupHints(
             ? "system"
             : "gui/$UID";
         const launchctlCommand = domain === "system" ? "sudo launchctl" : "launchctl";
-        hints.push(
-          `${launchctlCommand} bootout ${domain}/${quotePosixCleanupArgument(service.label)}`,
-        );
+        hints.push(`${launchctlCommand} bootout ${domain}/${quoteCliArg(service.label)}`);
         if (plistPath) {
           const removeCommand = service.scope === "system" ? "sudo rm" : "rm";
-          hints.push(`${removeCommand} ${quotePosixCleanupArgument(plistPath)}`);
+          hints.push(`${removeCommand} ${quoteCliArg(plistPath)}`);
         }
         break;
       }
       case "linux": {
         const systemctlCommand = `systemctl --${service.scope}`;
-        const unit = quotePosixCleanupArgument(service.label);
+        const unit = quoteCliArg(service.label);
         // A discovered unit may be the only running Gateway; inspect before removal.
         hints.push(`${systemctlCommand} status -- ${unit}`, `${systemctlCommand} cat -- ${unit}`);
         break;
@@ -257,11 +252,7 @@ function isLegacyLabel(label: string): boolean {
 }
 
 async function readServiceFile(filePath: string): Promise<Buffer | null> {
-  try {
-    return await fs.readFile(filePath);
-  } catch {
-    return null;
-  }
+  return fs.readFile(filePath).catch(() => null);
 }
 
 function isPotentialGatewayServiceName(
