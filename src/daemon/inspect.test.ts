@@ -10,12 +10,19 @@ import {
   renderGatewayServiceCleanupHints,
 } from "./inspect.js";
 
-const { execSchtasksMock } = vi.hoisted(() => ({
-  execSchtasksMock: vi.fn(),
+const { listScheduledTasksMock, readScheduledTaskCommandMock } = vi.hoisted(() => ({
+  listScheduledTasksMock: vi.fn<typeof import("./schtasks-state-probe.js").listScheduledTasks>(),
+  readScheduledTaskCommandMock:
+    vi.fn<typeof import("./schtasks-layout.js").readScheduledTaskCommand>(),
 }));
 
-vi.mock("./schtasks-exec.js", () => ({
-  execSchtasks: (...args: unknown[]) => execSchtasksMock(...args),
+vi.mock("./schtasks-state-probe.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./schtasks-state-probe.js")>()),
+  listScheduledTasks: listScheduledTasksMock,
+}));
+vi.mock("./schtasks-layout.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./schtasks-layout.js")>()),
+  readScheduledTaskCommand: readScheduledTaskCommandMock,
 }));
 
 const nativePlistHost = vi.hoisted(() => process.platform === "darwin");
@@ -274,7 +281,7 @@ describe("findExtraGatewayServices (linux / scanSystemdDir) — real filesystem"
     await fs.mkdir(systemdDir, { recursive: true });
     await fs.writeFile(path.join(systemdDir, "openclaw-test.service"), TEST_SERVICE_CONTENTS);
     const result = await findExtraGatewayServices({ HOME: tmpHome });
-    expect(result).toStrictEqual([]);
+    expect(result).toStrictEqual({ services: [], errors: [] });
   });
 
   it.skipIf(!isLinux)(
@@ -288,7 +295,7 @@ describe("findExtraGatewayServices (linux / scanSystemdDir) — real filesystem"
         GATEWAY_SERVICE_CONTENTS,
       );
       const result = await findExtraGatewayServices({ HOME: tmpHome });
-      expect(result).toStrictEqual([]);
+      expect(result).toStrictEqual({ services: [], errors: [] });
     },
   );
 
@@ -301,7 +308,7 @@ describe("findExtraGatewayServices (linux / scanSystemdDir) — real filesystem"
       await fs.mkdir(systemdDir, { recursive: true });
       await fs.writeFile(unitPath, CLAWDBOT_GATEWAY_CONTENTS);
       const result = await findExtraGatewayServices({ HOME: tmpHome });
-      expect(result).toEqual([
+      expect(result.services).toEqual([
         {
           platform: "linux",
           label: "clawdbot-gateway.service",
@@ -323,7 +330,7 @@ describe("findExtraGatewayServices (linux / scanSystemdDir) — real filesystem"
 
     const result = await findExtraGatewayServices({ HOME: tmpHome });
 
-    expect(result).toEqual([
+    expect(result.services).toEqual([
       {
         platform: "linux",
         label: "clawdbot-gateway.service",
@@ -345,7 +352,7 @@ describe("findExtraGatewayServices (linux / scanSystemdDir) — real filesystem"
 
     const result = await findExtraGatewayServices({ HOME: tmpHome });
 
-    expect(result).toEqual([
+    expect(result.services).toEqual([
       {
         platform: "linux",
         label: "clawdbot-gateway.service",
@@ -368,7 +375,7 @@ describe("findExtraGatewayServices (linux / scanSystemdDir) — real filesystem"
         COMPANION_SERVICE_CONTENTS,
       );
       const result = await findExtraGatewayServices({ HOME: tmpHome });
-      expect(result).toStrictEqual([]);
+      expect(result).toStrictEqual({ services: [], errors: [] });
     },
   );
 
@@ -384,7 +391,7 @@ describe("findExtraGatewayServices (linux / scanSystemdDir) — real filesystem"
         CUSTOM_OPENCLAW_GATEWAY_CONTENTS.replace("ExecStart=", `${comment}ExecStart=`),
       );
       const result = await findExtraGatewayServices({ HOME: tmpHome });
-      expect(result).toEqual([
+      expect(result.services).toEqual([
         {
           platform: "linux",
           label: "custom-openclaw.service",
@@ -429,7 +436,7 @@ describe("findExtraGatewayServices (darwin / scanLaunchdDir) — real filesystem
 </dict></plist>`,
     );
     const result = await findExtraGatewayServices({ HOME: tmpHome });
-    expect(result).toStrictEqual([]);
+    expect(result).toStrictEqual({ services: [], errors: [] });
   });
 
   it("does not report LaunchAgent companions that only pass gateway-named options", async () => {
@@ -445,7 +452,7 @@ describe("findExtraGatewayServices (darwin / scanLaunchdDir) — real filesystem
 </dict></plist>`,
     );
     const result = await findExtraGatewayServices({ HOME: tmpHome });
-    expect(result).toStrictEqual([]);
+    expect(result).toStrictEqual({ services: [], errors: [] });
   });
 
   it("does not report non-gateway LaunchAgents that mention clawdbot in environment values", async () => {
@@ -462,7 +469,37 @@ describe("findExtraGatewayServices (darwin / scanLaunchdDir) — real filesystem
 </dict></plist>`,
     );
     const result = await findExtraGatewayServices({ HOME: tmpHome });
-    expect(result).toStrictEqual([]);
+    expect(result).toStrictEqual({ services: [], errors: [] });
+  });
+
+  it("reports a malformed recognizable plist without inventing a cleanup target", async () => {
+    const tmpHome = tempDirs.make("openclaw-test-", os.tmpdir());
+    const launchdDir = path.join(tmpHome, "Library", "LaunchAgents");
+    const plistPath = path.join(launchdDir, "ai.openclaw.backup.plist");
+    await fs.mkdir(launchdDir, { recursive: true });
+    await fs.writeFile(plistPath, "not a plist");
+
+    const result = await findExtraGatewayServices({ HOME: tmpHome });
+
+    expect(result).toEqual({
+      services: [],
+      errors: [{ source: plistPath, message: expect.stringContaining("could not be inspected") }],
+    });
+    expect(renderGatewayServiceCleanupHints(result.services)).toEqual([]);
+  });
+
+  it("reports a service directory read failure as incomplete inspection", async () => {
+    const tmpHome = tempDirs.make("openclaw-test-", os.tmpdir());
+    const launchdDir = path.join(tmpHome, "Library", "LaunchAgents");
+    await fs.mkdir(path.dirname(launchdDir), { recursive: true });
+    await fs.writeFile(launchdDir, "not a directory");
+
+    const result = await findExtraGatewayServices({ HOME: tmpHome });
+
+    expect(result).toEqual({
+      services: [],
+      errors: [{ source: launchdDir, message: expect.stringContaining("could not be inspected") }],
+    });
   });
 
   it("reports custom LaunchAgents that execute openclaw gateway", async () => {
@@ -479,7 +516,7 @@ describe("findExtraGatewayServices (darwin / scanLaunchdDir) — real filesystem
 </dict></plist>`,
     );
     const result = await findExtraGatewayServices({ HOME: tmpHome });
-    expect(result).toEqual([
+    expect(result.services).toEqual([
       {
         platform: "darwin",
         label: "com.example.openclaw-gateway",
@@ -489,110 +526,321 @@ describe("findExtraGatewayServices (darwin / scanLaunchdDir) — real filesystem
         legacy: false,
       },
     ]);
-    expect(renderGatewayServiceCleanupHints(result)).toEqual([
+    expect(renderGatewayServiceCleanupHints(result.services)).toEqual([
       "launchctl bootout gui/$UID/com.example.openclaw-gateway",
       `rm ${plistPath}`,
     ]);
   });
 });
 
-describe("findExtraGatewayServices (win32)", () => {
+describe("Gateway inventory projections", () => {
   const originalPlatform = process.platform;
 
-  beforeEach(() => {
-    Object.defineProperty(process, "platform", {
-      configurable: true,
-      value: "win32",
+  afterEach(() => {
+    vi.restoreAllMocks();
+    Object.defineProperty(process, "platform", { configurable: true, value: originalPlatform });
+  });
+
+  function isolateNativeRoots(home: string) {
+    const roots = [
+      "/etc/systemd/system",
+      "/usr/lib/systemd/system",
+      "/lib/systemd/system",
+      "/Library/LaunchAgents",
+      "/Library/LaunchDaemons",
+    ].map((root) => path.normalize(root));
+    const mapPath = (value: string) => {
+      const normalized = path.normalize(value);
+      return roots.some(
+        (root) => normalized === root || normalized.startsWith(`${root}${path.sep}`),
+      )
+        ? path.join(home, "native", normalized.slice(path.parse(normalized).root.length))
+        : value;
+    };
+    const readdir = fs.readdir;
+    const readFile = fs.readFile;
+    vi.spyOn(fs, "readdir").mockImplementation((...args: Parameters<typeof fs.readdir>) => {
+      if (typeof args[0] === "string") {
+        args[0] = mapPath(args[0]);
+      }
+      return readdir(...args);
     });
-    execSchtasksMock.mockReset();
+    vi.spyOn(fs, "readFile").mockImplementation((...args: Parameters<typeof fs.readFile>) => {
+      if (typeof args[0] === "string") {
+        args[0] = mapPath(args[0]);
+      }
+      return readFile(...args);
+    });
+    return async (file: string, contents: string) => {
+      const target = mapPath(file);
+      await fs.mkdir(path.dirname(target), { recursive: true });
+      await fs.writeFile(target, contents);
+    };
+  }
+
+  it("filters managed systemd Gateways and authenticated Nodes while preserving extras and inspection errors", async () => {
+    Object.defineProperty(process, "platform", { configurable: true, value: "linux" });
+    const home = tempDirs.make("managed-systemd-", os.tmpdir());
+    const write = isolateNativeRoots(home);
+    const userDir = path.join(home, ".config/systemd/user");
+    for (const name of ["openclaw-gateway", "openclaw-gateway-dev", "rescue"]) {
+      await write(path.join(userDir, `${name}.service`), CUSTOM_OPENCLAW_GATEWAY_CONTENTS);
+    }
+    await write("/etc/systemd/system/openclaw@.service", CUSTOM_OPENCLAW_GATEWAY_CONTENTS);
+    await write("/usr/lib/systemd/system/vendor-gateway.service", CUSTOM_OPENCLAW_GATEWAY_CONTENTS);
+    await write(
+      path.join(userDir, "openclaw-node.service"),
+      '[Service]\nExecStart=/usr/bin/openclaw node run\nEnvironment="OPENCLAW_SERVICE_MARKER=openclaw" "OPENCLAW_SERVICE_KIND=node" "OPENCLAW_GATEWAY_TOKEN=synthetic-token"\n',
+    );
+    await write(path.join(userDir, "clawdbot-gateway.service"), CLAWDBOT_GATEWAY_CONTENTS);
+    await write("/lib/systemd/system", "unreadable service directory");
+
+    const extras = await findExtraGatewayServices({ HOME: home }, { deep: true });
+
+    expect(extras.services.map((service) => service.label).toSorted()).toEqual([
+      "clawdbot-gateway.service",
+      "openclaw@.service",
+      "rescue.service",
+      "vendor-gateway.service",
+    ]);
+    expect(extras.errors).toEqual([
+      { source: "/lib/systemd/system", message: expect.stringContaining("could not be inspected") },
+    ]);
+    for (const service of extras.services) {
+      expect(service).not.toHaveProperty("extra");
+    }
+  });
+
+  it("reports global and custom launchd extras without admitting authenticated Node jobs", async () => {
+    Object.defineProperty(process, "platform", { configurable: true, value: "darwin" });
+    const home = tempDirs.make("managed-launchd-", os.tmpdir());
+    const write = isolateNativeRoots(home);
+    const userDir = path.join(home, "Library/LaunchAgents");
+    const plist = (label: string, executable = "openclaw", command = "gateway") =>
+      `<plist><dict><key>Label</key><string>${label}</string><key>ProgramArguments</key><array><string>/usr/bin/${executable}</string><string>${command}</string></array></dict></plist>`;
+    for (const label of ["ai.openclaw.gateway", "ai.openclaw.gateway.dev", "org.example.rescue"]) {
+      await write(path.join(userDir, `${label}.plist`), plist(label));
+    }
+    await write("/Library/LaunchAgents/org.example.global.plist", plist("org.example.global"));
+    await write("/Library/LaunchDaemons/ai.openclaw.gateway.plist", plist("ai.openclaw.gateway"));
+    await write(
+      "/Library/LaunchDaemons/ai.openclaw.node.plist",
+      plist("ai.openclaw.node", "openclaw", "node").replace(
+        "</dict>",
+        "<key>EnvironmentVariables</key><dict><key>OPENCLAW_SERVICE_MARKER</key><string>openclaw</string><key>OPENCLAW_SERVICE_KIND</key><string>node</string><key>OPENCLAW_GATEWAY_TOKEN</key><string>synthetic-token</string></dict></dict>",
+      ),
+    );
+    await write(
+      path.join(userDir, "com.clawdbot.gateway.plist"),
+      plist("com.clawdbot.gateway", "clawdbot"),
+    );
+    const unreadable = path.join(userDir, "ai.openclaw.broken.plist");
+    await write(unreadable, "malformed plist");
+
+    const extras = await findExtraGatewayServices({ HOME: home }, { deep: true });
+
+    expect(
+      extras.services.map((service) => `${service.scope}:${service.label}`).toSorted(),
+    ).toEqual([
+      "system:ai.openclaw.gateway",
+      "system:org.example.global",
+      "user:com.clawdbot.gateway",
+      "user:org.example.rescue",
+    ]);
+    expect(extras.errors).toEqual([
+      { source: unreadable, message: expect.stringContaining("could not be inspected") },
+    ]);
+    for (const service of extras.services) {
+      expect(service).not.toHaveProperty("extra");
+    }
+  });
+});
+
+describe("findExtraGatewayServices (win32)", () => {
+  const originalPlatform = process.platform;
+  const task = (taskPath: string, executable: string, args: string) => ({
+    taskPath,
+    state: null,
+    actions: [{ type: 0, path: executable, arguments: args, workingDirectory: "" }],
+  });
+
+  beforeEach(() => {
+    Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
+    listScheduledTasksMock.mockReset().mockReturnValue([]);
+    readScheduledTaskCommandMock.mockReset();
   });
 
   afterEach(() => {
-    Object.defineProperty(process, "platform", {
-      configurable: true,
-      value: originalPlatform,
-    });
+    Object.defineProperty(process, "platform", { configurable: true, value: originalPlatform });
   });
 
-  it("skips schtasks queries unless deep mode is enabled", async () => {
-    const result = await findExtraGatewayServices({});
-    expect(result).toStrictEqual([]);
-    expect(execSchtasksMock).not.toHaveBeenCalled();
+  it("skips Scheduled Task queries unless deep mode is enabled", async () => {
+    await expect(findExtraGatewayServices({})).resolves.toEqual({ services: [], errors: [] });
+    expect(listScheduledTasksMock).not.toHaveBeenCalled();
   });
 
-  it("returns empty results when schtasks query fails", async () => {
-    execSchtasksMock.mockResolvedValueOnce({
-      code: 1,
-      stdout: "",
-      stderr: "error",
+  it("reports query failures as incomplete inspection without inventing a cleanup target", async () => {
+    listScheduledTasksMock.mockImplementation(() => {
+      throw new Error("Access denied");
     });
 
     const result = await findExtraGatewayServices({}, { deep: true });
-    expect(result).toStrictEqual([]);
+
+    expect(result).toEqual({
+      services: [],
+      errors: [{ source: "schtasks", message: expect.stringContaining("could not be queried") }],
+    });
+    expect(renderGatewayServiceCleanupHints(result.services)).toEqual([]);
   });
 
-  it("collects only non-openclaw marker tasks from schtasks output", async () => {
-    // Real schtasks /Query /FO LIST /V output prefixes root-folder task
-    // names with a backslash (e.g. TaskName:\OpenClaw Gateway).
-    execSchtasksMock.mockResolvedValueOnce({
-      code: 0,
-      stdout: [
-        "TaskName:\\OpenClaw Gateway",
-        "Task To Run: C:\\Program Files\\OpenClaw\\openclaw.exe gateway run",
-        "",
-        "TaskName: Clawdbot Legacy",
-        "Task To Run: C:\\clawdbot\\clawdbot.exe run",
-        "",
-        "TaskName: Other Task",
-        "Task To Run: C:\\tools\\helper.exe",
-        "",
-      ].join("\n"),
-      stderr: "",
-    });
-
-    const result = await findExtraGatewayServices({}, { deep: true });
-    // The \OpenClaw Gateway task is the live launcher — it must be skipped.
-    // Only the unrelated clawdbot task should be flagged.
-    expect(result).toEqual([
+  it("keeps verified Node and legacy services while rejecting an unrelated branded monitor", async () => {
+    listScheduledTasksMock.mockReturnValue([
+      task("\\OpenClaw Gateway", "C:\\OpenClaw\\openclaw.exe", "gateway run"),
+      task("\\OpenClaw Gateway (dev)", "C:\\OpenClaw\\openclaw.exe", "gateway run --profile dev"),
+      task("\\OpenClaw Gateway Backup", "C:\\OpenClaw\\openclaw.exe", "gateway run"),
+      task(
+        "\\OpenClaw Node",
+        "C:\\Program Files\\nodejs\\node.exe",
+        '"C:\\OpenClaw\\dist\\entry.js" node run',
+      ),
+      task("\\Clawdbot Legacy", "C:\\clawdbot\\clawdbot.exe", "run"),
+      task(
+        "\\OpenClaw Gateway Monitor",
+        "C:\\tools\\monitor.exe",
+        "--gateway-url http://127.0.0.1:18789",
+      ),
       {
-        platform: "win32",
-        label: "Clawdbot Legacy",
-        detail: "task: Clawdbot Legacy, run: C:\\clawdbot\\clawdbot.exe run",
-        scope: "system",
-        marker: "clawdbot",
-        legacy: true,
+        taskPath: "\\OpenClaw CrossAction",
+        state: null,
+        actions: [
+          {
+            type: 0,
+            path: "C:\\OpenClaw\\openclaw.exe",
+            arguments: "node run",
+            workingDirectory: "",
+          },
+          {
+            type: 0,
+            path: "C:\\tools\\helper.exe",
+            arguments: "gateway run",
+            workingDirectory: "",
+          },
+        ],
       },
     ]);
-  });
-
-  it("reports duplicate root tasks that only share the gateway task prefix", async () => {
-    execSchtasksMock.mockResolvedValueOnce({
-      code: 0,
-      stdout: [
-        "TaskName:\\OpenClaw Gateway",
-        "Task To Run: C:\\Program Files\\OpenClaw\\openclaw.exe gateway run",
-        "",
-        "TaskName:\\OpenClaw Gateway (dev)",
-        "Task To Run: C:\\Program Files\\OpenClaw\\openclaw.exe gateway run --profile dev",
-        "",
-        "TaskName:\\OpenClaw Gateway Backup",
-        "Task To Run: C:\\Program Files\\OpenClaw\\openclaw.exe gateway run",
-        "",
-      ].join("\n"),
-      stderr: "",
-    });
 
     const result = await findExtraGatewayServices({}, { deep: true });
-    expect(result).toEqual([
-      {
-        platform: "win32",
+
+    expect(result.errors).toEqual([]);
+    expect(result.services).toEqual([
+      expect.objectContaining({
         label: "\\OpenClaw Gateway Backup",
-        detail:
-          "task: \\OpenClaw Gateway Backup, run: C:\\Program Files\\OpenClaw\\openclaw.exe gateway run",
-        scope: "system",
         marker: "openclaw",
         legacy: false,
-      },
+      }),
+      expect.objectContaining({ label: "\\OpenClaw Node", marker: "openclaw", legacy: false }),
+      expect.objectContaining({ label: "\\Clawdbot Legacy", marker: "clawdbot", legacy: true }),
+      expect.objectContaining({
+        label: "\\OpenClaw CrossAction",
+        marker: "openclaw",
+        legacy: false,
+      }),
     ]);
+    expect(renderGatewayServiceCleanupHints(result.services).join("\n")).not.toContain("Monitor");
+    for (const service of result.services) {
+      expect(service).not.toHaveProperty("extra");
+    }
+  });
+
+  it.each(["gateway", "node"])(
+    "recognizes verified %s launcher metadata independently of the task label",
+    async (kind) => {
+      listScheduledTasksMock.mockReturnValue([
+        task("\\Custom Service", "C:\\fixtures\\service.cmd", ""),
+      ]);
+      readScheduledTaskCommandMock.mockResolvedValue({
+        programArguments: ["C:\\runtime\\node.exe", "C:\\app\\entry.js", kind, "run"],
+        environment: { OPENCLAW_SERVICE_MARKER: "openclaw", OPENCLAW_SERVICE_KIND: kind },
+      });
+
+      const result = await findExtraGatewayServices({}, { deep: true });
+
+      expect(result.errors).toEqual([]);
+      expect(result.services).toEqual([
+        expect.objectContaining({ label: "\\Custom Service", marker: "openclaw", legacy: false }),
+      ]);
+    },
+  );
+
+  it.each([{ actions: undefined }, { actions: [] }])(
+    "retains incomplete known selectors with missing actions $actions",
+    async ({ actions }) => {
+      listScheduledTasksMock.mockReturnValue([
+        { taskPath: "\\OpenClaw Gateway", state: null, actions },
+        { taskPath: "\\Selected Custom", state: null, actions },
+      ]);
+      const env = { OPENCLAW_WINDOWS_TASK_NAME: "\\Selected Custom" };
+
+      const extras = await findExtraGatewayServices(env, { deep: true });
+
+      expect(extras.services).toEqual([]);
+      expect(extras.errors).toEqual([
+        {
+          source: "\\OpenClaw Gateway",
+          message: expect.stringContaining("could not be inspected"),
+        },
+        { source: "\\Selected Custom", message: expect.stringContaining("could not be inspected") },
+      ]);
+    },
+  );
+
+  it("does not offer deletion of the selected custom Gateway", async () => {
+    listScheduledTasksMock.mockReturnValue([
+      task("\\Services\\Selected Gateway", "C:\\OpenClaw\\openclaw.exe", "gateway run"),
+    ]);
+    const env = { OPENCLAW_WINDOWS_TASK_NAME: "Services\\Selected Gateway" };
+
+    const extras = await findExtraGatewayServices(env, { deep: true });
+
+    expect(extras).toEqual({ services: [], errors: [] });
+    expect(renderGatewayServiceCleanupHints(extras.services)).toEqual([]);
+  });
+
+  it.each(["\\OpenClaw Gateway (dev)", "\\Clawdbot Gateway"])(
+    "reports unreadable known launcher %s before any contents are available",
+    async (label) => {
+      listScheduledTasksMock.mockReturnValue([task(label, "C:\\custom\\gateway.cmd", "")]);
+      readScheduledTaskCommandMock.mockRejectedValue(new Error("Access denied"));
+
+      const result = await findExtraGatewayServices({}, { deep: true });
+
+      expect(result).toEqual({
+        services: [],
+        errors: [{ source: label, message: "Scheduled Task launcher could not be inspected." }],
+      });
+      expect(renderGatewayServiceCleanupHints(result.services)).toEqual([]);
+    },
+  );
+
+  it("reports a recognizable launcher read failure without offering its deletion", async () => {
+    listScheduledTasksMock.mockReturnValue([
+      task("\\Custom Service", "C:\\fixtures\\service.cmd", ""),
+    ]);
+    readScheduledTaskCommandMock.mockImplementationOnce(async (_env, options) => {
+      options?.onLauncherContent?.(
+        "@echo off\r\nnode C:\\openclaw\\dist\\entry.js gateway run\r\n",
+      );
+      throw new Error("Nested launcher could not be read");
+    });
+
+    const result = await findExtraGatewayServices({}, { deep: true });
+
+    expect(result).toEqual({
+      services: [],
+      errors: [
+        { source: "\\Custom Service", message: expect.stringContaining("could not be inspected") },
+      ],
+    });
+    expect(renderGatewayServiceCleanupHints(result.services)).toEqual([]);
   });
 });
