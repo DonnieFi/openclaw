@@ -7,7 +7,8 @@ import { maybeStopManagedServiceBeforeMutableUpdate } from "../cli/update-cli/up
 import { withEnvAsync } from "../test-utils/env.js";
 import { mockProcessPlatform } from "../test-utils/vitest-spies.js";
 import type { ExecResult } from "./exec-file.js";
-import type { SystemdServiceReadTarget } from "./service-types.js";
+import type { SystemdGatewayInstallation, SystemdServiceReadTarget } from "./service-types.js";
+import * as systemdScope from "./systemd-scope.js";
 
 const exec = vi.hoisted(() => vi.fn<typeof import("./exec-file.js").execFileUtf8>());
 const discovery = vi.hoisted(() =>
@@ -174,6 +175,67 @@ it.each([
           },
           definitionMutationCapability: { kind: "sealed", reason: "system-owned" },
         });
+        if (file === "openclaw.service") {
+          const actualInstallationDiscovery = systemdScope.findSystemdGatewayInstallation;
+          const installationDiscovery = vi.spyOn(systemdScope, "findSystemdGatewayInstallation");
+          try {
+            for (const selection of [
+              "discovered",
+              "supplied",
+              "delegated",
+              "none",
+              "dueling",
+              "explicit",
+            ] as const) {
+              const supplied: SystemdGatewayInstallation | undefined =
+                selection === "none" || selection === "explicit"
+                  ? { kind: "none" }
+                  : selection === "dueling"
+                    ? { kind: "dueling", user: { ...target, scope: "user" }, system: target }
+                    : selection === "discovered"
+                      ? undefined
+                      : { kind: "system", system: target };
+              const service = { ...resolveGatewayService() };
+              if (selection === "delegated") {
+                const readCommand = service.readCommand;
+                service.readCommand = (...args) => readCommand(...args);
+              }
+              const shouldDiscover =
+                selection === "discovered" || selection === "none" || selection === "dueling";
+              installationDiscovery.mockReset();
+              if (shouldDiscover) {
+                installationDiscovery.mockImplementation(actualInstallationDiscovery);
+              } else {
+                installationDiscovery.mockRejectedValue(
+                  new Error("Supplied target must retain its scope"),
+                );
+              }
+              const selectedState = await readGatewayServiceState(service, {
+                requireEffective: true,
+                requireLoadedCommand: true,
+                systemdInstallation: supplied,
+                systemdReadTarget: selection === "explicit" ? target : undefined,
+              });
+              expect(installationDiscovery, selection).toHaveBeenCalledTimes(
+                shouldDiscover ? 1 : 0,
+              );
+              expect(selectedState, selection).toMatchObject({
+                systemdInstallation:
+                  selection === "explicit" ? { kind: "none" } : { kind: "system", system: target },
+                installed: true,
+                running: false,
+                loadState: { status: "loaded" },
+                runtime: {
+                  status: "stopped",
+                  systemd: { scope: "system", unit: target.unitName, managerUid: 0 },
+                },
+                definitionMutationCapability: { kind: "sealed", reason: "system-owned" },
+              });
+            }
+          } finally {
+            installationDiscovery.mockRestore();
+          }
+        }
         const admitted = await maybeStopManagedServiceBeforeMutableUpdate({
           root,
           updateInstallKind: "package",
@@ -212,6 +274,7 @@ it("reads the system template instance while a separate user Gateway is installe
   const systemDir = path.join(home, "etc", "systemd", "system");
   const userUnit = path.join(userDir, "openclaw-gateway.service");
   const templateUnit = path.join(systemDir, "openclaw@.service");
+  const discoveredTemplateUnit = "/etc/systemd/system/openclaw@.service";
   const instanceName = "openclaw@gateway.service";
   await fs.mkdir(root);
   await fs.mkdir(userDir, { recursive: true });
@@ -227,6 +290,22 @@ it("reads the system template instance while a separate user Gateway is installe
     templateUnit,
     `[Service]\nUser=%i\nExecStart=${process.execPath} ${entrypoint} gateway\n`,
   );
+  const readdir = fs.readdir;
+  const readFile = fs.readFile;
+  vi.spyOn(fs, "readdir").mockImplementation((...args: Parameters<typeof fs.readdir>) => {
+    if (args[0] === "/etc/systemd/system") {
+      args[0] = systemDir;
+    } else if (args[0] === "/usr/lib/systemd/system" || args[0] === "/lib/systemd/system") {
+      args[0] = path.join(home, "absent-systemd-directory");
+    }
+    return readdir(...args);
+  });
+  vi.spyOn(fs, "readFile").mockImplementation((...args: Parameters<typeof fs.readFile>) => {
+    if (args[0] === discoveredTemplateUnit) {
+      args[0] = templateUnit;
+    }
+    return readFile(...args);
+  });
   discovery.mockResolvedValue([
     {
       platform: "linux",
@@ -311,15 +390,12 @@ it("reads the system template instance while a separate user Gateway is installe
         .join("\n"),
     );
   });
-  const bindings = await discoverManagedGatewayBindings(
-    { HOME: home },
-    { systemUnitDirs: [systemDir] },
-  );
+  const bindings = await discoverManagedGatewayBindings({ HOME: home });
   const systemBinding = bindings.find((binding) => binding.scope === "system");
   expect(systemBinding?.systemdReadTarget).toEqual({
     scope: "system",
     unitName: instanceName,
-    unitPath: templateUnit,
+    unitPath: discoveredTemplateUnit,
   });
   expect(bindings.some((binding) => binding.scope === "user")).toBe(true);
   await withEnvAsync(

@@ -36,6 +36,7 @@ import {
 import { sleep } from "./lib/sleep.mjs";
 import {
   discoverStaticExtensionAssets,
+  resolveStaticExtensionAssetSource,
   shouldCopyStaticExtensionAssets,
 } from "./lib/static-extension-assets.mts";
 import {
@@ -84,7 +85,6 @@ type RunNodeMainParams = {
   env?: NodeJS.ProcessEnv;
   runRuntimePostBuild?: RunNodeRuntimePostBuild;
   platform?: NodeJS.Platform;
-  resolveLiveGatewayDistFence?: typeof resolveLiveManagedGatewayDistFence;
 };
 type RunNodeProgress = {
   clearLine(): void;
@@ -462,7 +462,9 @@ const listRequiredStaticExtensionAssetOutputs = (deps: RunNodeRequirementDeps) =
   const runtimeExtensionsRoot = path.join(runtimeRoot, "extensions");
   const hasRuntimeOverlay = deps.fs.existsSync(runtimeExtensionsRoot);
   return discoverStaticExtensionAssets({ rootDir: deps.cwd, fs: deps.fs })
-    .filter((asset) => deps.fs.existsSync(path.join(deps.cwd, asset.src)))
+    .filter((asset) =>
+      deps.fs.existsSync(resolveStaticExtensionAssetSource(deps.cwd, asset, deps.fs)),
+    )
     .flatMap((asset) => {
       const relativeOutput = normalizePath(asset.dest).replace(/^dist\//u, "");
       const outputs = [path.join(distRoot, relativeOutput)];
@@ -1374,10 +1376,24 @@ const writeRuntimePostBuildStamp = (deps: RunNodeDeps) => {
   }
 };
 
+const refuseLiveDistMutation = async (deps: RunNodeDeps) => {
+  const fence = await resolveLiveManagedGatewayDistFence(deps.cwd, { env: deps.env });
+  if (!fence.refuse) {
+    return false;
+  }
+  const message = `${fence.message}\n`;
+  deps.stderr.write(message);
+  deps.outputTee?.write(message);
+  return true;
+};
+
 const syncRuntimeArtifactsAndStamp = async (deps: RunNodeDeps) =>
   withDistArtifactOwnership(deps.cwd, async () => {
     if (!resolveRuntimePostBuildRequirement(deps).shouldSync) {
       return true;
+    }
+    if (await refuseLiveDistMutation(deps)) {
+      return false;
     }
     const synced = await syncRuntimeArtifacts(deps);
     if (synced) {
@@ -1512,8 +1528,6 @@ function createRunNodeDeps(params: RunNodeMainParams) {
     args,
     env,
     platform: params.platform ?? process.platform,
-    resolveLiveGatewayDistFence:
-      params.resolveLiveGatewayDistFence ?? resolveLiveManagedGatewayDistFence,
     signalProcess:
       params.signalProcess ??
       ((pid: number, signal?: NodeJS.Signals | number) => process.kill(pid, signal)),
@@ -1566,14 +1580,8 @@ export async function runNodeMain(params: RunNodeMainParams = {}): Promise<RunNo
     }
     // Early refuse before the build lock / "Building TypeScript..." log. build-all
     // and tsdown still own the same fence at their destructive entry points.
-    if (buildRequirement.shouldBuild) {
-      const fence = await deps.resolveLiveGatewayDistFence(deps.cwd, { env: deps.env });
-      if (fence.refuse) {
-        const message = `${fence.message}\n`;
-        deps.stderr.write(message);
-        deps.outputTee?.write(message);
-        return await closeRunNodeOutputTee(deps, 1);
-      }
+    if (buildRequirement.shouldBuild && (await refuseLiveDistMutation(deps))) {
+      return await closeRunNodeOutputTee(deps, 1);
     }
     if (!buildRequirement.shouldBuild) {
       const runtimePostBuildRequirement = resolveRuntimePostBuildRequirement(deps);

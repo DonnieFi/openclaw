@@ -403,7 +403,7 @@ async function gatherDaemonStatusImpl(
             deep: true,
           }),
         )
-        .then((services) =>
+        .then(({ services }) =>
           services.filter(
             (extra) =>
               extra.platform !== "linux" ||

@@ -6,7 +6,8 @@ import fsPromises from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import * as liveGatewayDistFence from "../../scripts/lib/live-gateway-dist-fence.mts";
 import { readProcessMemoryCapacity } from "../../scripts/lib/process-memory.mts";
 import {
   TSDOWN_NON_SDK_DTS_CONFIG_GROUPS,
@@ -43,6 +44,13 @@ import {
   waitForPidFile,
 } from "../helpers/process-wait.js";
 import { createSourcePluginDependenciesFixture } from "./source-plugin-dependencies-fixture.js";
+
+beforeEach(() => {
+  const fence = vi
+    .spyOn(liveGatewayDistFence, "resolveLiveManagedGatewayDistFence")
+    .mockResolvedValue({ refuse: false });
+  onTestFinished(() => fence.mockRestore());
+});
 
 const fixture = createFixtureLifetime();
 const { createTempDir } = fixture;
@@ -142,7 +150,7 @@ describe("resolveTsdownBuildInvocation", () => {
 
   it("forwards explicit tsdown args after wrapper args are parsed", () => {
     const result = resolveTsdownBuildInvocation({
-      args: ["--format", "esm"],
+      args: ["--format", "esm", "--concurrency", "2"],
       platform: "linux",
       nodeExecPath: "/usr/bin/node",
       env: {},
@@ -151,7 +159,8 @@ describe("resolveTsdownBuildInvocation", () => {
 
     expect(result.args[0]).toBe("node_modules/tsdown/dist/run.mjs");
     expect(result.args).toEqual(expect.arrayContaining(["--config-loader", "unrun", "--no-clean"]));
-    expect(result.args.slice(-2)).toEqual(["--format", "esm"]);
+    expect(result.args.slice(-4)).toEqual(["--format", "esm", "--concurrency", "2"]);
+    expect(result.args.filter((arg) => arg === "--concurrency")).toHaveLength(1);
   });
 
   it("builds AI, packages, runtime, and bounded declarations sequentially", () => {
@@ -167,6 +176,8 @@ describe("resolveTsdownBuildInvocation", () => {
     expect(results[0]?.args).toEqual(
       expect.arrayContaining(["--config", "tsdown.ai.config.ts", "--format", "esm"]),
     );
+    expect(results[1]?.args).toEqual(expect.arrayContaining(["--concurrency", "1"]));
+    expect(results[2]?.args).not.toContain("--concurrency");
     const filters = results.slice(1).map((result) => {
       const filterIndex = result.args.indexOf("--filter");
       return result.args[filterIndex + 1];
@@ -196,6 +207,9 @@ describe("resolveTsdownBuildInvocation", () => {
     expect(results).toHaveLength(2);
     expect(results[0]?.args).toEqual(expect.arrayContaining(["--config", "tsdown.ai.config.ts"]));
     expect(results[1]?.args).not.toContain("--filter");
+    for (const result of results) {
+      expect(result.args).not.toContain("--concurrency");
+    }
   });
 
   it("serializes declaration graphs when --dts overrides the no-DTS environment", () => {
@@ -209,6 +223,7 @@ describe("resolveTsdownBuildInvocation", () => {
 
     expect(results).toHaveLength(3 + TSDOWN_UNIFIED_DTS_CONFIG_GROUPS.length);
     expect(results[1]?.args).toEqual(expect.arrayContaining(["--filter", "openclaw-packages"]));
+    expect(results[1]?.args).toEqual(expect.arrayContaining(["--concurrency", "1"]));
     expect(results[2]?.args).toEqual(expect.arrayContaining(["--filter", "openclaw-unified"]));
     expect(results.at(-1)?.args).toEqual(
       expect.arrayContaining(["--filter", TSDOWN_UNIFIED_DTS_CONFIG_GROUPS.at(-1)]),
@@ -688,6 +703,8 @@ describe("resolveTsdownBuildInvocation", () => {
         "--logLevel",
         "warn",
         "--no-clean",
+        "--concurrency",
+        "1",
       ],
       options: {
         stdio: ["ignore", "pipe", "pipe"],
@@ -1757,6 +1774,8 @@ describe("resolveTsdownBuildInvocation", () => {
         "--logLevel",
         "warn",
         "--no-clean",
+        "--concurrency",
+        "1",
       ],
       options: {
         stdio: ["ignore", "pipe", "pipe"],
@@ -2072,16 +2091,17 @@ describe("resolveTsdownBuildInvocation", () => {
   it("refuses a direct tsdown entry before executeBuild when the live Gateway fence trips", () =>
     fixture.run(async () => {
       const executeBuild = vi.fn(async () => 0);
-      const resolveLiveGatewayDistFence = vi.fn(async () => ({
-        refuse: true as const,
-        message: "[openclaw] Refusing to rebuild dist while a managed Gateway is still running.",
-      }));
+      const resolveLiveGatewayDistFence = vi
+        .spyOn(liveGatewayDistFence, "resolveLiveManagedGatewayDistFence")
+        .mockResolvedValue({
+          refuse: true,
+          message: "[openclaw] Refusing to rebuild dist while a managed Gateway is still running.",
+        });
 
       await expect(
         runTsdownBuild(["--config", "tsdown.ai.config.ts"], {
           cwd: createTempDir("openclaw-tsdown-live-fence-"),
           executeBuild,
-          resolveLiveGatewayDistFence,
         }),
       ).resolves.toBe(1);
 
@@ -2607,7 +2627,7 @@ describe("runTsdownBuildInvocation", () => {
           'import { build } from "tsdown";',
           ...(native
             ? [
-                'const nativePackage = import.meta.resolve("typescript-native/package.json");',
+                'const nativePackage = import.meta.resolve("typescript/package.json");',
                 'const { default: getExePath } = await import(new URL("lib/getExePath.js", nativePackage).href);',
               ]
             : []),

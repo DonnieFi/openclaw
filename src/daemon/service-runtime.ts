@@ -66,7 +66,9 @@ const SERVICE_RUNTIME_INSPECTION_FAILED_DETAIL = "service runtime inspection fai
 export function createServiceRuntimeInspectionFailure(
   error: unknown,
   timeoutMs?: number,
-): GatewayServiceRuntime {
+): GatewayServiceRuntime & {
+  inspectionFailure: NonNullable<GatewayServiceRuntime["inspectionFailure"]>;
+} {
   const refusal = findServiceOwnershipRefusal(error);
   if (refusal) {
     throw refusal;

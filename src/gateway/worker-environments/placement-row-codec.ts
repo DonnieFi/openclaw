@@ -12,13 +12,13 @@ import type {
 import {
   assertRecordShape,
   nextGeneration,
-  normalizeCursor,
   normalizeEpoch,
+  normalizeNonNegativeInteger,
   normalizeWorkerPlacementExecutionMode,
-  normalizeTimestamp,
   nullableRequired,
   required,
   type PersistedTurnClaim,
+  type WorkerSessionPlacementChangeSnapshot,
   type WorkerSessionPlacementIdentity,
   type WorkerSessionPlacementRecord,
   type WorkerSessionPlacementTransitionPatch,
@@ -77,13 +77,16 @@ export function fromRow(row: PlacementRow): WorkerSessionPlacementRecord {
     ),
     remoteWorkspaceDir: nullableRequired(row.remote_workspace_dir, "remote workspace directory"),
     workerBundleHash: nullableRequired(row.worker_bundle_hash, "worker bundle hash"),
-    lastTranscriptAckCursor: normalizeCursor(
+    lastTranscriptAckCursor: normalizeNonNegativeInteger(
       row.last_transcript_ack_cursor,
       "transcript ACK cursor",
     ),
-    lastLiveEventAckCursor: normalizeCursor(row.last_live_event_ack_cursor, "live ACK cursor"),
+    lastLiveEventAckCursor: normalizeNonNegativeInteger(
+      row.last_live_event_ack_cursor,
+      "live ACK cursor",
+    ),
     terminalReason: nullableRequired(row.terminal_reason, "terminal reason"),
-    terminalAtMs: normalizeTimestamp(row.terminal_at_ms, "terminal timestamp"),
+    terminalAtMs: normalizeNonNegativeInteger(row.terminal_at_ms, "terminal timestamp"),
   };
   const recoveryError = nullableRequired(row.recovery_error, "recovery error");
   const turnClaim = parseTurnClaim(row);
@@ -117,6 +120,25 @@ export function find(
       .where("session_id", "=", sessionId),
   );
   return row ? fromRow(row) : undefined;
+}
+
+export function readWorkerPlacementChangeSnapshotInDatabase(
+  db: DatabaseSync,
+): WorkerSessionPlacementChangeSnapshot[] {
+  return executeSqliteQuerySync(
+    db,
+    query(db).selectFrom("worker_session_placements").selectAll().orderBy("session_id"),
+  ).rows.map((row) => {
+    const { sessionId, state, generation, updatedAtMs, sessionKey, agentId } = fromRow(row);
+    return {
+      sessionId,
+      state,
+      generation,
+      updatedAtMs,
+      sessionKey,
+      agentId,
+    };
+  });
 }
 
 export function getRequired(db: DatabaseSync, sessionId: string): WorkerSessionPlacementRecord {
@@ -248,12 +270,12 @@ export function transitionValues(
       ? null
       : patch.lastTranscriptAckCursor === undefined
         ? current.lastTranscriptAckCursor
-        : normalizeCursor(patch.lastTranscriptAckCursor, "transcript ACK cursor"),
+        : normalizeNonNegativeInteger(patch.lastTranscriptAckCursor, "transcript ACK cursor"),
     last_live_event_ack_cursor: clearsWorkerMetadata
       ? null
       : patch.lastLiveEventAckCursor === undefined
         ? current.lastLiveEventAckCursor
-        : normalizeCursor(patch.lastLiveEventAckCursor, "live ACK cursor"),
+        : normalizeNonNegativeInteger(patch.lastLiveEventAckCursor, "live ACK cursor"),
     recovery_error: clearsWorkerMetadata
       ? null
       : patch.recoveryError === undefined

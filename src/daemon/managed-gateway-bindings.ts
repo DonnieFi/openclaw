@@ -3,11 +3,7 @@ import fs from "node:fs/promises";
 import { isRecord, readStringField } from "@openclaw/normalization-core/record-coerce";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { resolveGatewayLaunchAgentLabel, resolveGatewayWindowsTaskName } from "./constants.js";
-import {
-  listManagedOpenClawGatewayServices,
-  type ExtraGatewayService,
-  type ListManagedOpenClawGatewayServicesOptions,
-} from "./inspect.js";
+import { listManagedOpenClawGatewayServices, type ExtraGatewayService } from "./inspect.js";
 import { decodeLaunchdPlistMetadata } from "./launchd-plist.js";
 import type { GatewayServiceEnv, SystemdServiceReadTarget } from "./service-types.js";
 import { resolveSystemdRunnableUnitName } from "./systemd-scope.js";
@@ -202,7 +198,6 @@ function bindingFromWindowsTask(
  */
 export async function discoverManagedGatewayBindings(
   env: Record<string, string | undefined>,
-  opts?: ListManagedOpenClawGatewayServicesOptions,
 ): Promise<ManagedGatewayBinding[]> {
   const results: ManagedGatewayBinding[] = [];
   const seen = new Set<string>();
@@ -216,7 +211,9 @@ export async function discoverManagedGatewayBindings(
   };
 
   try {
-    for (const svc of await listManagedOpenClawGatewayServices(env, opts)) {
+    const { services } = await listManagedOpenClawGatewayServices(env);
+    // Discovery warnings cannot establish a live process holding this checkout's dist.
+    for (const svc of services) {
       if (svc.platform === "linux") {
         push(await bindingFromSystemdService(svc, env));
         continue;

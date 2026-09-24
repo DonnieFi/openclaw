@@ -529,7 +529,6 @@ export async function runBuildAllSteps(
     memoryLimit?: Omit<MemoryLimitParams, "env">;
     now?: () => number;
     resolveCacheState?: typeof resolveBuildStepCacheState;
-    resolveLiveGatewayDistFence?: typeof resolveLiveManagedGatewayDistFence;
     restoreCache?: typeof restoreBuildStepCacheOutputs;
     runStep?: (
       invocation: ReturnType<typeof resolveBuildAllStep>,
@@ -547,8 +546,9 @@ export async function runBuildAllSteps(
   const logger = params.logger ?? console;
   // One owner for both `pnpm build` and run-node dirty-tree auto-build: both
   // enter here before clean:dist can delete hashed modules a live Gateway still imports.
-  const resolveFence = params.resolveLiveGatewayDistFence ?? resolveLiveManagedGatewayDistFence;
-  const fence = await resolveFence(params.cwd ?? process.cwd(), { env: buildEnv });
+  const fence = await resolveLiveManagedGatewayDistFence(params.cwd ?? process.cwd(), {
+    env: buildEnv,
+  });
   if (fence.refuse) {
     logger.error(fence.message);
     return {

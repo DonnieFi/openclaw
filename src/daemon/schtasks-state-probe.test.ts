@@ -1,10 +1,39 @@
 import { spawnSync } from "node:child_process";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { probeScheduledTaskState } from "./schtasks-state-probe.js";
+import {
+  listScheduledTasks,
+  probeScheduledTaskState,
+  ScheduledTaskInspectionError,
+} from "./schtasks-state-probe.js";
 
 vi.mock("node:child_process", () => ({ spawnSync: vi.fn() }));
 
 beforeEach(() => vi.mocked(spawnSync).mockReset());
+
+it("reads nested native action metadata without localized field names", () => {
+  const snapshot = {
+    taskPath: "\\Ops\\Backup 任务",
+    state: 1,
+    enabled: false,
+    actions: [
+      {
+        type: 0,
+        path: "C:\\Services\\Backup\\gateway.cmd",
+        arguments: "literal argument",
+        workingDirectory: "C:\\Services\\Backup",
+      },
+    ],
+  };
+  vi.mocked(spawnSync).mockReturnValue({
+    pid: 0,
+    output: [null, "", ""],
+    status: 0,
+    stdout: JSON.stringify(snapshot),
+    stderr: "",
+    signal: null,
+  });
+  expect(probeScheduledTaskState(snapshot.taskPath)).toEqual({ status: "found", ...snapshot });
+});
 
 it("reads task state when PowerShell rejects a no-console launch", () => {
   vi.mocked(spawnSync).mockImplementation((_command, _args, options) => {
@@ -49,6 +78,8 @@ describe("Scheduled Task probe timeout", () => {
     { budget: 0, expected: 5_000 },
     { budget: -1, expected: 5_000 },
     { budget: Number.POSITIVE_INFINITY, expected: 5_000 },
+    { budget: 457.0681, expected: 457 },
+    { budget: 0.5, expected: 1 },
     { budget: 200, expected: 200 },
     { budget: 30_000, expected: 30_000 },
   ])("uses a bounded caller budget: $budget -> $expected ms", ({ budget, expected }) => {
@@ -72,4 +103,40 @@ describe("Scheduled Task probe timeout", () => {
     });
     expect(spawnSync).toHaveBeenCalledTimes(1);
   });
+});
+
+it("retains disabled nested task actions when decoding the inventory", () => {
+  const snapshot = {
+    taskPath: "\\Ops\\Backup 任务",
+    state: 1,
+    enabled: false,
+    actions: [{ type: 0, path: "C:\\Services\\gateway.cmd", arguments: "", workingDirectory: "" }],
+  };
+  const stdout = JSON.stringify([snapshot]);
+  vi.mocked(spawnSync).mockReturnValue({
+    pid: 0,
+    output: [null, stdout, ""],
+    status: 0,
+    stdout,
+    stderr: "",
+    signal: null,
+  });
+  expect(listScheduledTasks()).toEqual([snapshot]);
+});
+
+it.each([
+  { budget: undefined, expected: 15_000 },
+  { budget: 47_000, expected: 47_000 },
+])("preserves a timed-out inventory and its $expected ms budget", ({ budget, expected }) => {
+  vi.mocked(spawnSync).mockReturnValue({
+    pid: 0,
+    output: [null, "", ""],
+    stdout: "",
+    stderr: "",
+    status: null,
+    signal: "SIGTERM",
+    error: Object.assign(new Error("spawnSync powershell.exe ETIMEDOUT"), { code: "ETIMEDOUT" }),
+  });
+  expect(() => listScheduledTasks(budget)).toThrow(ScheduledTaskInspectionError);
+  expect(vi.mocked(spawnSync).mock.calls[0]?.[2]?.timeout).toBe(expected);
 });

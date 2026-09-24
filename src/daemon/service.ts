@@ -39,6 +39,7 @@ import {
   ServiceOwnershipRefusalError,
   findServiceOwnershipRefusal,
 } from "./service-inspection-error.js";
+import { readGatewayServiceLoadState } from "./service-load-state.js";
 import {
   withGatewayServiceOperationLock,
   withSystemdServiceReadBinding,
@@ -56,7 +57,7 @@ import type {
   GatewayServiceEnv,
   GatewayServiceEnvArgs,
   GatewayServiceInstallArgs,
-  GatewayServiceLoadState,
+  GatewayServiceLoadStateReader,
   GatewayServiceManageArgs,
   GatewayServiceReadOptions,
   GatewayServiceRestartResult,
@@ -101,7 +102,7 @@ function ignoreServiceWriteResult<TArgs extends GatewayServiceInstallArgs>(
   };
 }
 
-export type GatewayService = {
+export type GatewayService = GatewayServiceLoadStateReader & {
   label: string;
   loadedText: string;
   notLoadedText: string;
@@ -111,7 +112,6 @@ export type GatewayService = {
   start: (args: GatewayServiceControlArgs) => Promise<void>;
   stop: (args: GatewayServiceControlArgs) => Promise<void>;
   restart: (args: GatewayServiceControlArgs) => Promise<GatewayServiceRestartResult>;
-  isLoaded: (args: GatewayServiceEnvArgs) => Promise<boolean>;
   isEnabled?: (args: GatewayServiceEnvArgs) => Promise<boolean>;
   hasInstalledDefinition?: (args: GatewayServiceEnvArgs) => Promise<boolean>;
   isAbsent?: (args: GatewayServiceEnvArgs & { strictCommandAbsent?: true }) => Promise<boolean>;
@@ -153,33 +153,19 @@ export async function inspectGatewayServiceStartRepair(
   return { state, issues: collectGatewayServiceStartRepairIssues(state, expectedPort) };
 }
 
-export async function readGatewayServiceLoadState(
-  service: GatewayService,
-  args: GatewayServiceEnvArgs = {},
-): Promise<GatewayServiceLoadState> {
-  try {
-    return { status: (await service.isLoaded(args)) ? "loaded" : "not-loaded" };
-  } catch (error) {
-    const refusal = findServiceOwnershipRefusal(error);
-    if (refusal) {
-      throw refusal;
-    }
-    return {
-      status: "unknown",
-      detail: String(error),
-      ...(error instanceof ServiceInspectionError ? { inspectionReason: error.reason } : {}),
-    };
-  }
-}
-
 export async function readGatewayServiceState(
   service: GatewayService,
   input: ReadGatewayServiceStateArgs = {},
 ): Promise<GatewayServiceState> {
   let args = input;
   const baseEnv = args.env ?? (process.env as GatewayServiceEnv);
-  if (service.readCommand === readSystemdServiceExecStart && !args.systemdReadTarget) {
-    const installation = await findSystemdGatewayInstallation(baseEnv);
+  const supplied = args.systemdInstallation;
+  const selected = supplied?.kind === "system" || supplied?.kind === "user" ? supplied : undefined;
+  if (
+    !args.systemdReadTarget &&
+    (selected || service.readCommand === readSystemdServiceExecStart)
+  ) {
+    const installation = selected ?? (await findSystemdGatewayInstallation(baseEnv));
     if (installation.kind === "dueling" && args.requireEffective && args.requireLoadedCommand) {
       throw new ServiceOwnershipRefusalError("systemd-competing-managers");
     }
@@ -266,7 +252,11 @@ async function readGatewayServiceStateWithBinding(
             }
             return null;
           });
-  const env = mergeGatewayServiceEnv(baseEnv, command);
+  const mergedEnv = mergeGatewayServiceEnv(baseEnv, command);
+  const env =
+    process.platform === "win32" && args.requireLoadedCommand && command?.sourcePath
+      ? { ...mergedEnv, OPENCLAW_TASK_SCRIPT: command.sourcePath }
+      : mergedEnv;
   // Reject persisted selector drift before invoking the native service manager.
   args.validateEnvBeforeStatusRead?.(env);
   // Strict user-unit absence still needs the platform owner's system-scope proof.

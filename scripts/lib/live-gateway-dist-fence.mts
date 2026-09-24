@@ -2,46 +2,26 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { ManagedGatewayBinding } from "../../src/daemon/managed-gateway-bindings.ts";
 import type { GatewayServiceEnv, GatewayServiceState } from "../../src/daemon/service-types.ts";
+import { isPidAlive } from "../../src/shared/pid-alive.ts";
 
-export type LiveGatewayDistFenceDeps = {
-  env?: NodeJS.ProcessEnv;
-  listBindings?: (env: GatewayServiceEnv) => Promise<readonly ManagedGatewayBinding[]>;
-  readState?: (binding?: ManagedGatewayBinding) => Promise<GatewayServiceState>;
-  matchesRoot?: (root: string, command: GatewayServiceState["command"]) => Promise<boolean | null>;
-  isPidAlive?: (pid: number) => boolean;
-};
-
-export type LiveGatewayDistFenceResult = { refuse: true; message: string } | { refuse: false };
+type LiveGatewayDistFenceResult = { refuse: true; message: string } | { refuse: false };
 
 const ALLOW_ENV = "OPENCLAW_ALLOW_LIVE_DIST_BUILD";
 
-function defaultIsPidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /** True when the managed service still holds a live process on this checkout's dist. */
-export function isLiveManagedGatewayHoldingDist(
-  state: GatewayServiceState,
-  options: { isPidAlive?: (pid: number) => boolean } = {},
-): boolean {
+function isLiveManagedGatewayHoldingDist(state: GatewayServiceState): boolean {
   if (state.running) {
     return true;
   }
-  const isPidAlive = options.isPidAlive ?? defaultIsPidAlive;
   const pid = state.runtime?.pid;
   if (typeof pid === "number" && Number.isSafeInteger(pid) && pid > 1 && isPidAlive(pid)) {
     return true;
   }
-  const status = state.runtime?.status?.toLowerCase() ?? "";
+  const serviceState = state.runtime?.state?.toLowerCase() ?? "";
   const subState = state.runtime?.subState?.toLowerCase() ?? "";
   // systemd stop/restart drains keep MainPID alive under deactivating states.
   return (
-    status === "deactivating" ||
+    serviceState === "deactivating" ||
     subState === "stop-sigterm" ||
     subState === "stop-sigkill" ||
     subState === "final-sigterm"
@@ -159,7 +139,7 @@ async function samePathIdentity(left: string, right: string): Promise<boolean> {
  * True when this checkout's dist physically overlaps the serving Gateway
  * artifacts. Logical current/releases ownership is not enough.
  */
-export async function gatewayServiceCommandOverlapsPhysicalCheckout(
+async function gatewayServiceCommandOverlapsPhysicalCheckout(
   checkoutRoot: string,
   command: GatewayServiceState["command"],
 ): Promise<boolean | null> {
@@ -178,19 +158,28 @@ export async function gatewayServiceCommandOverlapsPhysicalCheckout(
     return null;
   }
 
-  const checkoutReal = await tryRealpath(checkoutRoot);
   const checkoutDist = await tryRealpath(path.join(checkoutRoot, "dist"));
+  const checkoutDistStat = await fs.stat(checkoutDist).catch(() => null);
+  if (!checkoutDistStat?.isDirectory()) {
+    return false;
+  }
   const servingDist = await tryRealpath(path.join(servingRoot, "dist"));
   const servingEntryReal = await tryRealpath(servingEntry);
 
-  if (await samePathIdentity(checkoutReal, servingRoot)) {
+  if (runtime.isPathInside(checkoutDist, servingEntryReal)) {
     return true;
+  }
+  // The packaged launcher imports dist/entry; a shared package root alone is insufficient.
+  if (
+    !runtime.isPathInside(servingDist, servingEntryReal) &&
+    servingEntryReal !== path.join(servingRoot, "openclaw.mjs")
+  ) {
+    return false;
   }
   if (await samePathIdentity(checkoutDist, servingDist)) {
     return true;
   }
   return (
-    runtime.isPathInside(checkoutDist, servingEntryReal) ||
     runtime.isPathInside(checkoutDist, servingDist) ||
     runtime.isPathInside(servingDist, checkoutDist)
   );
@@ -198,16 +187,9 @@ export async function gatewayServiceCommandOverlapsPhysicalCheckout(
 
 async function resolveFenceBindings(
   env: NodeJS.ProcessEnv,
-  deps: LiveGatewayDistFenceDeps,
 ): Promise<readonly ManagedGatewayBinding[] | null> {
   try {
-    if (deps.listBindings) {
-      return await deps.listBindings(env as GatewayServiceEnv);
-    }
     const current = bindingFromProcessEnv(env);
-    if (deps.readState) {
-      return [current];
-    }
     const inspect = await import("../../src/daemon/managed-gateway-bindings.ts");
     const discovered = await inspect.discoverManagedGatewayBindings(env);
     return dedupeBindings([current, ...discovered]);
@@ -222,46 +204,38 @@ async function resolveFenceBindings(
  */
 export async function resolveLiveManagedGatewayDistFence(
   checkoutRoot: string,
-  deps: LiveGatewayDistFenceDeps = {},
+  options: { env?: NodeJS.ProcessEnv } = {},
 ): Promise<LiveGatewayDistFenceResult> {
-  const env = deps.env ?? process.env;
+  const env = options.env ?? process.env;
   if (env[ALLOW_ENV] === "1") {
     return { refuse: false };
   }
 
-  const bindings = await resolveFenceBindings(env, deps);
+  const bindings = await resolveFenceBindings(env);
   if (!bindings) {
     return { refuse: false };
   }
-
-  const readState =
-    deps.readState ??
-    (async (binding?: ManagedGatewayBinding) => {
-      const runtime = await loadFenceRuntime();
-      if (!runtime) {
-        throw new Error("gateway service inspection unavailable");
-      }
-      // Binding env is the selector census. Do not merge ambient profile/unit
-      // overrides on top or a discovered sibling inherits the caller selectors.
-      return await runtime.readGatewayServiceState(runtime.resolveGatewayService(), {
-        env: (binding?.env ?? env) as GatewayServiceEnv,
-        ...(binding?.systemdReadTarget ? { systemdReadTarget: binding.systemdReadTarget } : {}),
-      });
-    });
-  const matchesRoot =
-    deps.matchesRoot ??
-    ((root, command) => gatewayServiceCommandOverlapsPhysicalCheckout(root, command));
 
   const root = path.resolve(checkoutRoot);
   const holds: Array<{ profile: string; state: GatewayServiceState }> = [];
   for (const binding of bindings) {
     try {
-      const state = await readState(binding);
-      const matches = await matchesRoot(root, state.command);
+      const runtime = await loadFenceRuntime();
+      if (!runtime) {
+        continue;
+      }
+      // A discovered sibling keeps its own selectors, rather than ambient profile overrides.
+      const state = await runtime.readGatewayServiceState(runtime.resolveGatewayService(), {
+        env: binding.env,
+        requireEffective: true,
+        requireLoadedCommand: true,
+        ...(binding.systemdReadTarget ? { systemdReadTarget: binding.systemdReadTarget } : {}),
+      });
+      const matches = await gatewayServiceCommandOverlapsPhysicalCheckout(root, state.command);
       if (matches !== true) {
         continue;
       }
-      if (!isLiveManagedGatewayHoldingDist(state, { isPidAlive: deps.isPidAlive })) {
+      if (!isLiveManagedGatewayHoldingDist(state)) {
         continue;
       }
       holds.push({ profile: normalizeFenceProfile(binding.profile), state });
