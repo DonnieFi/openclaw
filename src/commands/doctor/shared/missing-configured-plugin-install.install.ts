@@ -73,6 +73,9 @@ function formatInstalledConfiguredPluginChange(params: {
   installSpec: string;
   repairReason?: InstallCandidateRepairReason;
 }): string {
+  if (params.repairReason === "obsolete-source-checkout") {
+    return `Replaced source-checkout copy of plugin "${params.pluginId}" with ${params.installSpec}.`;
+  }
   return params.repairReason === "stale-version-bound-runtime"
     ? `Refreshed stale configured plugin "${params.pluginId}" from ${params.installSpec}.`
     : `Installed missing configured plugin "${params.pluginId}" from ${params.installSpec}.`;

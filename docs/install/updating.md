@@ -207,6 +207,10 @@ shadows, and record a `plugin-operator-managed` warning in the outcome and updat
 history. Verify that copy against the updated OpenClaw version, or remove its
 path from `plugins.load.paths` to use the managed installation again. This does
 not grant the local copy trusted plugin privileges.
+Once no load path selects it, `openclaw update repair` and `openclaw doctor --fix`
+replace an official plugin's leftover OpenClaw source-checkout install with the
+official package; if that install fails, they keep the checkout copy and warn with
+the reinstall command.
 An explicit package artifact (for example, a tarball path or URL) is validated
 and installed even when its version matches; matching versions do not prove
 that two artifacts contain the same code.

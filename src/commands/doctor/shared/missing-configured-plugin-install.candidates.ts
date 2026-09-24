@@ -4,6 +4,7 @@ import { listRawChannelPluginCatalogEntries } from "../../../channels/plugins/ca
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import type { PluginInstallRecord } from "../../../config/types.plugins.js";
 import { compareOpenClawReleaseVersions } from "../../../infra/npm-registry-spec.js";
+import { isPathInside } from "../../../infra/path-guards.js";
 import {
   normalizeUpdateChannel,
   resolveRegistryUpdateChannel,
@@ -33,6 +34,7 @@ import { safeRealpathSync } from "../../../plugins/path-safety.js";
 import { isPayloadMissing } from "../../../plugins/payload-verification.js";
 import type { PluginMetadataSnapshot } from "../../../plugins/plugin-metadata-snapshot.types.js";
 import { resolveProviderInstallCatalogEntries } from "../../../plugins/provider-install-catalog.js";
+import { listObsoleteSourceCheckoutPluginInstallRecords } from "../../../plugins/stale-local-bundled-plugin-install-records.js";
 import { resolveUserPath } from "../../../utils.js";
 import { resolveCompatibilityHostVersion } from "../../../version.js";
 import {
@@ -55,6 +57,12 @@ export type DownloadableInstallCandidate = {
   trustedSourceLinkedOfficialInstall?: boolean;
   defaultChoice?: PluginPackageInstall["defaultChoice"];
   versionBoundToOpenClaw?: boolean;
+};
+
+/** A configured plugin still recorded at an abandoned source-checkout copy. */
+type ObsoleteSourceCheckoutInstall = {
+  checkoutPluginDir: string;
+  candidate: DownloadableInstallCandidate;
 };
 
 export type BundledPluginPackageDescriptor = {
@@ -142,6 +150,47 @@ export async function resolveConfiguredPluginInstallContext(params: {
       }
     }
   }
+  // The configured load paths, not discovery, decide whether the operator still selects a checkout copy.
+  const loadPathIdentities = (params.cfg.plugins?.load?.paths ?? [])
+    .filter((value) => value.trim())
+    .map(resolvePathIdentity);
+  const obsoleteSourceCheckoutInstalls: ReadonlyMap<string, ObsoleteSourceCheckoutInstall> =
+    new Map(
+      listObsoleteSourceCheckoutPluginInstallRecords({
+        installRecords: records,
+        currentBundledPluginIds: new Set(currentBundledPlugins.map((plugin) => plugin.id)),
+        env: params.env,
+      })
+        .filter(
+          ({ pluginId, checkoutPluginDir }) =>
+            !operatorManagedPluginIds.has(pluginId) &&
+            !params.blockedPluginIds?.has(pluginId) &&
+            !loadPathIdentities.some((loadPath) =>
+              isPathInside(loadPath, resolvePathIdentity(checkoutPluginDir)),
+            ) &&
+            isConfiguredPluginRepairTarget({
+              pluginId,
+              configuredPluginIds: params.configuredPluginIds,
+              configuredChannelIds: params.configuredChannelIds,
+              configuredChannelOwnerPluginIds,
+            }),
+        )
+        .map(
+          ({ pluginId, checkoutPluginDir, official }) =>
+            [
+              pluginId,
+              {
+                checkoutPluginDir,
+                candidate: {
+                  pluginId,
+                  ...official,
+                  trustedSourceLinkedOfficialInstall: true,
+                  versionBoundToOpenClaw: true,
+                },
+              },
+            ] as const,
+        ),
+    );
   const currentVersion = params.coreVersion ?? resolveCompatibilityHostVersion(params.env);
   const updateChannel = resolveRegistryUpdateChannel({
     configChannel: normalizeUpdateChannel(params.cfg.update?.channel),
@@ -253,6 +302,7 @@ export async function resolveConfiguredPluginInstallContext(params: {
     installedPluginIdsWithRepairablePackages,
     installedPluginMissingRequiredDependencies,
     officialReplacementPluginIds,
+    obsoleteSourceCheckoutInstalls,
   };
 }
 
