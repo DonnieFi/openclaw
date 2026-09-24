@@ -106,6 +106,8 @@ export type GatewayService = GatewayServiceLoadStateReader & {
   label: string;
   loadedText: string;
   notLoadedText: string;
+  /** Diagnostic guidance only; this does not establish service absence. */
+  unsupportedReason?: string;
   stage: (args: GatewayServiceStageArgs) => Promise<void>;
   install: (args: GatewayServiceInstallArgs) => Promise<void>;
   uninstall: (args: GatewayServiceManageArgs) => Promise<void>;
@@ -482,6 +484,7 @@ function createUnsupportedGatewayService(kind: ServiceKind): GatewayService {
     label: "Gateway service",
     loadedText: "available",
     notLoadedText: "not installed",
+    unsupportedReason: createUnsupportedGatewayServiceError(kind).message,
     stage: rejectUnsupportedGatewayService,
     install: rejectUnsupportedGatewayService,
     uninstall: rejectUnsupportedGatewayService,

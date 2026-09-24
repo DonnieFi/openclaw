@@ -46,6 +46,13 @@ beforeEach(() => {
   onTestFinished(() => fence.mockRestore());
 });
 
+vi.mock("../../src/cli/update-cli/update-command-service-publication.js", () => ({
+  withGatewayRuntimeArtifactPublication: async (
+    _params: unknown,
+    publish: () => Promise<unknown>,
+  ) => publish(),
+}));
+
 const testNodeExecPath = resolveTestNodeExecPath();
 const buildAllUrl = resolveRuntimeWorkerUrl(toolingProbeRuntimeEntrypoints.buildAll);
 const buildArtifactCacheUrl = resolveRuntimeWorkerUrl(
@@ -924,7 +931,13 @@ describe("resolveBuildAllSteps", () => {
           }),
         ).toBe(0);
         expect(spawn.mock.calls.map(([, args]) => args)).toEqual([
-          ["--import", "tsx", "scripts/build-all.mts", "qaRuntime"],
+          [
+            "--import",
+            expect.stringMatching(/\/scripts\/tsx\.mjs$/),
+            expect.stringMatching(/[\\/]scripts[\\/]lib[\\/]dist-artifact-ownership\.mts$/),
+            expect.stringMatching(/\/scripts\/build-all\.mts$/),
+            "qaRuntime",
+          ],
           ["openclaw.mjs", "status"],
         ]);
         const env = spawn.mock.calls[0]![2].env!;

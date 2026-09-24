@@ -16,7 +16,10 @@ import {
   getCommandArgsWithRootOptions,
   getRootOptionAwareCommandPath,
 } from "../src/infra/cli-root-options.ts";
-import { withDistArtifactOwnership } from "./lib/dist-artifact-ownership.mts";
+import {
+  distArtifactEntryArgs,
+  withDistArtifactOwnership,
+} from "./lib/dist-artifact-ownership.mts";
 import { resolveLiveManagedGatewayDistFence } from "./lib/live-gateway-dist-fence.mts";
 import {
   BUILD_STAMP_FILE,
@@ -47,6 +50,7 @@ import {
   runNodeWatchedPaths,
 } from "./run-node-watch-paths.mts";
 import { listCoreRuntimePostBuildOutputs, runRuntimePostBuild } from "./runtime-postbuild.mts";
+import { listTsdownOutputRoots } from "./tsdown-build.mts";
 
 type RunNodeInjectedChild = {
   kill?: (signal?: NodeJS.Signals) => boolean | void;
@@ -141,7 +145,6 @@ function asRunNodeChild(value: unknown): RunNodeChild {
 
 export { runNodeWatchedPaths };
 
-const runtimeBuildArgs = ["--import", "tsx", "scripts/build-all.mts", "qaRuntime"];
 const RUN_NODE_DEFAULT_SHUTDOWN_GRACE_MS = 5_000;
 const RUN_NODE_MAX_SHUTDOWN_GRACE_MS = 5 * 60_000;
 const RUN_NODE_SHUTDOWN_GRACE_MESSAGE_TYPE = "openclaw:shutdown-grace";
@@ -1353,6 +1356,29 @@ const withRunNodeBuildLock = async <T,>(deps: RunNodeDeps, callback: () => Promi
   }
 };
 
+const withRunNodeRuntimePublication = async <T,>(deps: RunNodeDeps, publish: () => Promise<T>) => {
+  const { withGatewayRuntimeArtifactPublication } =
+    await import("../src/cli/update-cli/update-command-service-publication.ts");
+  const selected = parseCliProfileArgs([deps.execPath, "openclaw.mjs", ...deps.args]);
+  if (!selected.ok) {
+    throw new Error(selected.error);
+  }
+  const env = { ...deps.env };
+  if (selected.profile) {
+    applyCliProfileEnv({ profile: selected.profile, env });
+  }
+  return await withGatewayRuntimeArtifactPublication(
+    {
+      root: deps.cwd,
+      env,
+      timeoutMs: 60_000,
+      outputPaths: listTsdownOutputRoots(),
+      assertCurrent() {},
+    },
+    publish,
+  );
+};
+
 const syncRuntimeArtifacts = async (deps: RunNodeDeps) => {
   try {
     await deps.runRuntimePostBuild({ cwd: deps.cwd, env: deps.env });
@@ -1392,14 +1418,16 @@ const syncRuntimeArtifactsAndStamp = async (deps: RunNodeDeps) =>
     if (!resolveRuntimePostBuildRequirement(deps).shouldSync) {
       return true;
     }
-    if (await refuseLiveDistMutation(deps)) {
-      return false;
-    }
-    const synced = await syncRuntimeArtifacts(deps);
-    if (synced) {
-      writeRuntimePostBuildStamp(deps);
-    }
-    return synced;
+    return await withRunNodeRuntimePublication(deps, async () => {
+      if (await refuseLiveDistMutation(deps)) {
+        return false;
+      }
+      const synced = await syncRuntimeArtifacts(deps);
+      if (synced) {
+        writeRuntimePostBuildStamp(deps);
+      }
+      return synced;
+    });
   });
 
 const shouldSkipWatchRuntimeSync = (deps: RunNodeDeps, requirement: RuntimePostBuildRequirement) =>
@@ -1578,11 +1606,6 @@ export async function runNodeMain(params: RunNodeMainParams = {}): Promise<RunNo
       exitCode = await runQaReportFromSource(deps, qaReportScript);
       return await closeRunNodeOutputTee(deps, exitCode);
     }
-    // Early refuse before the build lock / "Building TypeScript..." log. build-all
-    // and tsdown still own the same fence at their destructive entry points.
-    if (buildRequirement.shouldBuild && (await refuseLiveDistMutation(deps))) {
-      return await closeRunNodeOutputTee(deps, 1);
-    }
     if (!buildRequirement.shouldBuild) {
       const runtimePostBuildRequirement = resolveRuntimePostBuildRequirement(deps);
       if (immutableDeployment && runtimePostBuildRequirement.shouldSync) {
@@ -1632,26 +1655,37 @@ export async function runNodeMain(params: RunNodeMainParams = {}): Promise<RunNo
         return (await syncRuntimeArtifactsAndStamp(deps)) ? 0 : 1;
       }
 
-      logRunner(
-        `Building TypeScript (dist is stale: ${lockedBuildRequirement.reason} - ${formatBuildReason(lockedBuildRequirement.reason)}).`,
-        deps,
+      return await withDistArtifactOwnership(deps.cwd, () =>
+        withRunNodeRuntimePublication(deps, async () => {
+          if (await refuseLiveDistMutation(deps)) {
+            return 1;
+          }
+          logRunner(
+            `Building TypeScript (dist is stale: ${lockedBuildRequirement.reason} - ${formatBuildReason(lockedBuildRequirement.reason)}).`,
+            deps,
+          );
+          return await withRunNodeProgress(deps, "Building local CLI artifacts", async () => {
+            const build = asRunNodeChild(
+              deps.spawn(
+                deps.execPath,
+                distArtifactEntryArgs(path.join(deps.cwd, "scripts/build-all.mts"), ["qaRuntime"]),
+                {
+                  cwd: deps.cwd,
+                  detached: shouldUseRunNodeChildProcessGroup(deps),
+                  env: {
+                    ...deps.env,
+                    [RUN_NODE_SKIP_DTS_BUILD_ENV]: deps.env[RUN_NODE_SKIP_DTS_BUILD_ENV] ?? "1",
+                  },
+                  stdio: ["inherit", "pipe", "pipe"],
+                },
+              ),
+            );
+            pipeSpawnedOutput(build, deps, { stdoutTarget: "stderr" });
+            const result = await waitForSpawnedProcess(build, deps);
+            return getInterruptedSpawnOutcome(result, deps.platform) ?? result.exitCode ?? 1;
+          });
+        }),
       );
-      return await withRunNodeProgress(deps, "Building local CLI artifacts", async () => {
-        const build = asRunNodeChild(
-          deps.spawn(deps.execPath, runtimeBuildArgs, {
-            cwd: deps.cwd,
-            detached: shouldUseRunNodeChildProcessGroup(deps),
-            env: {
-              ...deps.env,
-              [RUN_NODE_SKIP_DTS_BUILD_ENV]: deps.env[RUN_NODE_SKIP_DTS_BUILD_ENV] ?? "1",
-            },
-            stdio: ["inherit", "pipe", "pipe"],
-          }),
-        );
-        pipeSpawnedOutput(build, deps, { stdoutTarget: "stderr" });
-        const result = await waitForSpawnedProcess(build, deps);
-        return getInterruptedSpawnOutcome(result, deps.platform) ?? result.exitCode ?? 1;
-      });
     });
     if (buildExitCode !== 0) {
       return await closeRunNodeOutputTee(deps, buildExitCode);

@@ -6,8 +6,6 @@ import { isPidAlive } from "../../src/shared/pid-alive.ts";
 
 type LiveGatewayDistFenceResult = { refuse: true; message: string } | { refuse: false };
 
-const ALLOW_ENV = "OPENCLAW_ALLOW_LIVE_DIST_BUILD";
-
 /** True when the managed service still holds a live process on this checkout's dist. */
 function isLiveManagedGatewayHoldingDist(state: GatewayServiceState): boolean {
   if (state.running) {
@@ -89,8 +87,7 @@ function formatRefuseMessage(params: {
   const stopHints = profiles.map((profile) => formatStopHint(profile)).join(", ");
   return (
     `[openclaw] Refusing to rebuild dist while a managed Gateway${profileText}${unit} is still running from this checkout's dist${entry}. ` +
-    `Stop the Gateway first (${stopHints} or the matching service stop) or run \`openclaw update\`, then rebuild and start. ` +
-    `Set ${ALLOW_ENV}=1 only for intentional live mutations.`
+    `Stop the Gateway first (${stopHints} or the matching service stop) or run \`openclaw update\`, then rebuild and start.`
   );
 }
 
@@ -207,10 +204,6 @@ export async function resolveLiveManagedGatewayDistFence(
   options: { env?: NodeJS.ProcessEnv } = {},
 ): Promise<LiveGatewayDistFenceResult> {
   const env = options.env ?? process.env;
-  if (env[ALLOW_ENV] === "1") {
-    return { refuse: false };
-  }
-
   const bindings = await resolveFenceBindings(env);
   if (!bindings) {
     return { refuse: false };

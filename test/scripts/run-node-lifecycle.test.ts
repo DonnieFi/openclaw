@@ -43,8 +43,7 @@ function prepareRunnerEnv(env: NodeJS.ProcessEnv, implementations: string[] = []
     copyFileSync(implementation, prepared);
     modules.push([pathToFileURL(implementation), pathToFileURL(prepared)]);
   }
-  // Signal fixtures own synthetic children, not an installed Gateway service.
-  return preparedScriptWrapperEnv(modules, { ...env, OPENCLAW_ALLOW_LIVE_DIST_BUILD: "1" });
+  return preparedScriptWrapperEnv(modules, env);
 }
 
 it.runIf(process.platform !== "win32")(
@@ -87,12 +86,15 @@ setInterval(() => {
 }, 20);
 `,
       );
-      const runnerUrl = pathToFileURL(path.resolve("scripts/run-node.mts")).href;
+      const sourceRoot = process.cwd();
+      const runnerUrl = pathToFileURL(path.join(sourceRoot, "scripts/run-node.mts")).href;
       writeFileSync(
         implementationPath,
         `import fs from "node:fs";
 import { spawn } from "node:child_process";
-import { runNodeMain } from ${JSON.stringify(runnerUrl)};
+const { registerSourceRunnerServiceFixture } = await import(${JSON.stringify(pathToFileURL(path.join(sourceRoot, "test/scripts/fixtures/source-runner-service.mjs")).href)});
+registerSourceRunnerServiceFixture(${JSON.stringify(sourceRoot)});
+const { runNodeMain } = await import(${JSON.stringify(runnerUrl)});
 fs.appendFileSync(${JSON.stringify(invocationsPath)}, JSON.stringify(process.argv.slice(2)) + "\\n");
 // Let a regressed watcher finish after recording its doctor or restart invocation.
 if (fs.existsSync(${JSON.stringify(childPidPath)})) process.exit(0);
@@ -162,7 +164,14 @@ else process.exit(outcome);
       });
       await runQaGatewayFixture(
         async () => {
-          const childPid = await waitForPidFile(childPidPath, 5_000);
+          const childPid = await Promise.race([
+            waitForPidFile(childPidPath, 5_000),
+            command.then((result) => {
+              throw new Error(
+                `Gateway watch exited before its child started: ${formatShimResult(result)}`,
+              );
+            }),
+          ]);
           const launcherPid = await waitForPidFile(launcherPidPath, 5_000);
           expect(childPid, "the launcher must respawn before the signal is sent").not.toBe(
             launcherPid,
@@ -243,7 +252,14 @@ it.runIf(process.platform !== "win32").each(["runner", "watch"] as const)(
     );
     await runQaGatewayFixture(
       async () => {
-        const worker = await waitForPidFile(path.join(root, "worker.pid"), 5_000);
+        const worker = await Promise.race([
+          waitForPidFile(path.join(root, "worker.pid"), 5_000),
+          command.then((result) => {
+            throw new Error(
+              `Native ${mode} exited before its worker started: ${formatShimResult(result)}`,
+            );
+          }),
+        ]);
         expect(isProcessAlive(worker)).toBe(true);
         writeFileSync(path.join(root, "terminate"), "terminate");
         const result = await command;
@@ -301,12 +317,15 @@ fs.writeFileSync(${JSON.stringify(childPidPath)}, String(process.pid));
 setInterval(() => {}, 1000);
 `,
       );
-      const implementationUrl = pathToFileURL(path.resolve("scripts/run-node.mts")).href;
+      const sourceRoot = process.cwd();
+      const implementationUrl = pathToFileURL(path.join(sourceRoot, "scripts/run-node.mts")).href;
       writeFileSync(
         implementationPath,
         `import fs from "node:fs";
 import { spawn } from "node:child_process";
-import { runNodeMain } from ${JSON.stringify(implementationUrl)};
+const { registerSourceRunnerServiceFixture } = await import(${JSON.stringify(pathToFileURL(path.join(sourceRoot, "test/scripts/fixtures/source-runner-service.mjs")).href)});
+registerSourceRunnerServiceFixture(${JSON.stringify(sourceRoot)});
+const { runNodeMain } = await import(${JSON.stringify(implementationUrl)});
 fs.writeFileSync(${JSON.stringify(wrapperPidPath)}, String(process.ppid));
 const outcome = await runNodeMain({
   cwd: ${JSON.stringify(checkoutRoot)},
@@ -335,7 +354,14 @@ else process.exit(outcome);
         checkoutRoot,
       );
       try {
-        const childPid = await waitForPidFile(childPidPath, 5_000);
+        const childPid = await Promise.race([
+          waitForPidFile(childPidPath, 5_000),
+          command.then((result) => {
+            throw new Error(
+              `Dev runner exited before its child started: ${formatShimResult(result)}`,
+            );
+          }),
+        ]);
         const wrapperPid = await waitForPidFile(wrapperPidPath, 5_000);
         process.kill(wrapperPid, signal);
         const result = await command;

@@ -74,17 +74,6 @@ function stateForPackage(root: string, overrides: Partial<GatewayServiceState> =
 }
 
 describe("live-gateway-dist-fence", () => {
-  it("allows intentional live builds before inspecting services", async () => {
-    const readState = vi.fn(async () => baseState({ running: true }));
-    expect(
-      await inspectFixtureGateway("/synthetic/openclaw", {
-        env: { OPENCLAW_ALLOW_LIVE_DIST_BUILD: "1" },
-        readState,
-      }),
-    ).toEqual({ refuse: false });
-    expect(readState).not.toHaveBeenCalled();
-  });
-
   it("allows builds when the managed Gateway uses another checkout", async () => {
     await withTestDir({ prefix: "openclaw-live-dist-foreign-" }, async (tmp) => {
       const other = path.join(tmp, "other");
@@ -182,7 +171,6 @@ describe("live-gateway-dist-fence", () => {
         expect(result.message).toContain(path.join(tmp, "dist", "index.js"));
         expect(result.message).toContain("openclaw-gateway.service");
         expect(result.message).toContain("openclaw update");
-        expect(result.message).toContain("OPENCLAW_ALLOW_LIVE_DIST_BUILD=1");
       }
     });
   });
