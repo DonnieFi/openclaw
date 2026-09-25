@@ -104,6 +104,9 @@ export async function runInstalledLifecycle(
       commands,
       expectedExit,
       signal,
+      args[0] === "gateway" && (args[1] === "install" || args[1] === "status")
+        ? args[1]
+        : undefined,
     );
   const doctor = async (task: Task, expectedExit = 1) =>
     doctorReportSchema.parse(

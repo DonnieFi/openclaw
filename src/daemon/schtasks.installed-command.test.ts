@@ -2,6 +2,7 @@ import path from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { run, type CommandRecord } from "./schtasks.installed-command.test-support.js";
+import { installedStatusSchema } from "./schtasks.installed-package.test-support.js";
 
 const temporary = useAutoCleanupTempDirTracker(afterEach);
 
@@ -102,4 +103,133 @@ it("keeps an expected nonzero exit successful without retaining its raw output",
   expect(records).toHaveLength(1);
   expect(records[0]?.code).toBe(1);
   expect(records[0]).not.toHaveProperty("failureOutput");
+});
+
+it("retains safe native and RPC facts before an exit-zero status fails semantic validation", async () => {
+  const root = temporary.make("schtasks-status-observation-");
+  const records: CommandRecord[] = [];
+  const secret = "synthetic-status-credential-do-not-report";
+  const payload = {
+    service: {
+      loaded: true,
+      loadState: { status: "loaded" },
+      command: { programArguments: ["node", "gateway"], environment: { TOKEN: secret } },
+      runtime: {
+        status: "unknown",
+        detail: "service runtime inspection failed",
+        inspectionFailure: {
+          code: "service-runtime-inspection-failed",
+          detail: "Synthetic Task probe timed out after 10000 ms",
+          timeoutMs: 10000,
+          token: secret,
+        },
+      },
+    },
+    rpc: {
+      ok: true,
+      server: { version: "2026.9.25", buildId: "fixture-build" },
+      auth: { token: secret },
+      url: "ws://127.0.0.1:19999",
+    },
+    gateway: { version: "2026.9.25", port: 19999 },
+    port: { status: "busy", port: 19999, listeners: [{ pid: 4321, commandLine: secret }] },
+    config: { token: secret },
+    models: [secret],
+  };
+  const stdout = await run(
+    [
+      "-e",
+      "process.stdout.write(process.env.FIXTURE_JSON);process.stderr.write(process.env.FIXTURE_STDERR);",
+    ],
+    {
+      SystemRoot: process.env.SystemRoot,
+      WINDIR: process.env.WINDIR,
+      FIXTURE_JSON: JSON.stringify(payload),
+      FIXTURE_STDERR: secret,
+    },
+    root,
+    records,
+    0,
+    undefined,
+    "status",
+  );
+  expect(() => installedStatusSchema.parse(JSON.parse(stdout))).toThrow();
+  expect(records[0]).toMatchObject({
+    code: 0,
+    joined: true,
+    serviceOutput: {
+      kind: "status",
+      service: {
+        loaded: true,
+        loadState: { status: "loaded" },
+        runtime: {
+          status: "unknown",
+          detail: "service runtime inspection failed",
+          inspectionFailure: {
+            code: "service-runtime-inspection-failed",
+            detail: "Synthetic Task probe timed out after 10000 ms",
+            timeoutMs: 10000,
+          },
+        },
+      },
+      rpc: { ok: true, server: { version: "2026.9.25", buildId: "fixture-build" } },
+      gateway: { port: 19999, version: "2026.9.25" },
+      port: { status: "busy", port: 19999 },
+    },
+  });
+  expect(records[0]).not.toHaveProperty("failureOutput");
+  const observation = JSON.stringify(records[0]?.serviceOutput);
+  expect(observation).not.toContain(secret);
+  expect(observation).not.toContain("environment");
+  expect(observation).not.toContain("config");
+  expect(observation).not.toContain("auth");
+  expect(observation).not.toContain("models");
+});
+
+it("retains bounded sanitized install outcome without private response fields", async () => {
+  const root = temporary.make("schtasks-install-observation-");
+  const records: CommandRecord[] = [];
+  const secret = "synthetic-install-credential-do-not-report";
+  const stdout = await run(
+    ["-e", "process.stdout.write(process.env.FIXTURE_JSON);"],
+    {
+      SystemRoot: process.env.SystemRoot,
+      WINDIR: process.env.WINDIR,
+      FIXTURE_JSON: JSON.stringify({
+        action: "install",
+        ok: true,
+        result: "installed",
+        message: "Registration completed",
+        warnings: Array.from(
+          { length: 8 },
+          () => "x".repeat(3000) + "\n\u001b[31mtoken\u001b[0m=" + secret,
+        ),
+        service: { loaded: true, label: "Scheduled Task", environment: { token: secret } },
+        definitionBackup: { token: secret },
+        config: { token: secret },
+        auth: { token: secret },
+      }),
+    },
+    root,
+    records,
+    0,
+    undefined,
+    "install",
+  );
+  expect(JSON.parse(stdout).ok).toBe(true);
+  expect(records[0]?.serviceOutput).toMatchObject({
+    kind: "install",
+    action: "install",
+    ok: true,
+    result: "installed",
+    message: "Registration completed",
+    service: { loaded: true, label: "Scheduled Task" },
+  });
+  const observation = JSON.stringify(records[0]?.serviceOutput);
+  expect(observation).not.toContain(secret);
+  expect(observation).not.toContain("\u001b");
+  expect(observation).not.toContain("definitionBackup");
+  expect(observation).not.toContain("config");
+  expect(observation).not.toContain("auth");
+  expect(observation.length).toBeLessThan(11_000);
 });
