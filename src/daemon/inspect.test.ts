@@ -7,23 +7,9 @@ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import {
   detectMarkerLineWithGateway,
   findExtraGatewayServices,
+  findSystemGatewayServices,
   renderGatewayServiceCleanupHints,
 } from "./inspect.js";
-
-const { listScheduledTasksMock, readScheduledTaskCommandMock } = vi.hoisted(() => ({
-  listScheduledTasksMock: vi.fn<typeof import("./schtasks-state-probe.js").listScheduledTasks>(),
-  readScheduledTaskCommandMock:
-    vi.fn<typeof import("./schtasks-layout.js").readScheduledTaskCommand>(),
-}));
-
-vi.mock("./schtasks-state-probe.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./schtasks-state-probe.js")>()),
-  listScheduledTasks: listScheduledTasksMock,
-}));
-vi.mock("./schtasks-layout.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./schtasks-layout.js")>()),
-  readScheduledTaskCommand: readScheduledTaskCommandMock,
-}));
 
 const nativePlistHost = vi.hoisted(() => process.platform === "darwin");
 vi.mock("../process/exec.js", async (importOriginal) => {
@@ -578,6 +564,68 @@ describe("Gateway inventory projections", () => {
     };
   }
 
+  it.each([
+    ["literal", "Environment=OPENCLAW_SERVICE_MARKER=openclaw OPENCLAW_SERVICE_KIND=gateway", true],
+    [
+      "spaced",
+      "Environment = OPENCLAW_SERVICE_MARKER=openclaw OPENCLAW_SERVICE_KIND=gateway",
+      true,
+    ],
+    [
+      "tabbed",
+      "Environment\t=\tOPENCLAW_SERVICE_MARKER=openclaw OPENCLAW_SERVICE_KIND=gateway",
+      true,
+    ],
+    [
+      "reset",
+      "Environment=OPENCLAW_SERVICE_MARKER=openclaw OPENCLAW_SERVICE_KIND=gateway\nEnvironment = ",
+      false,
+    ],
+    [
+      "last Node kind",
+      "Environment=OPENCLAW_SERVICE_MARKER=openclaw OPENCLAW_SERVICE_KIND=gateway\nEnvironment = OPENCLAW_SERVICE_KIND=node",
+      false,
+    ],
+    [
+      "other section",
+      "[Unit]\nEnvironment=OPENCLAW_SERVICE_MARKER=openclaw OPENCLAW_SERVICE_KIND=gateway",
+      false,
+    ],
+    [
+      "wrong directive case",
+      "environment=OPENCLAW_SERVICE_MARKER=openclaw OPENCLAW_SERVICE_KIND=gateway",
+      false,
+    ],
+    [
+      "legacy marker",
+      "Environment=OPENCLAW_SERVICE_MARKER=clawdbot OPENCLAW_SERVICE_KIND=gateway",
+      false,
+    ],
+  ] as const)(
+    "uses %s inline metadata for an unbranded systemd command",
+    async (_name, metadata, included) => {
+      Object.defineProperty(process, "platform", { configurable: true, value: "linux" });
+      const home = tempDirs.make("systemd-inline-metadata-", os.tmpdir());
+      const write = isolateNativeRoots(home);
+      await write(
+        "/etc/systemd/system/custom.service",
+        `[Service]\nExecStart = /usr/bin/node /srv/worker/dist/entry.js gateway run\n${metadata}\n`,
+      );
+
+      expect(await findSystemGatewayServices()).toEqual(
+        included
+          ? [
+              expect.objectContaining({
+                label: "custom.service",
+                marker: "openclaw",
+                legacy: false,
+              }),
+            ]
+          : [],
+      );
+    },
+  );
+
   it("filters managed systemd Gateways and authenticated Nodes while preserving extras and inspection errors", async () => {
     Object.defineProperty(process, "platform", { configurable: true, value: "linux" });
     const home = tempDirs.make("managed-systemd-", os.tmpdir());
@@ -784,194 +832,5 @@ describe("Gateway inventory projections", () => {
     for (const service of extras.services) {
       expect(service).not.toHaveProperty("extra");
     }
-  });
-});
-
-describe("findExtraGatewayServices (win32)", () => {
-  const originalPlatform = process.platform;
-  const task = (taskPath: string, executable: string, args: string) => ({
-    taskPath,
-    state: null,
-    actions: [{ type: 0, path: executable, arguments: args, workingDirectory: "" }],
-  });
-
-  beforeEach(() => {
-    Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
-    listScheduledTasksMock.mockReset().mockReturnValue([]);
-    readScheduledTaskCommandMock.mockReset();
-  });
-
-  afterEach(() => {
-    Object.defineProperty(process, "platform", { configurable: true, value: originalPlatform });
-  });
-
-  it("skips Scheduled Task queries unless deep mode is enabled", async () => {
-    await expect(findExtraGatewayServices({})).resolves.toEqual({ services: [], errors: [] });
-    expect(listScheduledTasksMock).not.toHaveBeenCalled();
-  });
-
-  it("reports query failures as incomplete inspection without inventing a cleanup target", async () => {
-    listScheduledTasksMock.mockImplementation(() => {
-      throw new Error("Access denied");
-    });
-
-    const result = await findExtraGatewayServices({}, { deep: true });
-
-    expect(result).toEqual({
-      services: [],
-      errors: [{ source: "schtasks", message: expect.stringContaining("could not be queried") }],
-    });
-    expect(renderGatewayServiceCleanupHints(result.services)).toEqual([]);
-  });
-
-  it("keeps verified Node and legacy services while rejecting an unrelated branded monitor", async () => {
-    listScheduledTasksMock.mockReturnValue([
-      task("\\OpenClaw Gateway", "C:\\OpenClaw\\openclaw.exe", "gateway run"),
-      task("\\OpenClaw Gateway (dev)", "C:\\OpenClaw\\openclaw.exe", "gateway run --profile dev"),
-      task("\\OpenClaw Gateway Backup", "C:\\OpenClaw\\openclaw.exe", "gateway run"),
-      task(
-        "\\OpenClaw Node",
-        "C:\\Program Files\\nodejs\\node.exe",
-        '"C:\\OpenClaw\\dist\\entry.js" node run',
-      ),
-      task("\\Clawdbot Legacy", "C:\\clawdbot\\clawdbot.exe", "run"),
-      task(
-        "\\OpenClaw Gateway Monitor",
-        "C:\\tools\\monitor.exe",
-        "--gateway-url http://127.0.0.1:18789",
-      ),
-      {
-        taskPath: "\\OpenClaw CrossAction",
-        state: null,
-        actions: [
-          {
-            type: 0,
-            path: "C:\\OpenClaw\\openclaw.exe",
-            arguments: "node run",
-            workingDirectory: "",
-          },
-          {
-            type: 0,
-            path: "C:\\tools\\helper.exe",
-            arguments: "gateway run",
-            workingDirectory: "",
-          },
-        ],
-      },
-    ]);
-
-    const result = await findExtraGatewayServices({}, { deep: true });
-
-    expect(result.errors).toEqual([]);
-    expect(result.services).toEqual([
-      expect.objectContaining({
-        label: "\\OpenClaw Gateway Backup",
-        marker: "openclaw",
-        legacy: false,
-      }),
-      expect.objectContaining({ label: "\\OpenClaw Node", marker: "openclaw", legacy: false }),
-      expect.objectContaining({ label: "\\Clawdbot Legacy", marker: "clawdbot", legacy: true }),
-      expect.objectContaining({
-        label: "\\OpenClaw CrossAction",
-        marker: "openclaw",
-        legacy: false,
-      }),
-    ]);
-    expect(renderGatewayServiceCleanupHints(result.services).join("\n")).not.toContain("Monitor");
-    for (const service of result.services) {
-      expect(service).not.toHaveProperty("extra");
-    }
-  });
-
-  it.each(["gateway", "node"])(
-    "recognizes verified %s launcher metadata independently of the task label",
-    async (kind) => {
-      listScheduledTasksMock.mockReturnValue([
-        task("\\Custom Service", "C:\\fixtures\\service.cmd", ""),
-      ]);
-      readScheduledTaskCommandMock.mockResolvedValue({
-        programArguments: ["C:\\runtime\\node.exe", "C:\\app\\entry.js", kind, "run"],
-        environment: { OPENCLAW_SERVICE_MARKER: "openclaw", OPENCLAW_SERVICE_KIND: kind },
-      });
-
-      const result = await findExtraGatewayServices({}, { deep: true });
-
-      expect(result.errors).toEqual([]);
-      expect(result.services).toEqual([
-        expect.objectContaining({ label: "\\Custom Service", marker: "openclaw", legacy: false }),
-      ]);
-    },
-  );
-
-  it.each([{ actions: undefined }, { actions: [] }])(
-    "retains incomplete known selectors with missing actions $actions",
-    async ({ actions }) => {
-      listScheduledTasksMock.mockReturnValue([
-        { taskPath: "\\OpenClaw Gateway", state: null, actions },
-        { taskPath: "\\Selected Custom", state: null, actions },
-      ]);
-      const env = { OPENCLAW_WINDOWS_TASK_NAME: "\\Selected Custom" };
-
-      const extras = await findExtraGatewayServices(env, { deep: true });
-
-      expect(extras.services).toEqual([]);
-      expect(extras.errors).toEqual([
-        {
-          source: "\\OpenClaw Gateway",
-          message: expect.stringContaining("could not be inspected"),
-        },
-        { source: "\\Selected Custom", message: expect.stringContaining("could not be inspected") },
-      ]);
-    },
-  );
-
-  it("does not offer deletion of the selected custom Gateway", async () => {
-    listScheduledTasksMock.mockReturnValue([
-      task("\\Services\\Selected Gateway", "C:\\OpenClaw\\openclaw.exe", "gateway run"),
-    ]);
-    const env = { OPENCLAW_WINDOWS_TASK_NAME: "Services\\Selected Gateway" };
-
-    const extras = await findExtraGatewayServices(env, { deep: true });
-
-    expect(extras).toEqual({ services: [], errors: [] });
-    expect(renderGatewayServiceCleanupHints(extras.services)).toEqual([]);
-  });
-
-  it.each(["\\OpenClaw Gateway (dev)", "\\Clawdbot Gateway"])(
-    "reports unreadable known launcher %s before any contents are available",
-    async (label) => {
-      listScheduledTasksMock.mockReturnValue([task(label, "C:\\custom\\gateway.cmd", "")]);
-      readScheduledTaskCommandMock.mockRejectedValue(new Error("Access denied"));
-
-      const result = await findExtraGatewayServices({}, { deep: true });
-
-      expect(result).toEqual({
-        services: [],
-        errors: [{ source: label, message: "Scheduled Task launcher could not be inspected." }],
-      });
-      expect(renderGatewayServiceCleanupHints(result.services)).toEqual([]);
-    },
-  );
-
-  it("reports a recognizable launcher read failure without offering its deletion", async () => {
-    listScheduledTasksMock.mockReturnValue([
-      task("\\Custom Service", "C:\\fixtures\\service.cmd", ""),
-    ]);
-    readScheduledTaskCommandMock.mockImplementationOnce(async (_env, options) => {
-      options?.onLauncherContent?.(
-        "@echo off\r\nnode C:\\openclaw\\dist\\entry.js gateway run\r\n",
-      );
-      throw new Error("Nested launcher could not be read");
-    });
-
-    const result = await findExtraGatewayServices({}, { deep: true });
-
-    expect(result).toEqual({
-      services: [],
-      errors: [
-        { source: "\\Custom Service", message: expect.stringContaining("could not be inspected") },
-      ],
-    });
-    expect(renderGatewayServiceCleanupHints(result.services)).toEqual([]);
   });
 });
