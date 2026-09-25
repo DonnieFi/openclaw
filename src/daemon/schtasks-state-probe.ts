@@ -4,6 +4,7 @@ import { resolvePositiveTimerTimeoutMs } from "@openclaw/normalization-core/numb
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { hasErrnoCode, isErrno } from "../infra/errno.js";
 import { getWindowsPowerShellExePath } from "../infra/windows-install-roots.js";
+import { WINDOWS_POWERSHELL_COLD_SPAWN_TIMEOUT_MS } from "../infra/windows-powershell-spawn.js";
 import {
   ServiceInspectionError,
   type ServiceInspectionDiagnostic,
@@ -54,10 +55,10 @@ function queryTaskScheduler(
   taskName: string | undefined,
   timeoutMs?: number,
 ): { status: "ok"; value: unknown } | Exclude<ScheduledTaskStateProbe, { status: "found" }> {
-  // Full inventory retains the existing schtasks discovery budget.
+  // Registration queries also pay PowerShell's cold first-use cost.
   const probeTimeoutMs = resolvePositiveTimerTimeoutMs(
     timeoutMs,
-    taskName === undefined ? 15_000 : 5_000,
+    WINDOWS_POWERSHELL_COLD_SPAWN_TIMEOUT_MS,
   );
   const encodedTaskName = Buffer.from(taskName ?? "", "utf8").toString("base64");
   const script = [
