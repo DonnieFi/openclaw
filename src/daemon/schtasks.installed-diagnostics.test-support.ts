@@ -361,10 +361,12 @@ export async function assertInstalledSiblingBuildRefusal(params: {
     commands,
     1,
     signal,
-    [
-      `Refusing to rebuild dist while a managed Gateway (profile ${peer.profile})`,
-      `openclaw gateway stop --profile ${peer.profile}`,
-    ],
+    {
+      expectedStderr: [
+        `Refusing to rebuild dist while a managed Gateway (profile ${peer.profile})`,
+        `openclaw gateway stop --profile ${peer.profile}`,
+      ],
+    },
   );
   await verifyContinuity();
   assert.deepEqual(await hashInstall(peer.installRoot), before);
