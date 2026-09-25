@@ -11,6 +11,7 @@ import {
   prepareInstalledPackage,
 } from "../../scripts/lib/gateway-bench-installed-package.ts";
 import type { createFixtureLifetime } from "../../test/helpers/fixture-lifetime.js";
+import { run, type CommandRecord } from "./schtasks.installed-command.test-support.js";
 import {
   doctorReportSchema,
   inspectDisabledDiscoveryTasks,
@@ -31,10 +32,8 @@ import {
   readPreparedCell,
   recordCapacityBoundary,
   requiredCellSpace,
-  run,
   samePath,
   verifyPreparedInstall,
-  type CommandRecord,
 } from "./schtasks.installed-package.test-support.js";
 
 type Lifetime = ReturnType<typeof createFixtureLifetime>;

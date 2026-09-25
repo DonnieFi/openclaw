@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import type { ChildProcess } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -12,13 +11,9 @@ import {
   installedPackageSchema,
   prepareInstalledPackage,
 } from "../../scripts/lib/gateway-bench-installed-package.ts";
-import {
-  hasUnjoinedWork,
-  inspectManagedProcessGroup,
-  runManagedCommand,
-} from "../../scripts/lib/managed-child-process.mts";
 import { hasErrnoCode } from "../infra/errno.js";
 import { isMainModule } from "../infra/is-main.js";
+import { run, type CommandRecord } from "./schtasks.installed-command.test-support.js";
 
 export const installedStatusSchema = z.object({
   service: z.object({
@@ -94,15 +89,6 @@ const inputSchema = installedPackageSchema.extend({
   published: z.array(registryReceiptSchema).length(2),
 });
 type Input = z.infer<typeof inputSchema>;
-export type CommandRecord = {
-  args: string[];
-  launcherPid: number | null;
-  beforeCleanup: ReturnType<typeof inspectManagedProcessGroup> | undefined;
-  code: number | null;
-  signal: string | null;
-  joined: boolean;
-  elapsedMs: number;
-};
 export const keys = ["fresh", "2026.9.3", "2026.9.4"] as const;
 const preparedCellSchema = z.object({
   cell: z.enum(keys),
@@ -369,91 +355,6 @@ export async function readInput(inputPath: string) {
     );
   }
   return input;
-}
-export async function run(
-  args: string[],
-  env: NodeJS.ProcessEnv,
-  cwd: string,
-  records: CommandRecord[],
-  expectedExit = 0,
-  signal?: AbortSignal,
-) {
-  const started = performance.now();
-  let child: ChildProcess | undefined;
-  let stdout = "";
-  let stderr = "";
-  let truncated = false;
-  let code: number | null = null;
-  let exitSignal: NodeJS.Signals | null = null;
-  let beforeCleanup: ReturnType<typeof inspectManagedProcessGroup> | undefined;
-  let result: number | undefined;
-  let failure: Error | undefined;
-  try {
-    result = await runManagedCommand({
-      bin: process.execPath,
-      args,
-      env,
-      cwd,
-      shell: false,
-      stdio: ["ignore", "pipe", "pipe"],
-      timeoutMs: 180_000,
-      signal,
-      onReady(launched) {
-        child = launched;
-        launched.stdout?.on("data", (chunk: Buffer) => {
-          stdout += chunk.toString();
-          if (stdout.length > 262144) {
-            truncated = true;
-            stdout = stdout.slice(-262144);
-          }
-        });
-        launched.stderr?.on("data", (chunk: Buffer) => {
-          stderr += chunk.toString();
-          if (stderr.length > 262144) {
-            truncated = true;
-            stderr = stderr.slice(-262144);
-          }
-        });
-        launched.once("exit", (exitCode, receivedSignal) => {
-          code = exitCode;
-          exitSignal = receivedSignal;
-          beforeCleanup = inspectManagedProcessGroup(launched, { errorPolicy: "indeterminate" });
-        });
-      },
-    });
-  } catch (error) {
-    failure = toErrorObject(error, "Installed Scheduled Task fixture failed");
-  }
-  const afterCleanup = child
-    ? inspectManagedProcessGroup(child, { errorPolicy: "indeterminate" })
-    : undefined;
-  records.push({
-    args,
-    launcherPid: child?.pid ?? null,
-    code,
-    signal: exitSignal,
-    beforeCleanup,
-    joined: afterCleanup === "dead" && !hasUnjoinedWork(failure),
-    elapsedMs: performance.now() - started,
-  });
-  if (child && afterCleanup !== "dead") {
-    // Keep the existing fixture lifetime's claim when physical cleanup is uncertain.
-    throw Object.assign(
-      new Error("Installed command descendant cleanup is unverified", { cause: failure }),
-      {
-        processTreeState: "indeterminate",
-      },
-    );
-  }
-  if (failure) {
-    throw failure;
-  }
-  assert.equal(beforeCleanup, "dead", "Installed command required descendant cleanup after exit");
-  assert.equal(truncated, false, "Command output was truncated");
-  assert.equal(exitSignal, null);
-  assert.equal(code, expectedExit, stderr);
-  assert.equal(result, expectedExit, stderr);
-  return stdout;
 }
 async function verifyPackage(installRoot: string, version: string, commit: string) {
   const pkg = JSON.parse(
