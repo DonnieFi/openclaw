@@ -82,6 +82,8 @@ export async function runLegacySourceUpdateBuild(
     serviceManagerUid: observedSystemdManagerUid(selected),
   };
   let stopped: PreManagedServiceStop | undefined;
+  const assertRecoveryCurrent = () =>
+    stopped?.windowsTaskAutoStartRecovery?.assertRecoveryCurrent();
   const assertUninterrupted = () => {
     if (stopped?.windowsTaskAutoStartRecovery?.interrupted()) {
       throw new Error("Source update interrupted; successful restart remains unconfirmed.");
@@ -109,8 +111,11 @@ export async function runLegacySourceUpdateBuild(
     const before = stopped;
     if (before) {
       await maybeResumeWindowsTaskAutoStartAfterPackageUpdate(before, true, async () => {
+        assertRecoveryCurrent();
         await createWindowsTaskAutoStartGuard({ root, before })();
+        assertRecoveryCurrent();
         await revalidate();
+        assertRecoveryCurrent();
       });
     }
   };
@@ -182,14 +187,18 @@ export async function runLegacySourceUpdateBuild(
       },
       beginMutation: () => stopped?.windowsTaskAutoStartRecovery?.beginMutation(),
       restart: async () => {
+        assertRecoveryCurrent();
         await revalidate();
+        assertRecoveryCurrent();
         await restoreAutoStart();
+        assertRecoveryCurrent();
         return await runManagedCommand({
           bin: "bash",
           args: ["-c", restartCommand],
           cwd: root,
           env,
           stdio: "inherit",
+          assertCurrent: assertRecoveryCurrent,
         });
       },
       settle: async (restartSafe) => {
@@ -257,13 +266,32 @@ export async function runSourceUpdateBuild({
         if (stopped !== 0) {
           return stopped;
         }
-        lifecycle.beginMutation?.();
+        try {
+          lifecycle.beginMutation?.();
+        } catch (error) {
+          // Nothing has changed on disk, but the old caller will exit on this failure.
+          try {
+            const restarted = await lifecycle.restart();
+            if (restarted !== 0) {
+              throw new Error(`Original Gateway restart failed (${restarted}) before build.`, {
+                cause: error,
+              });
+            }
+          } catch (recoveryError) {
+            throw new AggregateError(
+              [error, recoveryError],
+              "Source build admission and original-runtime recovery failed.",
+              { cause: recoveryError },
+            );
+          }
+          throw error;
+        }
         restartSafe = false;
 
         let backup: string | undefined;
         let buildStarted = false;
         let admissionRefused = false;
-        let failed: unknown;
+        let failed: { error: unknown } | undefined;
         let exitCode = 1;
         try {
           backup = fs.mkdtempSync(path.join(root, ".update-build-backup."));
@@ -287,59 +315,72 @@ export async function runSourceUpdateBuild({
           exitCode = result.exitCode;
           admissionRefused = result.admissionRefused === true;
         } catch (error) {
-          failed = error;
+          failed = { error };
         }
 
         if (exitCode !== 0 || failed) {
-          if (hasUnjoinedWork(failed)) {
+          if (hasUnjoinedWork(failed?.error)) {
             throw new Error(
               `Build writers have not settled; previous output retained at ${backup}`,
               {
-                cause: failed,
+                cause: failed?.error,
               },
             );
           }
-          if (buildStarted && backup && !admissionRefused) {
-            log("restoring previous build output");
-            try {
-              // Validate the whole replacement set before restoring any root.
-              for (const output of roots) {
-                // Build children have joined; do not follow a replaced root/parent.
-                let current = root;
-                for (const component of output.split("/")) {
-                  current = path.join(current, component);
-                  assertRealOutputRoot(current);
+          try {
+            if (buildStarted && backup && !admissionRefused) {
+              log("restoring previous build output");
+              try {
+                // Validate the whole replacement set before restoring any root.
+                for (const output of roots) {
+                  // Build children have joined; do not follow a replaced root/parent.
+                  let current = root;
+                  for (const component of output.split("/")) {
+                    current = path.join(current, component);
+                    assertRealOutputRoot(current);
+                  }
                 }
-              }
-              for (const output of roots) {
-                const destination = path.join(root, output);
-                fs.rmSync(destination, { recursive: true, force: true });
-                const previous = path.join(backup, output);
-                if (fs.existsSync(previous)) {
-                  fs.mkdirSync(path.dirname(destination), { recursive: true });
-                  fs.renameSync(previous, destination);
+                for (const output of roots) {
+                  const destination = path.join(root, output);
+                  fs.rmSync(destination, { recursive: true, force: true });
+                  const previous = path.join(backup, output);
+                  if (fs.existsSync(previous)) {
+                    fs.mkdirSync(path.dirname(destination), { recursive: true });
+                    fs.renameSync(previous, destination);
+                  }
                 }
+              } catch (error) {
+                throw new Error(`Previous output could not be fully restored; retained ${backup}`, {
+                  cause: error,
+                });
               }
-            } catch (error) {
-              throw new Error(`Previous output could not be fully restored; retained ${backup}`, {
-                cause: error,
-              });
             }
-          }
-          log("restarting gateway on previous build after update failure");
-          const restarted = await lifecycle.restart();
-          if (restarted !== 0) {
-            throw new Error(
-              `Previous build restored, but restart failed (${restarted}); backup: ${backup}`,
+            log("restarting gateway on previous build after update failure");
+            const restarted = await lifecycle.restart();
+            if (restarted !== 0) {
+              throw new Error(
+                `Previous build restored, but restart failed (${restarted}); backup: ${backup}`,
+              );
+            }
+            restartSafe = true;
+            await settle();
+            if (backup) {
+              fs.rmSync(backup, { recursive: true, force: true });
+            }
+          } catch (recoveryError) {
+            throw new AggregateError(
+              [
+                failed ? failed.error : new Error(`Source build failed (exit ${exitCode}).`),
+                recoveryError,
+              ],
+              `Source build recovery failed: ${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)}`,
+              { cause: recoveryError },
             );
           }
-          restartSafe = true;
-          await settle();
-          if (backup) {
-            fs.rmSync(backup, { recursive: true, force: true });
-          }
           if (failed) {
-            throw failed instanceof Error ? failed : new Error("Build failed", { cause: failed });
+            throw failed.error instanceof Error
+              ? failed.error
+              : new Error("Build failed", { cause: failed.error });
           }
           return exitCode;
         }

@@ -75,14 +75,20 @@ function stateForPackage(root: string, overrides: Partial<GatewayServiceState> =
 }
 
 describe("live-gateway-dist-fence", () => {
-  it("allows builds when the managed Gateway uses another checkout", async () => {
+  it.each([
+    { name: "running", state: { running: true } },
+    {
+      name: "holding cgroup tasks",
+      state: { runtime: { status: "unknown", state: "failed", systemd: { tasksCurrent: 2 } } },
+    },
+  ])("allows builds when the $name managed Gateway uses another checkout", async ({ state }) => {
     await withTestDir({ prefix: "openclaw-live-dist-foreign-" }, async (tmp) => {
       const other = path.join(tmp, "other");
       await writeOpenClawPackage(tmp);
       await writeOpenClawPackage(other);
       expect(
         await inspectFixtureGateway(tmp, {
-          readState: async () => stateForPackage(other, { running: true }),
+          readState: async () => stateForPackage(other, state),
         }),
       ).toEqual({ refuse: false });
     });
@@ -106,6 +112,23 @@ describe("live-gateway-dist-fence", () => {
 
   it.each([
     { name: "stopped", runtime: { status: "stopped", state: "inactive" }, refuse: false },
+    ...(["inactive", "failed"] as const).flatMap((state) => [
+      {
+        name: `${state} with remaining cgroup tasks and no MainPID`,
+        runtime: { status: "unknown", state, systemd: { tasksCurrent: 2 } },
+        refuse: true,
+      },
+      {
+        name: `${state} with zero cgroup tasks`,
+        runtime: { status: "stopped", state, systemd: { tasksCurrent: 0 } },
+        refuse: false,
+      },
+      {
+        name: `${state} with an unavailable cgroup task count`,
+        runtime: { status: "unknown", state, systemd: {} },
+        refuse: false,
+      },
+    ]),
     {
       name: "deactivating without a MainPID",
       runtime: { status: "stopped", state: "deactivating", subState: "stop-post" },

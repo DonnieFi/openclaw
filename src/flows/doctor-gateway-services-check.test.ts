@@ -115,45 +115,102 @@ describe("registered Gateway service health", () => {
     },
   );
 
-  it("previews cleanup only for verified legacy rows through the registered check", async () => {
-    const check = gatewayServicesCheck();
-    mocks.detectExtraGatewayServiceIssues.mockResolvedValue({
-      services: [
-        {
-          platform: "linux",
-          label: "custom-gateway.service",
-          detail: "unit: /etc/systemd/system/custom-gateway.service",
-          scope: "system",
-          legacy: false,
-        },
-        {
-          platform: "linux",
-          label: "clawdbot-gateway.service",
-          detail: "unit: /home/test/.config/systemd/user/clawdbot-gateway.service",
-          scope: "user",
-          legacy: true,
-        },
-      ],
-      errors: [
-        { source: "clawdbot-backup.service", message: "Service path could not be inspected." },
-      ],
-    });
-    const ctx = { mode: "fix" as const, runtime, cfg: {}, deep: true, dryRun: true };
+  it.each([true, false])(
+    "offers only supported legacy user-service cleanup through the registered check (dryRun=%s)",
+    async (dryRun) => {
+      const check = gatewayServicesCheck();
+      mocks.detectExtraGatewayServiceIssues.mockResolvedValue({
+        services: [
+          {
+            platform: "linux",
+            label: "custom-gateway.service",
+            detail: "unit: /home/test/.config/systemd/user/custom-gateway.service",
+            scope: "user",
+            legacy: false,
+          },
+          {
+            platform: "darwin",
+            label: "ai.clawdbot.gateway",
+            detail: "plist: /Users/test/Library/LaunchAgents/ai.clawdbot.gateway.plist",
+            scope: "user",
+            legacy: true,
+          },
+          {
+            platform: "linux",
+            label: "clawdbot-gateway.service",
+            detail: "unit: /home/test/.config/systemd/user/clawdbot-gateway.service",
+            scope: "user",
+            legacy: true,
+          },
+          {
+            platform: "win32",
+            label: "Clawdbot Gateway",
+            detail: "task: Clawdbot Gateway",
+            scope: "user",
+            legacy: true,
+          },
+          {
+            platform: "linux",
+            label: "clawdbot-gateway-custom.service",
+            detail: "unit: /home/test/.config/systemd/user/clawdbot-gateway-custom.service",
+            scope: "user",
+            marker: "clawdbot",
+            legacy: true,
+          },
+          {
+            platform: "linux",
+            label: "clawdbot-system.service",
+            detail: "unit: /etc/systemd/system/clawdbot-system.service",
+            scope: "system",
+            legacy: true,
+          },
+          {
+            platform: "darwin",
+            label: "ai.clawdbot.system",
+            detail: "plist: /Library/LaunchDaemons/ai.clawdbot.system.plist",
+            scope: "system",
+            legacy: true,
+          },
+        ],
+        errors: [
+          { source: "clawdbot-backup.service", message: "Service path could not be inspected." },
+        ],
+      });
+      const ctx = { mode: "fix" as const, runtime, cfg: {}, deep: true, dryRun };
 
-    const result = await check.repair?.(ctx, []);
+      const findings = await check.detect(ctx);
+      const result = await check.repair?.(ctx, findings);
 
-    expect(mocks.detectExtraGatewayServiceIssues).toHaveBeenCalledWith({ deep: true });
-    expect(result).toEqual({
-      status: "repaired",
-      changes: [],
-      effects: [
-        {
-          kind: "service",
-          action: "would-remove-legacy-gateway-service",
-          target: "clawdbot-gateway.service",
-          dryRunSafe: false,
-        },
-      ],
-    });
-  });
+      expect(mocks.detectExtraGatewayServiceIssues).toHaveBeenCalledWith({ deep: true });
+      expect(findings.map((finding) => finding.target)).toEqual([
+        "custom-gateway.service",
+        "ai.clawdbot.gateway",
+        "clawdbot-gateway.service",
+        "Clawdbot Gateway",
+        "clawdbot-gateway-custom.service",
+        "clawdbot-system.service",
+        "ai.clawdbot.system",
+        "clawdbot-backup.service",
+      ]);
+      expect(result).toEqual({
+        status: dryRun ? "repaired" : "skipped",
+        ...(dryRun ? {} : { reason: "legacy doctor gateway service contribution owns cleanup" }),
+        changes: [],
+        effects: [
+          {
+            kind: "service",
+            action: "would-remove-legacy-gateway-service",
+            target: "ai.clawdbot.gateway",
+            dryRunSafe: false,
+          },
+          {
+            kind: "service",
+            action: "would-remove-legacy-gateway-service",
+            target: "clawdbot-gateway.service",
+            dryRunSafe: false,
+          },
+        ],
+      });
+    },
+  );
 });

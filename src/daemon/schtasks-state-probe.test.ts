@@ -69,15 +69,16 @@ it.each(["", " \r\n"])("explains an empty exit-2 result: %j", (output) => {
   expect(probeScheduledTaskState("OpenClaw Gateway")).toEqual({
     status: "unknown",
     detail: "Scheduled Task probe failed (exit 2): no output from PowerShell.",
+    diagnostic: { kind: "native", exitCode: 2 },
   });
 });
 
 describe("Scheduled Task probe timeout", () => {
   it.each([
-    { budget: undefined, expected: 5_000 },
-    { budget: 0, expected: 5_000 },
-    { budget: -1, expected: 5_000 },
-    { budget: Number.POSITIVE_INFINITY, expected: 5_000 },
+    { budget: undefined, expected: 60_000 },
+    { budget: 0, expected: 60_000 },
+    { budget: -1, expected: 60_000 },
+    { budget: Number.POSITIVE_INFINITY, expected: 60_000 },
     { budget: 457.0681, expected: 457 },
     { budget: 0.5, expected: 1 },
     { budget: 200, expected: 200 },
@@ -100,6 +101,7 @@ describe("Scheduled Task probe timeout", () => {
       status: "unknown",
       detail: `Scheduled Task probe timed out after ${expected} ms (ETIMEDOUT).`,
       timeoutMs: expected,
+      diagnostic: { kind: "timeout", timeoutMs: expected },
     });
     expect(spawnSync).toHaveBeenCalledTimes(1);
   });
@@ -125,7 +127,7 @@ it("retains disabled nested task actions when decoding the inventory", () => {
 });
 
 it.each([
-  { budget: undefined, expected: 15_000 },
+  { budget: undefined, expected: 60_000 },
   { budget: 47_000, expected: 47_000 },
 ])("preserves a timed-out inventory and its $expected ms budget", ({ budget, expected }) => {
   vi.mocked(spawnSync).mockReturnValue({

@@ -587,7 +587,7 @@ describe("Windows startup fallback", () => {
       expect(taskProbe).toHaveBeenCalledOnce();
       expect(taskProbe.mock.calls[0]?.[2]).toMatchObject({
         env: expect.not.objectContaining({ BOUNDARY_PARENT_ONLY: "synthetic" }),
-        timeout: 5_000,
+        timeout: 60_000,
       });
     });
   });

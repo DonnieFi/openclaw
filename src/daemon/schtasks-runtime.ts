@@ -117,7 +117,11 @@ export async function waitForScheduledTaskRunningEvidence(
 ): Promise<boolean> {
   const deadline = Date.now() + SCHEDULED_TASK_FALLBACK_TIMEOUT_MS;
   while (true) {
-    const probe = probeScheduledTaskState(resolveTaskName(env));
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      return false;
+    }
+    const probe = probeScheduledTaskState(resolveTaskName(env), remaining);
     // Only Scheduler supervision, not an old Startup process, proves takeover.
     if (probe.status === "found" && probe.state === 4) {
       return true;

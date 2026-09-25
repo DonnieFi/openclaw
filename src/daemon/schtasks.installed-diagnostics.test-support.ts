@@ -5,10 +5,9 @@ import path from "node:path";
 import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
 import { z } from "zod";
 import { hashFile, hashInstall } from "../../scripts/lib/gateway-bench-installed-package.ts";
+import { run, type CommandRecord } from "./schtasks.installed-command.test-support.js";
 import {
   packageRoot,
-  run,
-  type CommandRecord,
   type parseInstalledPreview,
 } from "./schtasks.installed-package.test-support.js";
 

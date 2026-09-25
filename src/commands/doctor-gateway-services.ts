@@ -61,6 +61,7 @@ import {
   resolveSystemdUnitNameFromServicePath,
   type DoctorGatewayInstallationMaintenance,
 } from "./doctor-gateway-installation.js";
+import { classifyLegacyServices } from "./doctor-gateway-legacy-services.js";
 import { buildExpectedGatewayServicePlan } from "./doctor-gateway-runtime-plan.js";
 import type { DoctorOptions, DoctorPrompter } from "./doctor-prompter.js";
 import {
@@ -192,32 +193,6 @@ async function cleanupLegacyLaunchdService(params: {
   } catch {
     return { status: "failed", reason: "could not move plist" };
   }
-}
-
-function classifyLegacyServices(legacyServices: ExtraGatewayService[]): {
-  darwinUserServices: ExtraGatewayService[];
-  linuxUserServices: ExtraGatewayService[];
-  failed: string[];
-} {
-  const darwinUserServices: ExtraGatewayService[] = [];
-  const linuxUserServices: ExtraGatewayService[] = [];
-  const failed: string[] = [];
-
-  for (const svc of legacyServices) {
-    const userServices =
-      svc.platform === "darwin"
-        ? darwinUserServices
-        : svc.platform === "linux"
-          ? linuxUserServices
-          : undefined;
-    if (userServices && svc.scope === "user") {
-      userServices.push(svc);
-    } else {
-      failed.push(`${svc.label} (${userServices ? svc.scope : svc.platform})`);
-    }
-  }
-
-  return { darwinUserServices, linuxUserServices, failed };
 }
 
 async function cleanupLegacyDarwinServices(

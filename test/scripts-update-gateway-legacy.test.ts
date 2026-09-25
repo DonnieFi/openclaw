@@ -30,6 +30,14 @@ it.skipIf(process.platform === "win32").for([
   { mode: "partial-stop", restart: undefined, code: 1, owns: true },
   { mode: "native-unjoined", restart: undefined, code: 1, owns: true },
   { mode: "drift", restart: undefined, code: 1, owns: true },
+  { mode: "begin-abort", restart: undefined, code: 1, owns: true },
+  { mode: "begin-closed", restart: undefined, code: 1, owns: true },
+  { mode: "begin-delegated", restart: undefined, code: 1, owns: true },
+  { mode: "begin-lost", restart: undefined, code: 1, owns: true },
+  { mode: "begin-unjoined", restart: undefined, code: 1, owns: true },
+  { mode: "build-throw-settle", restart: undefined, code: 1, owns: true },
+  { mode: "build-throw-restart", restart: undefined, code: 1, owns: true },
+  { mode: "build-throw-restore", restart: undefined, code: 1, owns: true },
 ])(
   "published source shell reaches candidate build entry: $mode",
   async ({ mode, restart, code, owns }, { signal }) => {
@@ -101,7 +109,11 @@ export npm_execpath="$LEGACY_FIXTURE_BIN/pnpm.cjs"
 exec "$LEGACY_FIXTURE_NODE" --import "$LEGACY_FIXTURE_SOURCE/scripts/tsx.mjs" --import "$LEGACY_FIXTURE_SOURCE/test/scripts/fixtures/legacy-source-build.mjs" "$LEGACY_FIXTURE_SOURCE/scripts/build-all.mts" "$LEGACY_FIXTURE_PROFILE"`,
       );
       for (const name of ["openclaw", "custom-restart"]) {
-        shim(name, 'echo restart >> "$LEGACY_FIXTURE_ROOT/events"');
+        shim(
+          name,
+          `echo restart >> "$LEGACY_FIXTURE_ROOT/events"
+if [ "$LEGACY_FIXTURE_MODE" = build-throw-restart ]; then exit 23; fi`,
+        );
       }
       const result = await lifetime.track(
         runVitestShutdownCommand({
@@ -133,6 +145,64 @@ exec "$LEGACY_FIXTURE_NODE" --import "$LEGACY_FIXTURE_SOURCE/scripts/tsx.mjs" --
       if (["manual", "whitespace", "sibling", "unavailable", "explicit-profile"].includes(mode)) {
         expect(result.stderr).toContain("Refusing to rebuild dist");
         expect(events).toEqual([]);
+      } else if (mode.startsWith("build-throw-")) {
+        expect(result.stderr).toContain("fixture compiler rejected");
+        expect(
+          fs.readdirSync(checkout).some((name) => name.startsWith(".update-build-backup.")),
+        ).toBe(true);
+        if (mode === "build-throw-restore") {
+          expect(result.stderr).toContain("could not be fully restored");
+          expect(events).toEqual(["stop", "mutation", "build", "complete:false"]);
+          expect(fs.lstatSync(path.join(checkout, "dist")).isSymbolicLink()).toBe(true);
+          expect(fs.readFileSync(path.join(checkout, "foreign/dist/entry.js"), "utf8")).toBe(
+            "old runtime\n",
+          );
+        } else {
+          expect(result.stderr).toContain(
+            mode === "build-throw-settle"
+              ? "fixture native completion failed"
+              : "restart failed (23)",
+          );
+          expect(events).toEqual([
+            "stop",
+            "mutation",
+            "build",
+            "enable",
+            "restart",
+            ...(mode === "build-throw-settle" ? ["complete:true"] : ["complete:false", "disable"]),
+          ]);
+          expect(fs.readFileSync(path.join(checkout, "dist/entry.js"), "utf8")).toBe(
+            "old runtime\n",
+          );
+        }
+      } else if (mode.startsWith("begin-")) {
+        expect(result.stderr).toContain("openclaw-update-abort");
+        expect(fs.readFileSync(path.join(checkout, "dist/entry.js"), "utf8")).toBe("old runtime\n");
+        expect(
+          fs.readdirSync(checkout).some((name) => name.startsWith(".update-build-backup.")),
+        ).toBe(false);
+        if (mode === "begin-abort") {
+          expect(events).toEqual(["stop", "mutation", "enable", "restart", "complete:true"]);
+        } else if (mode === "begin-unjoined") {
+          expect(events).toEqual([
+            "stop",
+            "mutation",
+            "enable",
+            "restart-unjoined",
+            "complete:false",
+            "disable",
+          ]);
+          expect(
+            fs.existsSync(path.join(checkout, ".artifacts/dist-artifacts.lock/owner.json")),
+          ).toBe(true);
+        } else {
+          expect(events).toEqual([
+            "stop",
+            "mutation",
+            mode === "begin-lost" ? "complete:false" : "complete:true",
+          ]);
+          expect(result.stderr).toContain(`fixture recovery ${mode.slice(6)}`);
+        }
       } else if (mode === "native-unjoined") {
         expect(events).toEqual(["stop"]);
         expect(result.stderr).toContain("Native source-update cleanup is unverified");

@@ -155,4 +155,25 @@ describe("scheduled task runtime derivation", () => {
     await expect(waitForScheduledTaskRunningEvidence({})).resolves.toBe(true);
     expect(spawnSync).toHaveBeenCalledTimes(2);
   });
+
+  it("keeps a hung native probe within the Scheduler takeover deadline", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    spawnSync.mockImplementation((_command, _args, options) => {
+      vi.setSystemTime(Date.now() + options.timeout);
+      return {
+        status: null,
+        stdout: "",
+        stderr: "",
+        error: Object.assign(new Error("Native probe timed out"), { code: "ETIMEDOUT" }),
+      };
+    });
+    try {
+      await expect(waitForScheduledTaskRunningEvidence({})).resolves.toBe(false);
+      expect(Date.now()).toBe(15_000);
+      expect(spawnSync).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

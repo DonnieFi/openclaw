@@ -85,8 +85,9 @@ service's Node path, and checks that Node version against the target release's
 
 Before manually rebuilding a source checkout, stop every Gateway serving its
 `dist` files. Build entry points inspect discoverable managed Gateways, including
-sibling profiles, and refuse when a live service shares that output. Follow the
-reported service/profile stop command or use `openclaw update`. A separate
+sibling profiles, and refuse when a live service shares that output. On systemd,
+this includes processes remaining in the service cgroup after its main PID exits.
+Follow the reported service/profile stop command or use `openclaw update`. A separate
 candidate checkout with independent output can build while the installed Gateway
 continues serving. This check observes current services; it does not prevent a
 service from starting during compilation, and unavailable inspection does not

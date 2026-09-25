@@ -55,16 +55,31 @@ export async function stop(params) {
     }
     throw new Error("fixture stop rejected after native mutation");
   }
+  const mutationAbort = mode.startsWith("begin-")
+    ? new (
+        await import(
+          pathToFileURL(path.join(source, "src/cli/update-cli/update-command-windows-task.ts")).href
+        )
+      ).UpdateCommandAbort()
+    : undefined;
   let restored = false;
   return {
     stopped: true,
     serviceEnv: readState().env,
     serviceUpdateVerdict: params.expectedService.serviceUpdateVerdict,
     windowsTaskAutoStartRecovery: {
+      assertRecoveryCurrent() {
+        if (["begin-closed", "begin-delegated", "begin-lost"].includes(mode)) {
+          throw new Error(`fixture recovery ${mode.slice(6)}`);
+        }
+      },
       beginMutation() {
         event("mutation");
+        if (mutationAbort) throw mutationAbort;
       },
       async restore(safe, guard) {
+        if (["begin-closed", "begin-delegated"].includes(mode)) return;
+        if (mode === "begin-lost") throw new Error("fixture recovery lost");
         assert.equal(safe, true);
         await guard();
         if (!restored) {
@@ -76,8 +91,9 @@ export async function stop(params) {
       async complete(safe) {
         event(`complete:${safe}`);
         if (!safe && restored) event("disable");
+        if (mode === "build-throw-settle") throw new Error("fixture native completion failed");
       },
-      interrupted: () => false,
+      interrupted: () => mode === "begin-abort" || mode === "begin-unjoined",
     },
   };
 }
@@ -124,7 +140,14 @@ const compilerResponse = `
   import { event } from ${JSON.stringify(self)};
   let invoked = false;
   export async function runManagedCommand(options) {
-    if (options.bin === 'bash') return actual(options);
+    if (options.bin === 'bash') {
+      if (${JSON.stringify(mode)} === 'begin-unjoined') {
+        event('restart-unjoined');
+        const { CommandProcessCleanupError } = await import(${JSON.stringify(pathToFileURL(path.join(source, "src/process/exec-result.ts")).href)});
+        throw new CommandProcessCleanupError();
+      }
+      return actual(options);
+    }
     if (!invoked) {
       invoked = true;
       event('build');
@@ -134,6 +157,11 @@ const compilerResponse = `
         npm_execpath: options.env?.npm_execpath,
         workspace: options.env?.NPM_CONFIG_WORKSPACE_DIR,
       }));
+      if (${JSON.stringify(mode)} === 'build-throw-restore') {
+        fs.rmSync(path.join(${JSON.stringify(root)}, 'dist'), {recursive:true, force:true});
+        fs.symlinkSync(path.join(${JSON.stringify(root)}, 'foreign/dist'), path.join(${JSON.stringify(root)}, 'dist'));
+      }
+      if (${JSON.stringify(mode)}.startsWith('build-throw-')) throw new Error('fixture compiler rejected');
     }
     return ${JSON.stringify(mode)} === 'failure' ? 17 : 0;
   }`;

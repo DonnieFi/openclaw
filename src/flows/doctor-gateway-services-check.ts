@@ -1,3 +1,4 @@
+import { classifyLegacyServices } from "../commands/doctor-gateway-legacy-services.js";
 import type {
   HealthCheck,
   HealthCheckContext,
@@ -51,14 +52,17 @@ export const gatewayServicesExtraCheck: HealthCheck = {
     const { services } = await detectExtraGatewayServiceIssues({
       deep: ctx.deep === true,
     });
-    const effects: HealthRepairEffect[] = services
-      .filter((service) => service.legacy === true)
-      .map((service) => ({
+    const { darwinUserServices, linuxUserServices } = classifyLegacyServices(
+      services.filter((service) => service.legacy === true),
+    );
+    const effects: HealthRepairEffect[] = [...darwinUserServices, ...linuxUserServices].map(
+      (service) => ({
         kind: "service",
         action: "would-remove-legacy-gateway-service",
         target: service.label,
         dryRunSafe: false,
-      }));
+      }),
+    );
     return ctx.dryRun === true
       ? { status: "repaired", changes: [], effects }
       : {

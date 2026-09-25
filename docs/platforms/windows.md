@@ -174,6 +174,9 @@ Strict maintenance inspection follows the task's registered CMD or VBS launcher,
 The task probe allows Windows PowerShell to inherit or create a console because
 some PowerShell 5.1 hosts fail inspection when console creation is disabled.
 Invoking it from an app without a console can briefly display a console window.
+Without an explicit caller deadline, each probe allows up to 60 seconds for
+PowerShell's cold startup. A timeout remains an inspection failure, not proof
+that a task is absent.
 If inspection fails, Doctor and update refusals include the underlying probe
 detail; an empty response identifies the exit code and reports that PowerShell
 produced no output.

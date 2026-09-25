@@ -11,6 +11,9 @@ function isLiveManagedGatewayHoldingDist(state: GatewayServiceState): boolean {
   if (state.running) {
     return true;
   }
+  if ((state.runtime?.systemd?.tasksCurrent ?? 0) > 0) {
+    return true;
+  }
   const pid = state.runtime?.pid;
   if (typeof pid === "number" && Number.isSafeInteger(pid) && pid > 1 && isPidAlive(pid)) {
     return true;
