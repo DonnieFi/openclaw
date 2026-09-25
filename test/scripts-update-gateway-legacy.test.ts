@@ -106,7 +106,7 @@ it.skipIf(process.platform === "win32").for([
         `if [ "$1" = --version ]; then echo 12.4.2; exit 0; fi
 if [ "$1" = install ]; then exit 0; fi
 export npm_execpath="$LEGACY_FIXTURE_BIN/pnpm.cjs"
-exec "$LEGACY_FIXTURE_NODE" --import "$LEGACY_FIXTURE_SOURCE/scripts/tsx.mjs" --import "$LEGACY_FIXTURE_SOURCE/test/scripts/fixtures/legacy-source-build.mjs" "$LEGACY_FIXTURE_SOURCE/scripts/build-all.mts" "$LEGACY_FIXTURE_PROFILE"`,
+exec "$LEGACY_FIXTURE_NODE" --import "$LEGACY_FIXTURE_SOURCE/scripts/tsx.mjs" --import "$LEGACY_FIXTURE_LOADER" "$LEGACY_FIXTURE_SOURCE/scripts/build-all.mts" "$LEGACY_FIXTURE_PROFILE"`,
       );
       for (const name of ["openclaw", "custom-restart"]) {
         shim(
@@ -128,6 +128,10 @@ if [ "$LEGACY_FIXTURE_MODE" = build-throw-restart ]; then exit 23; fi`,
             OPENCLAW_PROFILE: "selected",
             OPENCLAW_BUILD_CACHE: "0",
             LEGACY_FIXTURE_SOURCE: source,
+            LEGACY_FIXTURE_LOADER: new URL(
+              "./scripts/fixtures/legacy-source-build.mjs",
+              import.meta.url,
+            ).href,
             LEGACY_FIXTURE_ROOT: checkout,
             LEGACY_FIXTURE_BIN: bin,
             LEGACY_FIXTURE_NODE: process.execPath,
