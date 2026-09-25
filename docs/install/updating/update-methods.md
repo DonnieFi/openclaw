@@ -83,6 +83,15 @@ service's Node path, and checks that Node version against the target release's
 
 ## Source-checkout servers (reference script)
 
+Before manually rebuilding a source checkout, stop every Gateway serving its
+`dist` files. Build entry points inspect discoverable managed Gateways, including
+sibling profiles, and refuse when a live service shares that output. Follow the
+reported service/profile stop command or use `openclaw update`. A separate
+candidate checkout with independent output can build while the installed Gateway
+continues serving. This check observes current services; it does not prevent a
+service from starting during compilation, and unavailable inspection does not
+prove that no Gateway is running.
+
 Teams running a gateway directly from a git checkout on a server can update it
 with `scripts/update-gateway.sh` from inside that checkout. It is the reference
 for a source-server update: it fails closed on all tracked local changes,

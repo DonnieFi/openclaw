@@ -39,7 +39,7 @@ import {
   inspectManagedGatewayServiceBeforeUpdate,
 } from "./update-command-service-plan.js";
 
-const { mocks, withServiceHome } =
+const { mocks, withServiceHome, mockRegisteredWindowsLauncher } =
   await import("./update-command-service-maintenance.test-support.js");
 
 it.each(["direct", "authority-lost", "ordinary"] as const)(
@@ -449,11 +449,9 @@ it.each(nativeOfflineCases)(
         }
         return scenario.enabled;
       });
+      const command = mockRegisteredWindowsLauncher(home);
       const service = createMockGatewayService({
-        readCommand: async () => ({
-          programArguments: [process.execPath, path.join(process.cwd(), "openclaw.mjs"), "gateway"],
-          environment: { HOME: home },
-        }),
+        readCommand: async () => command,
         readRuntime:
           scenario.platform === "win32"
             ? readScheduledTaskRuntime
@@ -511,11 +509,9 @@ it.each([
         }),
       });
     }
+    const command = mockRegisteredWindowsLauncher(home);
     const service = createMockGatewayService({
-      readCommand: vi.fn(async () => ({
-        programArguments: [process.execPath, path.join(process.cwd(), "openclaw.mjs"), "gateway"],
-        environment: { HOME: home },
-      })),
+      readCommand: vi.fn(async () => command),
       readRuntime: readScheduledTaskRuntime,
       isLoaded: async () => true,
     });
@@ -562,7 +558,7 @@ it.each([
       }
     }
     const attempts = scenario.code === "ETIMEDOUT" ? 2 : 1;
-    expect(spawnSync).toHaveBeenCalledTimes(attempts);
+    expect(spawnSync).toHaveBeenCalledTimes(attempts + (scenario.recovered ? 2 : 0));
     expect(service.readCommand).toHaveBeenCalledTimes(attempts);
     for (const call of vi.mocked(spawnSync).mock.calls) {
       expect(call[2]?.timeout).toBe(30_000);
@@ -967,6 +963,7 @@ it.each(["disable", "restore", "compensation", "never"] as const)(
               "gateway",
             ],
             environment: { HOME: home },
+            sourcePath: path.join(home, "gateway.cmd"),
           }),
           readRuntime: async () => {
             if (revokeDuringInspection) {

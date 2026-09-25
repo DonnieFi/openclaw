@@ -228,6 +228,34 @@ export function parseSystemdEnvAssignments(raw: string): Array<{ key: string; va
   });
 }
 
+/** Read declared inline Service metadata; files and specifier expansion belong to effective inspection. */
+export function parseSystemdInlineEnvironment(content: string): Record<string, string> {
+  const environment: Record<string, string> = {};
+  let section = "";
+  for (const rawLine of splitSystemdLogicalLines(content)) {
+    const line = rawLine.trim();
+    const separator = line.indexOf("=");
+    if (line.startsWith("[")) {
+      section = line;
+    } else if (
+      section === "[Service]" &&
+      separator > 0 &&
+      line.slice(0, separator).trim() === "Environment"
+    ) {
+      const value = line.slice(separator + 1);
+      if (!value.trim()) {
+        for (const key of Object.keys(environment)) {
+          delete environment[key];
+        }
+      }
+      for (const assignment of parseSystemdEnvAssignments(value)) {
+        environment[assignment.key] = assignment.value;
+      }
+    }
+  }
+  return environment;
+}
+
 export function splitSystemdLogicalLines(content: string): string[] {
   const lines: string[] = [];
   let continued = "";

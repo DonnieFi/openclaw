@@ -9,7 +9,7 @@ import {
   buildStartupLauncherScript,
   resolveStartupEntryPaths,
 } from "./schtasks-layout.js";
-import { isScheduledTaskEnabled } from "./schtasks-runtime.js";
+import { isScheduledTaskEnabled, readScheduledTaskRuntime } from "./schtasks-runtime.js";
 import { probeScheduledTaskState } from "./schtasks-state-probe.js";
 import { readScheduledTaskCommand, resolveTaskScriptPath } from "./schtasks.js";
 
@@ -39,6 +39,84 @@ beforeEach(() => {
 });
 
 describe("readScheduledTaskCommand", () => {
+  it.each([
+    {
+      path: "C:\\Program Files\\nodejs\\node.exe",
+      arguments: '"C:\\OpenClaw\\dist\\entry.js" gateway --port 19789',
+      argv: ["C:\\OpenClaw\\dist\\entry.js", "gateway", "--port", "19789"],
+    },
+    {
+      path: "C:\\OpenClaw\\openclaw.exe",
+      arguments: 'gateway run --label "literal ^! label"',
+      argv: ["gateway", "run", "--label", "literal ^! label"],
+    },
+  ])(
+    "reads a direct registered executable without inventing a launcher ($path)",
+    async (action) => {
+      const taskName = "\\Custom\\Gateway";
+      spawnSync.mockReturnValue({
+        status: 0,
+        stdout: JSON.stringify({
+          taskPath: taskName,
+          state: 4,
+          actions: [{ type: 0, ...action, workingDirectory: "C:\\OpenClaw" }],
+        }),
+      });
+      const readFile = vi.spyOn(fs, "readFile");
+      try {
+        await expect(
+          readScheduledTaskCommand(
+            { USERPROFILE: "C:\\Users\\test", OPENCLAW_WINDOWS_TASK_NAME: taskName },
+            { requireEffective: true, requireLoaded: true },
+          ),
+        ).resolves.toEqual({
+          programArguments: [action.path, ...action.argv],
+          workingDirectory: "C:\\OpenClaw",
+        });
+        await expect(
+          readScheduledTaskRuntime(
+            { USERPROFILE: "C:\\Users\\test", OPENCLAW_WINDOWS_TASK_NAME: taskName },
+            { requireLoaded: true },
+          ),
+        ).resolves.toMatchObject({ status: "running" });
+        expect(readFile).not.toHaveBeenCalled();
+      } finally {
+        readFile.mockRestore();
+      }
+    },
+  );
+
+  it.each(["registration changed", "environment expansion", "ambiguous quotes"] as const)(
+    "does not report a direct executable command with %s",
+    async (kind) => {
+      const action = {
+        type: 0,
+        path: "C:\\Node\\node.exe",
+        arguments:
+          kind === "environment expansion"
+            ? '"%OPENCLAW_HOME%\\openclaw.mjs" gateway'
+            : kind === "ambiguous quotes"
+              ? '"C:\\OpenClaw\\openclaw.mjs gateway'
+              : '"C:\\OpenClaw\\openclaw.mjs" gateway',
+        workingDirectory: "",
+      };
+      const task = { taskPath: "\\Custom\\Gateway", state: 4, actions: [action] };
+      spawnSync.mockReturnValue({ status: 0, stdout: JSON.stringify(task) });
+      if (kind === "registration changed") {
+        spawnSync.mockReturnValueOnce({ status: 0, stdout: JSON.stringify(task) }).mockReturnValue({
+          status: 0,
+          stdout: JSON.stringify({ ...task, actions: [{ ...action, arguments: "other.js" }] }),
+        });
+      }
+      await expect(
+        readScheduledTaskCommand(
+          { OPENCLAW_WINDOWS_TASK_NAME: task.taskPath },
+          { requireLoaded: true },
+        ),
+      ).rejects.toThrow("Effective Scheduled Task service command could not be inspected.");
+    },
+  );
+
   it.each(["cmd", "current vbs", "published vbs", "legacy vbs"] as const)(
     "reads the registered custom task action instead of the canonical launcher (%s)",
     async (kind) => {

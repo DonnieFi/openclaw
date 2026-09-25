@@ -6,6 +6,7 @@ import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/st
 import { getRootOptionAwareCommandPath } from "../infra/cli-root-options.js";
 import { isEnvAssignmentToken, resolveCarrierCommandArgv } from "../infra/command-carriers.js";
 import { hasErrnoCode } from "../infra/errno.js";
+import { classifyOpenClawArgv } from "../infra/gateway-process-argv.js";
 import {
   POSIX_INLINE_COMMAND_FLAGS,
   resolveInlineCommandMatch,
@@ -32,7 +33,7 @@ import { readScheduledTaskCommand, resolveTaskName } from "./schtasks-layout.js"
 import { listScheduledTasks } from "./schtasks-state-probe.js";
 import { resolveSystemdServiceName } from "./systemd-service-files.js";
 import {
-  parseSystemdEnvAssignments,
+  parseSystemdInlineEnvironment,
   parseSystemdExecStart,
   splitSystemdLogicalLines,
 } from "./systemd-unit.js";
@@ -188,25 +189,7 @@ function hasGatewayServiceMarker(value: unknown): boolean {
 }
 
 function hasSystemdGatewayServiceMarker(content: string): boolean {
-  const environment: Record<string, string> = {};
-  let section = "";
-  for (const rawLine of splitSystemdLogicalLines(content)) {
-    const line = rawLine.trim();
-    if (line.startsWith("[")) {
-      section = line;
-    } else if (section === "[Service]" && line.startsWith("Environment=")) {
-      const value = line.slice("Environment=".length);
-      if (!value.trim()) {
-        for (const key of Object.keys(environment)) {
-          delete environment[key];
-        }
-      }
-      for (const assignment of parseSystemdEnvAssignments(value)) {
-        environment[assignment.key] = assignment.value;
-      }
-    }
-  }
-  return hasGatewayServiceMarker(environment);
+  return hasGatewayServiceMarker(parseSystemdInlineEnvironment(content));
 }
 
 function detectLaunchdGatewayExecutionMarker(plist: Record<string, unknown>): Marker | null {
@@ -254,7 +237,13 @@ function isOpenClawGatewayTaskName(name: string): boolean {
   return stripped === defaultName || /^openclaw gateway \(.+\)$/.test(stripped);
 }
 
-function detectWindowsServiceExecutionMarker(args: string[]): Marker | null {
+function detectWindowsServiceExecutionMarker(args: string[], cwd?: string): Marker | null {
+  if (
+    classifyOpenClawArgv(args, { command: "gateway", cwd }).kind === "openclaw" ||
+    classifyOpenClawArgv(args, { command: "node", cwd }).kind === "openclaw"
+  ) {
+    return "openclaw";
+  }
   const command = normalizeLowercaseStringOrEmpty(args.join("\n"));
   if (command.includes("clawdbot")) {
     return "clawdbot";
@@ -415,6 +404,12 @@ async function scanLaunchdDir(params: {
         (label !== resolveGatewayLaunchAgentLabel() &&
           !(
             marker === "openclaw" &&
+            !legacyLabel &&
+            params.scope === "user" &&
+            label === params.selectedName
+          ) &&
+          !(
+            marker === "openclaw" &&
             (serviceMarker || (executionMarker === "openclaw" && label.startsWith("ai.openclaw.")))
           )),
     });
@@ -455,6 +450,12 @@ async function scanSystemdDir(params: {
       managedGateway: marker === "openclaw",
       extra:
         name !== resolveGatewaySystemdServiceName() &&
+        !(
+          marker === "openclaw" &&
+          !isLegacyLabel(name) &&
+          params.scope === "user" &&
+          name === params.selectedName
+        ) &&
         !(marker === "openclaw" && isOpenClawGatewaySystemdService(name, contents)),
     });
   }
@@ -631,10 +632,12 @@ async function scanGatewayServices(
         }
         continue;
       }
-      let marker = actionArgv.map(detectWindowsServiceExecutionMarker).find(Boolean) ?? null;
+      const actionMarkers = actionArgv.map((argv, index) =>
+        detectWindowsServiceExecutionMarker(argv, task.actions?.[index]?.workingDirectory),
+      );
+      let marker = actionMarkers.find(Boolean) ?? null;
       let gateway = actionArgv.some(
-        (argv) =>
-          detectWindowsServiceExecutionMarker(argv) === "openclaw" && hasGatewaySubcommandArg(argv),
+        (argv, index) => actionMarkers[index] === "openclaw" && hasGatewaySubcommandArg(argv),
       );
       let recognizableLauncher = launcherReference;
       if (launcherReference || task.actions.some((action) => /\.(?:cmd|vbs)$/i.test(action.path))) {
@@ -651,7 +654,12 @@ async function scanGatewayServices(
           );
           const serviceMarker = command?.environment?.OPENCLAW_SERVICE_MARKER;
           const serviceKind = command?.environment?.OPENCLAW_SERVICE_KIND;
-          marker = command ? detectWindowsServiceExecutionMarker(command.programArguments) : null;
+          marker = command
+            ? detectWindowsServiceExecutionMarker(
+                command.programArguments,
+                command.workingDirectory,
+              )
+            : null;
           gateway = Boolean(command && hasGatewaySubcommandArg(command.programArguments));
           if (
             serviceMarker === "openclaw" &&
@@ -685,7 +693,12 @@ async function scanGatewayServices(
         scope: "system",
         marker,
         legacy: marker !== "openclaw",
-        extra: !selected && !isOpenClawGatewayTaskName(name),
+        extra: !(
+          marker === "openclaw" &&
+          gateway &&
+          !isLegacyLabel(name) &&
+          (selected || isOpenClawGatewayTaskName(name))
+        ),
         managedGateway: marker === "openclaw" && gateway,
       });
     }

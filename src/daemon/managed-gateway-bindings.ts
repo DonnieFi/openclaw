@@ -7,7 +7,7 @@ import { listManagedOpenClawGatewayServices, type ExtraGatewayService } from "./
 import { decodeLaunchdPlistMetadata } from "./launchd-plist.js";
 import type { GatewayServiceEnv, SystemdServiceReadTarget } from "./service-types.js";
 import { resolveSystemdRunnableUnitName } from "./systemd-scope.js";
-import { parseSystemdEnvAssignments, splitSystemdLogicalLines } from "./systemd-unit.js";
+import { parseSystemdInlineEnvironment } from "./systemd-unit.js";
 
 export type ManagedGatewayBinding = {
   readonly profile: string;
@@ -86,24 +86,6 @@ function inferProfileFromWindowsTaskName(name: string): string | undefined {
   return match?.[1]?.trim() || undefined;
 }
 
-function readOpenClawProfileFromSystemdUnit(contents: string): string | undefined {
-  for (const line of splitSystemdLogicalLines(contents)) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith(";")) {
-      continue;
-    }
-    if (!trimmed.toLowerCase().startsWith("environment=")) {
-      continue;
-    }
-    for (const { key, value } of parseSystemdEnvAssignments(trimmed.slice("Environment=".length))) {
-      if (key === "OPENCLAW_PROFILE" && value.trim()) {
-        return value.trim();
-      }
-    }
-  }
-  return undefined;
-}
-
 function detailPath(prefix: string, detail: string): string | undefined {
   if (!detail.startsWith(prefix)) {
     return undefined;
@@ -128,7 +110,8 @@ async function bindingFromSystemdService(
   if (unitPath) {
     const bytes = await readServiceFile(unitPath);
     if (bytes) {
-      envProfile = readOpenClawProfileFromSystemdUnit(bytes.toString("utf8"));
+      envProfile =
+        parseSystemdInlineEnvironment(bytes.toString("utf8")).OPENCLAW_PROFILE?.trim() || undefined;
     }
   }
   const profile = normalizeDiscoveredProfile(
