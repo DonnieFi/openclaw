@@ -177,6 +177,23 @@ export type GatewayServiceReadOptions = {
   loadForInspection?: GatewayServiceUnitInspection;
 };
 
+export type GatewayServiceDefinitionInspectionArgs = GatewayServiceEnvArgs & {
+  environment?: GatewayServiceEnv;
+  requireLoaded?: boolean;
+  systemdReadBinding?: GatewayServiceReadOptions["systemdReadBinding"];
+  systemdReadTarget?: GatewayServiceReadOptions["systemdReadTarget"];
+};
+
+export type ReadGatewayServiceStateArgs = GatewayServiceEnvArgs & {
+  systemdReadTarget?: GatewayServiceReadOptions["systemdReadTarget"];
+  systemdInstallation?: GatewayServiceState["systemdInstallation"];
+  requireEffective?: boolean;
+  requireLoadedCommand?: boolean;
+  loadForInspection?: GatewayServiceReadOptions["loadForInspection"];
+  systemdReadBinding?: GatewayServiceReadOptions["systemdReadBinding"];
+  validateEnvBeforeStatusRead?: (env: GatewayServiceEnv) => void;
+};
+
 export type GatewayServiceEnvironmentValueSource = "inline" | "file" | "inline-and-file";
 
 export type GatewayServiceLoadState =
