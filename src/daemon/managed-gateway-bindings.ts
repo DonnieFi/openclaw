@@ -6,7 +6,7 @@ import { resolveGatewayLaunchAgentLabel, resolveGatewayWindowsTaskName } from ".
 import { listManagedOpenClawGatewayServices, type ExtraGatewayService } from "./inspect.js";
 import { decodeLaunchdPlistMetadata } from "./launchd-plist.js";
 import type { GatewayServiceEnv, SystemdServiceReadTarget } from "./service-types.js";
-import { resolveSystemdRunnableUnitName } from "./systemd-scope.js";
+import { resolveSystemdTemplateInstanceName } from "./systemd-scope.js";
 import { parseSystemdInlineEnvironment } from "./systemd-unit.js";
 
 export type ManagedGatewayBinding = {
@@ -128,7 +128,10 @@ async function bindingFromSystemdService(
   const profile = normalizeDiscoveredProfile(
     envProfile ?? inferProfileFromSystemdUnitName(svc.label) ?? "default",
   );
-  const unitName = resolveSystemdRunnableUnitName(svc.label);
+  const unitName = resolveSystemdTemplateInstanceName(svc.label, {
+    ...profileEnvFields(profile),
+    OPENCLAW_SYSTEMD_UNIT: svc.label,
+  });
   const systemdReadTarget = unitPath ? { scope: svc.scope, unitName, unitPath } : undefined;
   return {
     profile,

@@ -1,6 +1,7 @@
 /** Platform service registry and shared gateway service start/repair logic. */
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { assertGatewayServiceMutationAllowed } from "../infra/gateway-supervision.js";
+import { resolveGatewayProfileSuffix } from "./constants.js";
 import { assertFutureConfigActionAllowed } from "./future-config-guard.js";
 import {
   installLaunchAgent,
@@ -54,6 +55,7 @@ import type {
   GatewayServiceCommandConfig,
   GatewayServiceCommandInspection,
   GatewayServiceControlArgs,
+  GatewayServiceDefinitionInspectionArgs,
   GatewayServiceEnv,
   GatewayServiceEnvArgs,
   GatewayServiceInstallArgs,
@@ -65,6 +67,7 @@ import type {
   GatewayServiceStartResult,
   GatewayServiceStageArgs,
   GatewayServiceState,
+  ReadGatewayServiceStateArgs,
 } from "./service-types.js";
 import {
   getGatewayServiceUpdateNativeCommand,
@@ -118,12 +121,7 @@ export type GatewayService = GatewayServiceLoadStateReader & {
   hasInstalledDefinition?: (args: GatewayServiceEnvArgs) => Promise<boolean>;
   isAbsent?: (args: GatewayServiceEnvArgs & { strictCommandAbsent?: true }) => Promise<boolean>;
   readDefinitionMutationCapability?: (
-    args: GatewayServiceEnvArgs & {
-      environment?: GatewayServiceEnv;
-      requireLoaded?: boolean;
-      systemdReadBinding?: GatewayServiceReadOptions["systemdReadBinding"];
-      systemdReadTarget?: GatewayServiceReadOptions["systemdReadTarget"];
-    },
+    args: GatewayServiceDefinitionInspectionArgs,
   ) => ReturnType<typeof readSystemdDefinitionMutationCapability>;
   readCommand: (
     env: GatewayServiceEnv,
@@ -133,16 +131,6 @@ export type GatewayService = GatewayServiceLoadStateReader & {
     env: GatewayServiceEnv,
     opts?: GatewayServiceReadOptions,
   ) => Promise<GatewayServiceRuntime>;
-};
-
-type ReadGatewayServiceStateArgs = GatewayServiceEnvArgs & {
-  systemdReadTarget?: GatewayServiceReadOptions["systemdReadTarget"];
-  systemdInstallation?: GatewayServiceState["systemdInstallation"];
-  requireEffective?: boolean;
-  requireLoadedCommand?: boolean;
-  loadForInspection?: GatewayServiceReadOptions["loadForInspection"];
-  systemdReadBinding?: GatewayServiceReadOptions["systemdReadBinding"];
-  validateEnvBeforeStatusRead?: (env: GatewayServiceEnv) => void;
 };
 
 /** Reads the installed service and reports definition drift that must be repaired before launch. */
@@ -160,6 +148,8 @@ export async function readGatewayServiceState(
   input: ReadGatewayServiceStateArgs = {},
 ): Promise<GatewayServiceState> {
   let args = input;
+  const deadline =
+    performance.now() + (args.timeoutMs && args.timeoutMs > 0 ? args.timeoutMs : 5000);
   const baseEnv = args.env ?? (process.env as GatewayServiceEnv);
   const supplied = args.systemdInstallation;
   const selected = supplied?.kind === "system" || supplied?.kind === "user" ? supplied : undefined;
@@ -167,7 +157,13 @@ export async function readGatewayServiceState(
     !args.systemdReadTarget &&
     (selected || service.readCommand === readSystemdServiceExecStart)
   ) {
-    const installation = selected ?? (await findSystemdGatewayInstallation(baseEnv));
+    const installation =
+      selected ??
+      (await findSystemdGatewayInstallation(baseEnv, {
+        requireLoaded: args.requireLoadedCommand,
+        loadForInspection: args.loadForInspection,
+        timeoutMs: deadline - performance.now(),
+      }));
     if (installation.kind === "dueling" && args.requireEffective && args.requireLoadedCommand) {
       throw new ServiceOwnershipRefusalError("systemd-competing-managers");
     }
@@ -177,7 +173,16 @@ export async function readGatewayServiceState(
         : installation.kind === "user" || installation.kind === "dueling"
           ? installation.user
           : undefined;
-    args = { ...args, systemdInstallation: installation, systemdReadTarget: target };
+    const remaining = deadline - performance.now();
+    if (remaining <= 0) {
+      throw new ServiceInspectionError("systemd-inspection-deadline-exceeded");
+    }
+    args = {
+      ...args,
+      systemdInstallation: installation,
+      systemdReadTarget: target,
+      timeoutMs: remaining,
+    };
   }
   if (
     service.readCommand === readSystemdServiceExecStart &&
@@ -186,37 +191,47 @@ export async function readGatewayServiceState(
     args.requireLoadedCommand &&
     !args.systemdReadBinding
   ) {
-    const deadline =
-      performance.now() + (args.timeoutMs && args.timeoutMs > 0 ? args.timeoutMs : 5000);
     return await withSystemdServiceReadBinding(
       baseEnv,
-      () => admitSystemdServiceReadBinding(baseEnv, deadline),
+      () => admitSystemdServiceReadBinding(baseEnv, deadline, args.systemdReadTarget?.unitName),
       (binding) => {
         const remaining = deadline - performance.now();
         if (remaining <= 0) {
           throw new ServiceInspectionError("systemd-inspection-deadline-exceeded");
         }
-        return readGatewayServiceStateWithBinding(service, {
-          ...args,
-          systemdReadBinding: binding,
-          timeoutMs: remaining,
-        });
+        return readGatewayServiceStateWithBinding(
+          service,
+          { ...args, systemdReadBinding: binding, timeoutMs: remaining },
+          deadline,
+        );
       },
       deadline,
     );
   }
-  return await readGatewayServiceStateWithBinding(service, args);
+  return await readGatewayServiceStateWithBinding(service, args, deadline);
 }
 
 async function readGatewayServiceStateWithBinding(
   service: GatewayService,
   args: ReadGatewayServiceStateArgs,
+  deadline: number,
 ): Promise<GatewayServiceState> {
   const baseEnv = args.env ?? process.env;
-  const { timeoutMs, systemdReadBinding, systemdReadTarget } = args;
-  const deadline = performance.now() + (timeoutMs && timeoutMs > 0 ? timeoutMs : 5000);
+  const { systemdReadBinding, systemdReadTarget } = args;
+  const remainingTimeout = () => {
+    if (service.readCommand !== readSystemdServiceExecStart) {
+      return args.timeoutMs;
+    }
+    const remaining = deadline - performance.now();
+    if (remaining <= 0) {
+      throw new ServiceInspectionError("systemd-inspection-deadline-exceeded");
+    }
+    return remaining;
+  };
   systemdReadBinding?.verify();
-  let absent = await service.isAbsent?.({ env: baseEnv, timeoutMs }).catch(() => false);
+  let absent = systemdReadTarget
+    ? false
+    : await service.isAbsent?.({ env: baseEnv, timeoutMs: remainingTimeout() }).catch(() => false);
   // Initial systemd absence proves no manager; strict absence below only proves no unit.
   const managerAbsent = absent && service.readCommand === readSystemdServiceExecStart;
   systemdReadBinding?.verify();
@@ -225,7 +240,7 @@ async function readGatewayServiceStateWithBinding(
     ? null
     : args.requireEffective
       ? await service.readCommand(baseEnv, {
-          timeoutMs,
+          timeoutMs: remainingTimeout(),
           requireEffective: true,
           ...(!args.requireLoadedCommand
             ? {
@@ -241,7 +256,7 @@ async function readGatewayServiceStateWithBinding(
         })
       : await service
           .readCommand(baseEnv, {
-            timeoutMs,
+            timeoutMs: remainingTimeout(),
             ...(systemdReadTarget ? { systemdReadTarget } : {}),
             onCommandInspection: (inspection) => {
               commandInspection = inspection;
@@ -254,7 +269,12 @@ async function readGatewayServiceStateWithBinding(
             }
             return null;
           });
-  const mergedEnv = mergeGatewayServiceEnv(baseEnv, command);
+  const mergedEnv = mergeGatewayServiceEnv(
+    systemdReadTarget?.scope === "system" && !resolveGatewayProfileSuffix(baseEnv.OPENCLAW_PROFILE)
+      ? { ...baseEnv, OPENCLAW_SYSTEMD_UNIT: systemdReadTarget.unitName }
+      : baseEnv,
+    command,
+  );
   const env =
     process.platform === "win32" && args.requireLoadedCommand && command?.sourcePath
       ? { ...mergedEnv, OPENCLAW_TASK_SCRIPT: command.sourcePath }
@@ -294,16 +314,23 @@ async function readGatewayServiceStateWithBinding(
       runtime: { status: "stopped", missingUnit: true, inspectionReason },
     };
   }
+  const statusBaseEnv = systemdReadBinding ? baseEnv : env;
+  // Reuse the selected unit for native status without changing the installation's selectors.
+  const statusEnv = systemdReadTarget
+    ? { ...statusBaseEnv, OPENCLAW_SYSTEMD_UNIT: systemdReadTarget.unitName }
+    : statusBaseEnv;
   const readInstalled = async () =>
     command !== null
       ? true
-      : (service.hasInstalledDefinition?.({ env, timeoutMs }).catch(() => false) ?? false);
+      : (service
+          .hasInstalledDefinition?.({ env: statusEnv, timeoutMs: remainingTimeout() })
+          .catch(() => false) ?? false);
   const readLoadState = () =>
-    readGatewayServiceLoadState(service, { env: systemdReadBinding ? baseEnv : env, timeoutMs });
+    readGatewayServiceLoadState(service, { env: statusEnv, timeoutMs: remainingTimeout() });
   const readRuntime = () =>
     service
       .readRuntime(env, {
-        timeoutMs,
+        timeoutMs: remainingTimeout(),
         ...(systemdReadTarget ? { systemdReadTarget } : {}),
         ...(commandInspection ? { commandInspection } : {}),
         ...(systemdReadBinding ? { systemdReadBinding } : {}),
@@ -318,7 +345,7 @@ async function readGatewayServiceStateWithBinding(
           .readDefinitionMutationCapability?.({
             env: baseEnv,
             environment: env,
-            timeoutMs,
+            timeoutMs: remainingTimeout(),
             ...(systemdReadTarget ? { systemdReadTarget } : {}),
             ...(systemdReadBinding ? { systemdReadBinding } : {}),
             ...(args.requireLoadedCommand ? { requireLoaded: true } : {}),
@@ -457,34 +484,35 @@ export function describeGatewayServiceRestart(
 type SupportedGatewayServicePlatform = "darwin" | "linux" | "win32";
 type ServiceKind = "gateway" | "node";
 
-function createUnsupportedGatewayServiceError(kind: ServiceKind): Error {
+function describeUnsupportedGatewayService(kind: ServiceKind): string {
   if (process.platform === "freebsd") {
     if (kind === "node") {
-      return new Error(
+      return (
         "Node service management is not supported by this CLI on FreeBSD. " +
-          "Run `openclaw node run` for a foreground node host connected to your Gateway.",
+        "Run `openclaw node run` for a foreground node host connected to your Gateway."
       );
     }
-    return new Error(
+    return (
       "Gateway service management is not supported by this CLI on FreeBSD. " +
-        'For a pkg install, set openclaw_user to your onboarding account and openclaw_enable="YES" in /etc/rc.conf, ' +
-        "then use `service openclaw start` (or stop/restart/status) as root. " +
-        "For a foreground Gateway, run `openclaw gateway run` as your onboarding account.",
+      'For a pkg install, set openclaw_user to your onboarding account and openclaw_enable="YES" in /etc/rc.conf, ' +
+      "then use `service openclaw start` (or stop/restart/status) as root. " +
+      "For a foreground Gateway, run `openclaw gateway run` as your onboarding account."
     );
   }
-  return new Error(`Gateway service install not supported on ${process.platform}`);
+  return `Gateway service install not supported on ${process.platform}`;
 }
 
 function createUnsupportedGatewayService(kind: ServiceKind): GatewayService {
+  const unsupportedReason = describeUnsupportedGatewayService(kind);
   // Node hosts share this adapter, but their recovery must never control the Gateway.
   const rejectUnsupportedGatewayService = async (): Promise<never> => {
-    throw createUnsupportedGatewayServiceError(kind);
+    throw new Error(unsupportedReason);
   };
   return {
     label: "Gateway service",
     loadedText: "available",
     notLoadedText: "not installed",
-    unsupportedReason: createUnsupportedGatewayServiceError(kind).message,
+    unsupportedReason,
     stage: rejectUnsupportedGatewayService,
     install: rejectUnsupportedGatewayService,
     uninstall: rejectUnsupportedGatewayService,
@@ -493,10 +521,7 @@ function createUnsupportedGatewayService(kind: ServiceKind): GatewayService {
     restart: rejectUnsupportedGatewayService,
     isLoaded: rejectUnsupportedGatewayService,
     readCommand: async () => null,
-    readRuntime: async () => ({
-      status: "unknown",
-      detail: createUnsupportedGatewayServiceError(kind).message,
-    }),
+    readRuntime: async () => ({ status: "unknown", detail: unsupportedReason }),
   };
 }
 
@@ -530,8 +555,8 @@ const GATEWAY_SERVICE_REGISTRY: Record<SupportedGatewayServicePlatform, GatewayS
     isEnabled: isSystemdServiceEnabled,
     isAbsent: ({ env, timeoutMs, strictCommandAbsent }) =>
       isSystemdServiceAbsent(env ?? process.env, { timeoutMs, strictCommandAbsent }),
-    hasInstalledDefinition: async ({ env }) =>
-      (await findInstalledSystemdGatewayScope(env ?? process.env)) !== null,
+    hasInstalledDefinition: async ({ env, timeoutMs }) =>
+      (await findInstalledSystemdGatewayScope(env ?? process.env, { timeoutMs })) !== null,
     readDefinitionMutationCapability: ({
       env,
       environment,

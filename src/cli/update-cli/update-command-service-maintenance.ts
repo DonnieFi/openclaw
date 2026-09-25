@@ -596,6 +596,7 @@ async function stopManagedServiceBeforeMutableUpdate(
           );
         }
       }
+      assertCurrent();
       stoppedAtMs = Date.now();
       if (params.updateRun) {
         recordUpdateRunPhase(params.updateRun.runId, "activating", undefined, {

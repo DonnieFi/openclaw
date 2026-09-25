@@ -22,7 +22,7 @@ vi.mock("./inspect.js", async (importOriginal) => {
 
 import { discoverManagedGatewayBindings } from "./managed-gateway-bindings.js";
 import { readGatewayServiceState, resolveGatewayService } from "./service.js";
-import { findSystemdGatewayInstallation, resolveSystemdRunnableUnitName } from "./systemd-scope.js";
+import { findSystemdGatewayInstallation } from "./systemd-scope.js";
 
 const dirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => vi.restoreAllMocks());
@@ -35,16 +35,93 @@ const success = (stdout: string): ExecResult => ({
 });
 const TEST_MANAGED_HOME = "/tmp/openclaw-test-home";
 
-it.each([
+type ScopeCase = {
+  file: string;
+  instance: string;
+  running: boolean;
+  unit?: string;
+  launch?: "direct" | "default-profile" | "runtime-flags";
+  other?:
+    | "named-env"
+    | "named-argv"
+    | "profile-file"
+    | "other-state"
+    | "other-account"
+    | "same-default"
+    | "unavailable"
+    | "wrapper"
+    | "budget"
+    | "handoff-budget"
+    | "default-budget"
+    | "node";
+};
+
+it.each<ScopeCase>([
   { file: "openclaw.service", instance: "openclaw.service", running: false },
   { file: "openclaw@.service", instance: "openclaw@gateway.service", running: false },
   { file: "openclaw@.service", instance: "openclaw@gateway.service", running: true },
+  {
+    file: "openclaw@.service",
+    instance: "openclaw@gateway.service",
+    running: false,
+    unit: "openclaw@gateway.service",
+  },
+  {
+    file: "openclaw@.service",
+    instance: "openclaw@gateway.service",
+    running: true,
+    unit: "openclaw@gateway.service",
+  },
+  { file: "custom-gateway.service", instance: "custom-gateway.service", running: false },
+  { file: "custom-gateway.service", instance: "custom-gateway.service", running: true },
+  ...(["direct", "default-profile", "runtime-flags"] as const).map((launch) => ({
+    file: "custom-gateway.service",
+    instance: "custom-gateway.service",
+    running: false,
+    launch,
+  })),
+  ...(
+    [
+      "named-env",
+      "named-argv",
+      "profile-file",
+      "other-state",
+      "other-account",
+      "same-default",
+      "unavailable",
+      "wrapper",
+      "budget",
+      "handoff-budget",
+      "default-budget",
+      "node",
+    ] as const
+  ).map((other) => ({
+    file: "custom-gateway.service",
+    instance: "custom-gateway.service",
+    running: false,
+    other,
+  })),
 ])(
-  "inspects $instance with running=$running and preserves its sealed definition",
-  async ({ file, instance, running }) => {
+  "inspects $instance with running=$running unit=$unit other=$other launch=$launch and preserves its sealed definition",
+  async ({ file, instance, running, unit, other, launch }) => {
+    let elapsedMs = 0;
+    let targetReads = 0;
+    if (other === "budget" || other === "handoff-budget" || other === "default-budget") {
+      vi.spyOn(performance, "now").mockImplementation(() => elapsedMs);
+    }
     const home = await fs.realpath(dirs.make("openclaw-system-maintenance-"));
     const root = path.join(home, "package");
     const entrypoint = path.join(root, "openclaw.mjs");
+    const programArguments =
+      launch === "direct"
+        ? [entrypoint, "gateway"]
+        : [
+            process.execPath,
+            ...(launch === "runtime-flags" ? ["--max-old-space-size=512"] : []),
+            entrypoint,
+            "gateway",
+            ...(launch === "default-profile" ? ["--profile", "default"] : []),
+          ];
     const target: SystemdServiceReadTarget = {
       scope: "system",
       unitName: instance,
@@ -60,7 +137,28 @@ it.each([
       target.unitPath,
       `[Service]\nUser=${file.includes("@") ? "%i" : "gateway"}\nExecStart=${process.execPath} ${entrypoint} gateway\n`,
     );
+    const otherName = "other-gateway.service";
+    const otherPath = path.join(home, otherName);
+    const otherEnvPath = path.join(home, "other.env");
+    if (other) {
+      await fs.writeFile(
+        otherPath,
+        `[Service]\nExecStart=${process.execPath} ${entrypoint} gateway\n`,
+      );
+      await fs.writeFile(otherEnvPath, "OPENCLAW_PROFILE=darlene\n");
+    }
     discovery.mockResolvedValue([
+      ...(other
+        ? [
+            {
+              platform: "linux" as const,
+              scope: "system" as const,
+              marker: "openclaw" as const,
+              label: otherName,
+              detail: `unit: ${otherPath}`,
+            },
+          ]
+        : []),
       {
         platform: "linux",
         scope: "system",
@@ -86,7 +184,7 @@ it.each([
       DropInPaths: property("as", []),
       NeedDaemonReload: property("b", false),
       ExecStart: property("a(sasbttttuii)", [
-        [process.execPath, [process.execPath, entrypoint, "gateway"], false, 0, 0, 0, 0, 0, 0, 0],
+        [programArguments[0], programArguments, false, 0, 0, 0, 0, 0, 0, 0],
       ]),
       WorkingDirectory: property("s", home),
       Environment: property("as", []),
@@ -109,6 +207,47 @@ it.each([
       TasksCurrent: property("t", running ? 1 : 0),
       MemoryCurrent: property("t", 0),
     };
+    const otherObject = "/org/freedesktop/systemd1/unit/other_2eservice";
+    const otherProperties: Record<string, unknown> = {
+      ...properties,
+      Id: property("s", otherName),
+      FragmentPath: property("s", otherPath),
+      User: property("s", other === "other-account" ? "another-account" : "gateway"),
+      Environment: property(
+        "as",
+        other === "named-env" ||
+          other === "budget" ||
+          other === "handoff-budget" ||
+          other === "default-budget"
+          ? ["OPENCLAW_PROFILE=darlene"]
+          : other === "other-state"
+            ? [`OPENCLAW_STATE_DIR=${path.join(home, ".openclaw-darlene")}`]
+            : other === "node"
+              ? ["OPENCLAW_SERVICE_KIND=node"]
+              : [],
+      ),
+      EnvironmentFiles: property("a(sb)", other === "profile-file" ? [[otherEnvPath, false]] : []),
+      ExecStart: property("a(sasbttttuii)", [
+        [
+          other === "wrapper" ? "/usr/bin/env" : process.execPath,
+          [
+            ...(other === "wrapper" ? ["/usr/bin/env", "OPENCLAW_PROFILE=darlene"] : []),
+            process.execPath,
+            entrypoint,
+            ...(other === "named-argv" ? ["--profile", "darlene"] : []),
+            ...(other === "node" ? ["node", "run"] : ["gateway"]),
+          ],
+          false,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+        ],
+      ]),
+    };
     exec.mockReset().mockImplementation(async (command, args) => {
       if (command === "systemctl" && args[0] === "is-enabled") {
         return success("enabled\n");
@@ -123,6 +262,24 @@ it.each([
         return success(JSON.stringify(property("u", [0])));
       }
       if (args.includes("GetUnit")) {
+        if (other === "budget") {
+          elapsedMs += 40;
+        }
+        if (other === "default-budget") {
+          elapsedMs += 4000;
+        }
+        if (other === "handoff-budget") {
+          if (args.at(-1) === otherName) {
+            elapsedMs += 40;
+          } else if (args.at(-1) === target.unitName && targetReads++ > 0) {
+            elapsedMs += 20;
+          }
+        }
+        if (args.at(-1) === otherName && other) {
+          return other === "unavailable"
+            ? { ...success(""), code: 1, stderr: "Synthetic system unit inspection unavailable" }
+            : success(JSON.stringify(property("o", [otherObject])));
+        }
         if (args.at(-1) !== target.unitName) {
           return {
             ...success(""),
@@ -141,7 +298,9 @@ it.each([
       return success(
         args
           .slice(index + 1)
-          .map((name) => JSON.stringify(properties[name]))
+          .map((name) =>
+            JSON.stringify((args.includes(otherObject) ? otherProperties : properties)[name]),
+          )
           .join("\n"),
       );
     });
@@ -154,18 +313,56 @@ it.each([
         OPENCLAW_STATE_DIR: undefined,
         OPENCLAW_CONFIG_PATH: undefined,
         OPENCLAW_PROFILE: undefined,
-        OPENCLAW_SYSTEMD_UNIT: undefined,
+        OPENCLAW_SYSTEMD_UNIT: unit,
         OPENCLAW_SUPERVISOR_MODE: undefined,
         OPENCLAW_SERVICE_MARKER: undefined,
         OPENCLAW_SERVICE_KIND: undefined,
       },
       async () => {
+        if (
+          other === "same-default" ||
+          other === "unavailable" ||
+          other === "wrapper" ||
+          other === "budget" ||
+          other === "handoff-budget" ||
+          other === "default-budget"
+        ) {
+          await expect(
+            readGatewayServiceState(resolveGatewayService(), {
+              requireEffective: true,
+              requireLoadedCommand: true,
+              ...(other === "budget" || other === "handoff-budget" ? { timeoutMs: 50 } : {}),
+            }),
+          ).rejects.toThrow(
+            other === "same-default"
+              ? "Multiple systemd Gateway units"
+              : other === "budget" || other === "handoff-budget" || other === "default-budget"
+                ? "inspection deadline expired"
+                : other === "wrapper"
+                  ? "launcher identity is unknown"
+                  : "could not be inspected",
+          );
+          expect(
+            exec.mock.calls.some(
+              ([, args]) => args.includes("GetUnit") && args.at(-1) === otherName,
+            ),
+          ).toBe(true);
+          if (other === "default-budget") {
+            const targetQuery = exec.mock.calls.find(
+              ([, args]) => args.includes("GetUnit") && args.at(-1) === target.unitName,
+            );
+            expect(targetQuery).toBeDefined();
+            expect(targetQuery?.[2]?.timeout).toBeLessThanOrEqual(1000);
+          }
+          return;
+        }
         const state = await readGatewayServiceState(resolveGatewayService(), {
           requireEffective: true,
           requireLoadedCommand: true,
         });
         expect(state).toMatchObject({
           systemdInstallation: { kind: "system", system: target },
+          env: { OPENCLAW_SYSTEMD_UNIT: target.unitName },
           installed: true,
           running,
           loadState: { status: "loaded" },
@@ -390,7 +587,11 @@ it("reads the system template instance while a separate user Gateway is installe
         .join("\n"),
     );
   });
-  const bindings = await discoverManagedGatewayBindings({ HOME: home });
+  const bindings = await discoverManagedGatewayBindings({
+    HOME: home,
+    OPENCLAW_PROFILE: "foreign",
+    OPENCLAW_SYSTEMD_UNIT: "openclaw@foreign.service",
+  });
   const systemBinding = bindings.find((binding) => binding.scope === "system");
   expect(systemBinding?.systemdReadTarget).toEqual({
     scope: "system",
@@ -460,8 +661,4 @@ it("findSystemdGatewayInstallation expands a system template to this account's i
       unitPath: "/etc/systemd/system/openclaw@.service",
     },
   });
-  expect(resolveSystemdRunnableUnitName("openclaw@.service")).toBe("openclaw@gateway.service");
-  expect(resolveSystemdRunnableUnitName("openclaw-gateway.service")).toBe(
-    "openclaw-gateway.service",
-  );
 });
