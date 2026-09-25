@@ -2,10 +2,13 @@
 import { spawnSync } from "node:child_process";
 import { resolvePositiveTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
-import { hasErrnoCode } from "../infra/errno.js";
+import { hasErrnoCode, isErrno } from "../infra/errno.js";
 import { getWindowsPowerShellExePath } from "../infra/windows-install-roots.js";
+import {
+  ServiceInspectionError,
+  type ServiceInspectionDiagnostic,
+} from "./service-inspection-error.js";
 import { resolveServiceManagerEnv } from "./service-process-env.js";
-import { createServiceRuntimeInspectionFailure } from "./service-runtime.js";
 
 export type ScheduledTaskSnapshot = {
   taskPath?: string;
@@ -19,19 +22,20 @@ export type ScheduledTaskSnapshot = {
 type ScheduledTaskStateProbe =
   | ({ status: "found" } & ScheduledTaskSnapshot)
   | { status: "missing" }
-  | { status: "unknown"; detail: string; timeoutMs?: number };
+  | {
+      status: "unknown";
+      detail: string;
+      timeoutMs?: number;
+      diagnostic: ServiceInspectionDiagnostic;
+    };
 
-export class ScheduledTaskInspectionError extends Error {
+export class ScheduledTaskInspectionError extends ServiceInspectionError {
   readonly timeoutMs?: number;
 
   constructor(probe: Extract<ScheduledTaskStateProbe, { status: "unknown" }>) {
-    const failure = createServiceRuntimeInspectionFailure(
-      probe.detail,
-      probe.timeoutMs,
-    ).inspectionFailure;
-    super(`Effective Scheduled Task service command could not be inspected. ${failure.detail}`);
+    super("windows-task-inspection-failed", probe.diagnostic);
     this.name = "ScheduledTaskInspectionError";
-    this.timeoutMs = failure.timeoutMs;
+    this.timeoutMs = probe.diagnostic.kind === "timeout" ? probe.diagnostic.timeoutMs : undefined;
   }
 }
 
@@ -89,15 +93,31 @@ function queryTaskScheduler(
         status: "unknown",
         detail: `Scheduled Task probe timed out after ${probeTimeoutMs} ms (ETIMEDOUT).`,
         timeoutMs: probeTimeoutMs,
+        diagnostic: { kind: "timeout", timeoutMs: probeTimeoutMs },
       };
     }
-    return { status: "unknown", detail: probe.error.message };
+    return {
+      status: "unknown",
+      detail: probe.error.message,
+      diagnostic: {
+        kind: "spawn",
+        ...(isErrno(probe.error) &&
+        typeof probe.error.errno === "number" &&
+        Number.isSafeInteger(probe.error.errno)
+          ? { errno: probe.error.errno }
+          : {}),
+      },
+    };
   }
   if (probe.status === 0) {
     try {
       return { status: "ok", value: JSON.parse(probe.stdout) };
     } catch {}
-    return { status: "unknown", detail: "Scheduled Task probe returned invalid JSON." };
+    return {
+      status: "unknown",
+      detail: "Scheduled Task probe returned invalid JSON.",
+      diagnostic: { kind: "invalid-response" },
+    };
   }
   const hresult = Number(probe.stdout.trim());
   // Only a missing task/folder during lookup proves absence, not a failed COM connection.
@@ -106,6 +126,16 @@ function queryTaskScheduler(
     : {
         status: "unknown",
         detail: `Scheduled Task probe failed (exit ${probe.status}): ${probe.stdout.trim() || probe.stderr.trim() || "no output from PowerShell."}`,
+        diagnostic: {
+          kind: "native",
+          exitCode: probe.status,
+          ...(/^-?\d+$/.test(probe.stdout.trim()) &&
+          Number.isInteger(hresult) &&
+          hresult >= -0x80000000 &&
+          hresult <= 0x7fffffff
+            ? { hresult }
+            : {}),
+        },
       };
 }
 
@@ -159,7 +189,11 @@ export function probeScheduledTaskState(
   const snapshot = readTaskSnapshot(result.value);
   return snapshot
     ? { status: "found", ...snapshot }
-    : { status: "unknown", detail: "Scheduled Task probe returned invalid JSON." };
+    : {
+        status: "unknown",
+        detail: "Scheduled Task probe returned invalid JSON.",
+        diagnostic: { kind: "invalid-response" },
+      };
 }
 
 export function listScheduledTasks(timeoutMs?: number): ScheduledTaskSnapshot[] {

@@ -16,11 +16,8 @@ import { parseCmdScriptCommandLine, quoteCmdScriptArg } from "./cmd-argv.js";
 import { assertNoCmdLineBreak, parseCmdSetAssignment, renderCmdSetAssignment } from "./cmd-set.js";
 import { normalizeWindowsTaskIdentity, resolveGatewayWindowsTaskName } from "./constants.js";
 import { resolveGatewayTaskScriptPath as resolveTaskScriptPath } from "./paths.js";
-import {
-  probeScheduledTaskExists,
-  probeScheduledTaskState,
-  ScheduledTaskInspectionError,
-} from "./schtasks-state-probe.js";
+import { probeScheduledTaskState, ScheduledTaskInspectionError } from "./schtasks-state-probe.js";
+import { ServiceInspectionError } from "./service-inspection-error.js";
 import { publishServiceFile } from "./service-stage.js";
 import type {
   GatewayServiceCommandConfig,
@@ -599,7 +596,7 @@ export async function readScheduledTaskCommand(
       sourcePath: scriptPath,
     };
   } catch (error) {
-    if (error instanceof ScheduledTaskInspectionError) {
+    if (error instanceof ServiceInspectionError) {
       throw error;
     }
     if (!requireEffective) {
@@ -607,7 +604,14 @@ export async function readScheduledTaskCommand(
     }
     if (
       hasErrnoCode(error, "ENOENT") &&
-      (await isScheduledTaskDefinitionAbsent(env, options?.timeoutMs).catch(() => false))
+      (await isScheduledTaskDefinitionAbsent(env, options?.timeoutMs).catch(
+        (inspectionError: unknown) => {
+          if (inspectionError instanceof ServiceInspectionError) {
+            throw inspectionError;
+          }
+          return false;
+        },
+      ))
     ) {
       return null;
     }
@@ -621,7 +625,11 @@ async function isScheduledTaskDefinitionAbsent(
   timeoutMs?: number,
 ): Promise<boolean> {
   // A missing script can still belong to a registered task or Startup login item.
-  if (probeScheduledTaskExists(resolveTaskName(env), timeoutMs) !== false) {
+  const probe = probeScheduledTaskState(resolveTaskName(env), timeoutMs);
+  if (probe.status === "unknown") {
+    throw new ScheduledTaskInspectionError(probe);
+  }
+  if (probe.status !== "missing") {
     return false;
   }
   for (const pathname of [resolveTaskScriptPath(env), ...resolveStartupEntryPaths(env)]) {
@@ -634,7 +642,11 @@ async function isScheduledTaskDefinitionAbsent(
       }
     }
   }
-  return probeScheduledTaskExists(resolveTaskName(env), timeoutMs) === false;
+  const current = probeScheduledTaskState(resolveTaskName(env), timeoutMs);
+  if (current.status === "unknown") {
+    throw new ScheduledTaskInspectionError(current);
+  }
+  return current.status === "missing";
 }
 
 export function buildTaskScript({
