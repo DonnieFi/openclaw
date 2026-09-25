@@ -94,6 +94,7 @@ export async function runInstalledLifecycle(
   const initial = await verifyPreparedInstall(prepared, key, installRoot);
   const commands: CommandRecord[] = [];
   const tasks: Task[] = [];
+  let authorityPeerRoot: string | undefined;
   const observations: Record<string, unknown> = {};
   let cellFailure: Error | undefined;
   const cli = (task: Task, args: string[], expectedExit = 0) =>
@@ -264,6 +265,7 @@ export async function runInstalledLifecycle(
     const configBefore = await fs.readFile(selected.configPath);
     if (key !== "fresh") {
       const peer = await createTask("peer");
+      authorityPeerRoot = peer.installRoot;
       const peerIdentity = await readInstalledBuildIdentity(peer.installRoot, key);
       const peerBefore = await status(peer, peerIdentity);
       const peerXml = await readTaskXml(peer.taskName);
@@ -382,6 +384,16 @@ export async function runInstalledLifecycle(
     );
     await cli(selected, ["gateway", "stop", "--force", "--json"]);
     await owners.waitForLoopbackPortRelease(selected.gatewayPort);
+    if (key === "2026.9.3") {
+      assert.ok(authorityPeerRoot);
+      const { inspectInstalledTaskAuthority } =
+        await import("./schtasks.installed-authority.test-support.js");
+      observations.nativeAuthority = await inspectInstalledTaskAuthority({
+        task: selected,
+        foreignInstallRoot: authorityPeerRoot,
+        canBindLoopbackPort: owners.canBindLoopbackPort,
+      });
+    }
     const xml = await readTaskXml(selected.taskName);
     assert.ok(xml);
     const canonicalScriptHash = await hashFile(selected.scriptPath);
