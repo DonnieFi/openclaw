@@ -20,6 +20,7 @@ import {
 import { resolveLiveManagedGatewayDistFence } from "./lib/live-gateway-dist-fence.mts";
 import { runManagedCommand } from "./lib/managed-child-process.mts";
 import type { MemoryLimitParams } from "./lib/process-memory.mts";
+import { runLegacySourceUpdateBuild } from "./lib/source-update-build.mts";
 import {
   TSDOWN_PACKAGE_CONFIG_GROUP,
   TSDOWN_UNIFIED_CONFIG_GROUP,
@@ -652,11 +653,15 @@ if (isDirectRunUrl(process.argv[1], import.meta.url)) {
   if (args?.help) {
     console.log(buildAllUsage());
   } else {
-    const result = await withDistArtifactOwnership(process.cwd(), () =>
-      runBuildAllSteps(args.profile),
+    const legacyExit = await runLegacySourceUpdateBuild(args.profile, (env) =>
+      runBuildAllSteps(args.profile, { env }),
     );
-    if (result.exitCode !== 0) {
-      process.exit(result.exitCode);
+    const exitCode =
+      legacyExit ??
+      (await withDistArtifactOwnership(process.cwd(), () => runBuildAllSteps(args.profile)))
+        .exitCode;
+    if (exitCode !== 0) {
+      process.exit(exitCode);
     }
   }
 }

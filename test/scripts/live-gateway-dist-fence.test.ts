@@ -269,21 +269,34 @@ describe("live-gateway-dist-fence physical overlap", () => {
     },
   );
 
-  it("refuses when the serving entrypoint is this checkout's dist", async () => {
-    await withTestDir({ prefix: "openclaw-live-dist-physical-" }, async (tmp) => {
-      await writeOpenClawPackage(tmp);
-      const result = await inspectFixtureGateway(tmp, {
-        readState: async () =>
-          baseState({
-            running: true,
-            command: {
-              programArguments: [process.execPath, path.join(tmp, "dist", "index.js"), "gateway"],
-            },
-          }),
+  it.each([
+    { rootOptions: [] },
+    { rootOptions: ["--profile", "dev"] },
+    { rootOptions: ["--profile=dev"] },
+    { rootOptions: ["--dev"] },
+  ])(
+    "refuses when the serving entrypoint is this checkout's dist with root options $rootOptions",
+    async ({ rootOptions }) => {
+      await withTestDir({ prefix: "openclaw-live-dist-physical-" }, async (tmp) => {
+        await writeOpenClawPackage(tmp);
+        const result = await inspectFixtureGateway(tmp, {
+          readState: async () =>
+            baseState({
+              running: true,
+              command: {
+                programArguments: [
+                  process.execPath,
+                  path.join(tmp, "dist", "index.js"),
+                  ...rootOptions,
+                  "gateway",
+                ],
+              },
+            }),
+        });
+        expect(result.refuse).toBe(true);
       });
-      expect(result.refuse).toBe(true);
-    });
-  });
+    },
+  );
 
   it("allows a logically owned current/releases tree whose dist is physically separate", async () => {
     await withTestDir({ prefix: "openclaw-live-dist-release-" }, async (tmp) => {
@@ -434,15 +447,27 @@ describe("live-gateway-dist-fence cross-profile overlap", () => {
 
           const { discoverManagedGatewayBindings } =
             await import("../../src/daemon/managed-gateway-bindings.ts");
-          const bindings = await discoverManagedGatewayBindings({ HOME: home });
+          const hostConnection = {
+            XDG_RUNTIME_DIR: path.join(tmp, "caller-runtime"),
+            DBUS_SESSION_BUS_ADDRESS: `unix:path=${path.join(tmp, "caller-bus")}`,
+            USER: "fixture-caller",
+            LOGNAME: "fixture-caller",
+            SUDO_USER: "fixture-origin",
+          };
+          const callerEnv = { HOME: home, ...hostConnection, OPENCLAW_PROFILE: "selected" };
+          const bindings = await discoverManagedGatewayBindings(callerEnv);
           expect(bindings.map((binding) => binding.profile).toSorted()).toEqual([
             "default",
             "fenceproof",
           ]);
           expect(bindings.every((binding) => binding.scope === "user")).toBe(true);
+          for (const binding of bindings) {
+            expect(binding.env).toMatchObject(hostConnection);
+            expect(binding.env.OPENCLAW_PROFILE).not.toBe("selected");
+          }
 
           const result = await inspectFixtureGateway(checkout, {
-            env: { HOME: home },
+            env: callerEnv,
             listBindings: async () => bindings,
             readState: async (binding) => {
               if (binding?.profile === "fenceproof") {

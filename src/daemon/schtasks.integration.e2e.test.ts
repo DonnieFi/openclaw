@@ -1000,7 +1000,7 @@ describe.runIf(nativeSchtasksIntegrationEnabled)("schtasks Windows integration",
     }
   }
 
-  it("isolates and completes the native Scheduled Task lifecycle", () => {
+  it("isolates and completes the native Scheduled Task lifecycle", ({ signal }) => {
     if (!nativeEntrypoints) {
       throw new Error("Native Scheduled Task integration requires compiled subprocess entrypoints");
     }
@@ -1020,6 +1020,22 @@ describe.runIf(nativeSchtasksIntegrationEnabled)("schtasks Windows integration",
     }
     const lifetime = createFixtureLifetime(generationOwner.root);
     nativeLifetime = lifetime;
-    return lifetime.run(() => runNativeLifecycle(moduleUrls, lifetime));
+    const installedInput = process.env.CI_WINDOWS_SCHTASKS_INSTALLED_INPUT?.trim();
+    return lifetime.run(async () =>
+      installedInput
+        ? (await import("./schtasks.installed.integration.test-support.js")).runInstalledLifecycle(
+            installedInput,
+            lifetime,
+            {
+              cleanupNativeTask,
+              reserveLoopbackPort,
+              readTaskDefinitionSnapshot,
+              waitForLoopbackPortRelease,
+              canBindLoopbackPort,
+            },
+            signal,
+          )
+        : runNativeLifecycle(moduleUrls, lifetime),
+    );
   }, 240_000);
 });

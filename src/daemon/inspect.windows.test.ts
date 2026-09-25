@@ -259,9 +259,9 @@ describe("findExtraGatewayServices (win32)", () => {
       await fs.writeFile(entry, "export {};\n");
       await fs.writeFile(executable, "synthetic executable bytes; never launched\n");
       const script = entryKind === "relative script" ? path.join("dist", "entry.js") : entry;
-      const label = "\\OpenClaw Gateway (dev)";
-      listScheduledTasksMock.mockReturnValue([
-        {
+      const labels = ["\\OpenClaw Gateway (dev)", "\\Custom Modern"];
+      listScheduledTasksMock.mockReturnValue(
+        labels.map((label) => ({
           taskPath: label,
           state: 4,
           actions: [
@@ -273,13 +273,21 @@ describe("findExtraGatewayServices (win32)", () => {
               workingDirectory: root,
             },
           ],
-        },
-      ]);
+        })),
+      );
 
       const managed = await listManagedOpenClawGatewayServices({});
 
       expect(managed).toEqual({
-        services: [expect.objectContaining({ label, marker: "openclaw", legacy: false })],
+        services: labels.map((label) =>
+          expect.objectContaining({ label, marker: "openclaw", legacy: false }),
+        ),
+        errors: [],
+      });
+      await expect(findExtraGatewayServices({}, { deep: true })).resolves.toEqual({
+        services: [
+          expect.objectContaining({ label: "\\Custom Modern", marker: "openclaw", legacy: false }),
+        ],
         errors: [],
       });
       expect(await fs.readFile(entry, "utf8")).toBe("export {};\n");

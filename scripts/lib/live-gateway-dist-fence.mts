@@ -136,7 +136,7 @@ async function samePathIdentity(left: string, right: string): Promise<boolean> {
  * True when this checkout's dist physically overlaps the serving Gateway
  * artifacts. Logical current/releases ownership is not enough.
  */
-async function gatewayServiceCommandOverlapsPhysicalCheckout(
+export async function gatewayServiceCommandOverlapsPhysicalCheckout(
   checkoutRoot: string,
   command: GatewayServiceState["command"],
 ): Promise<boolean | null> {

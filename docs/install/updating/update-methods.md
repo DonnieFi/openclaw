@@ -139,6 +139,23 @@ intended target and the known-good rollback ref before starting the update.
 Updating target files alone does not repair an older running binary.
 </Warning>
 
+The published 2026.9.4 source-server script also builds before its final restart.
+Candidate build entry points recognize its existing update marker only when the
+selected, natively owned Gateway serves this checkout's physical `dist`. The
+existing source-build transaction stops that Gateway before writing and restores
+the previous output on a settled build failure. A separate candidate checkout or
+a sibling-only match never grants permission to stop another service.
+
+For that first hop, the old script still owns its one successful restart,
+including an authored custom restart command. Its empty or whitespace-only
+restart setting remains manual and does not trigger an automatic stop. The old
+script cannot receive the candidate process's recovery state: after a successful
+build, the candidate settles native autostart and retires its build backup before
+returning. A subsequent old-script restart failure therefore requires operator
+recovery; it does not gain the newer script's retained-backup guarantee. Unjoined
+build writers or failed output restoration leave the Gateway stopped and retain
+recovery material.
+
 Generated output roots such as `dist`, `dist-runtime`, and package-local
 `dist` directories must be real directories. Builds refuse symbolic-link roots
 before reading or mutating their contents so cleanup cannot affect the link

@@ -7,6 +7,7 @@ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import {
   detectMarkerLineWithGateway,
   findExtraGatewayServices,
+  findSystemGatewayServices,
   listManagedOpenClawGatewayServices,
   renderGatewayServiceCleanupHints,
 } from "./inspect.js";
@@ -607,25 +608,43 @@ describe("managed Gateway inventory projections", () => {
       Object.defineProperty(process, "platform", { configurable: true, value: "linux" });
       const home = tempDirs.make("managed-systemd-metadata-", os.tmpdir());
       const write = isolateNativeRoots(home);
-      await write(
+      for (const unitPath of [
         path.join(home, ".config/systemd/user/custom.service"),
-        `[Service]\nExecStart = /usr/bin/node /srv/worker/dist/entry.js gateway run\n${metadata}\n`,
-      );
+        "/etc/systemd/system/custom.service",
+      ]) {
+        await write(
+          unitPath,
+          `[Service]\nExecStart = /usr/bin/node /srv/worker/dist/entry.js gateway run\n${metadata}\n`,
+        );
+      }
 
       const managed = await listManagedOpenClawGatewayServices({ HOME: home });
 
       expect(managed).toEqual({
         services: included
+          ? ["user", "system"].map((scope) =>
+              expect.objectContaining({
+                label: "custom.service",
+                scope,
+                marker: "openclaw",
+                legacy: false,
+              }),
+            )
+          : [],
+        errors: [],
+      });
+      expect(await findSystemGatewayServices()).toEqual(
+        included
           ? [
               expect.objectContaining({
                 label: "custom.service",
+                scope: "system",
                 marker: "openclaw",
                 legacy: false,
               }),
             ]
           : [],
-        errors: [],
-      });
+      );
       expect(await findExtraGatewayServices({ HOME: home }, { deep: true })).toEqual({
         services: [],
         errors: [],

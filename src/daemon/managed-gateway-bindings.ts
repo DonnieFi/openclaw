@@ -39,11 +39,22 @@ function hostBindingEnv(
   env: Record<string, string | undefined>,
   extras: GatewayServiceEnv,
 ): GatewayServiceEnv {
-  return {
+  const host: GatewayServiceEnv = {
     ...(env.HOME !== undefined ? { HOME: env.HOME } : {}),
     ...(env.USERPROFILE !== undefined ? { USERPROFILE: env.USERPROFILE } : {}),
-    ...extras,
   };
+  for (const key of [
+    "DBUS_SESSION_BUS_ADDRESS",
+    "XDG_RUNTIME_DIR",
+    "USER",
+    "LOGNAME",
+    "SUDO_USER",
+  ]) {
+    if (Object.hasOwn(env, key)) {
+      host[key] = env[key];
+    }
+  }
+  return { ...host, ...extras };
 }
 
 function profileEnvFields(profile: string): GatewayServiceEnv {
