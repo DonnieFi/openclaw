@@ -87,8 +87,23 @@ Before manually rebuilding a source checkout, stop every Gateway serving its
 `dist` files. Build entry points inspect discoverable managed Gateways, including
 sibling profiles, and refuse when a live service shares that output. On systemd,
 this includes processes remaining in the service cgroup after its main PID exits.
-Follow the reported service/profile stop command or use `openclaw update`. A separate
-candidate checkout with independent output can build while the installed Gateway
+Use an external terminal, outside the running Gateway's agent session. Follow the
+reported service/profile stop commands, rebuild, then start those same services.
+For the default profile, run these commands from the source checkout:
+
+```bash
+openclaw gateway stop &&
+pnpm build &&
+openclaw gateway start
+```
+
+Stop every listed sibling before building and start each one afterward. Preserve
+its profile and custom service overrides, or use the matching native service
+commands. Start services only after the build succeeds. `openclaw update` can
+apply an available update, but `skipped` / `already-current` does not rebuild stale
+`dist`; use the external stop, rebuild, and start sequence for that case.
+
+A separate candidate checkout with independent output can build while the installed Gateway
 continues serving. This check observes current services; it does not prevent a
 service from starting during compilation, and unavailable inspection does not
 prove that no Gateway is running.
