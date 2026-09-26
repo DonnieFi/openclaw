@@ -288,6 +288,7 @@ function resolveTextCompletionDirectFallback(
 export async function deliverCompletionDirect(params: {
   cfg: OpenClawConfig;
   requesterSessionKey: string;
+  requesterSessionId?: string;
   requesterAgentId?: string;
   directIdempotencyKey: string;
   deliveryTarget: {
@@ -358,11 +359,14 @@ export async function deliverCompletionDirect(params: {
         committedDelivery = { delivered: true, path: "direct", deliveredAt: Date.now() };
         await params.onDeliveryResult?.(committedDelivery);
       },
+      // This send runs after the requester lane is released to its next queued turn.
       mirror: {
         sessionKey: params.requesterSessionKey,
         agentId,
         idempotencyKey,
+        ...(params.requesterSessionId ? { expectedSessionId: params.requesterSessionId } : {}),
         deliveryMirror: { kind: SUBAGENT_COMPLETION_DIRECT_DELIVERY_KIND },
+        deferToSessionLane: true,
       },
     });
     if (committedDelivery) {

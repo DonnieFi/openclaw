@@ -11,6 +11,11 @@ export type OutboundMirror = {
   idempotencyKey?: string;
   expectedSessionId?: string;
   deliveryMirror?: InternalSessionTranscriptDeliveryMirror;
+  /**
+   * Append behind work already admitted to the session lane. For senders that
+   * never own this session's transcript writer; the send does not wait for it.
+   */
+  deferToSessionLane?: boolean;
 };
 
 /**
