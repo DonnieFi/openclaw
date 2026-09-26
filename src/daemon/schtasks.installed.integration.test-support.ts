@@ -24,6 +24,7 @@ import {
 import {
   boundedEnv,
   cellEvidence,
+  createInstalledProgressRecorder,
   describeFailure,
   entry,
   installedStatusSchema,
@@ -102,39 +103,15 @@ export async function runInstalledLifecycle(
   let authorityPeerRoot: string | undefined;
   const observations: Record<string, unknown> = {};
   let cellFailure: Error | undefined;
-  const progressStarted = performance.now();
-  let progressFailure: Error | undefined;
-  const recordProgress = async (phase: string, error?: Error) => {
-    progressFailure = error ?? progressFailure;
-    // Persist settled commands and the original error before native cleanup can be interrupted.
-    await fs.writeFile(path.join(rootDir, "commands.json"), JSON.stringify(commands, null, 2));
-    await fs.writeFile(
-      proofPath,
-      JSON.stringify(
-        {
-          result: progressFailure ? "failed" : "in-progress",
-          head: input.toolingSha,
-          candidate: input.candidate,
-          published: input.published,
-          cell: key,
-          cells: [
-            {
-              key,
-              phase,
-              commands,
-              observations,
-              failure: progressFailure && describeFailure(progressFailure),
-            },
-          ],
-          cleanupComplete: false,
-          elapsedMs: performance.now() - progressStarted,
-          recordedAt: new Date().toISOString(),
-        },
-        null,
-        2,
-      ),
-    );
-  };
+  const recordProgress = createInstalledProgressRecorder({
+    input,
+    key,
+    rootDir,
+    proofPath,
+    commands,
+    observations,
+  });
+  await recordProgress("selected:hash-verified");
   const cli = async (task: Task, args: string[], expectedExit = 0) => {
     let commandFailure: Error | undefined;
     let output = "";
@@ -233,6 +210,7 @@ export async function runInstalledLifecycle(
     const taskInstallRoot = role === "peer" ? prefix(input, `${key}-peer`) : installRoot;
     if (role === "peer") {
       await verifyPreparedInstall(prepared, `${key}-peer`, taskInstallRoot);
+      await recordProgress("peer:hash-verified");
     }
     const env = {
       ...boundedEnv(rootDir, taskInstallRoot),
@@ -349,6 +327,7 @@ export async function runInstalledLifecycle(
       const peerXml = await readTaskXml(peer.taskName);
       const peerConfig = await fs.readFile(peer.configPath);
       const peerInstallBefore = await hashInstall(peer.installRoot);
+      await recordProgress("peer-before-update:hash-verified");
       if (key === "2026.9.4") {
         observations.siblingBuildRefusal = await assertInstalledSiblingBuildRefusal({
           toolingEntry: path.resolve("scripts/run-node.mjs"),
@@ -356,6 +335,7 @@ export async function runInstalledLifecycle(
           peer,
           commands,
           signal,
+          recordProgress,
           verifyContinuity: async () => {
             assert.equal(
               (await status(selected, beforeIdentity)).service.runtime.pid,
@@ -374,6 +354,7 @@ export async function runInstalledLifecycle(
         entrySha256: driverBefore,
         installed: await hashInstall(installRoot),
       };
+      await recordProgress("published-driver:hash-verified");
       // This is the unchanged installed old CLI. No imported old controller or injected update marker.
       const beforeUpdate = await recordCapacityBoundary(
         inputPath,
@@ -398,6 +379,7 @@ export async function runInstalledLifecycle(
       const outcome = z.object({ status: z.literal("ok"), mode: z.literal("npm") }).parse(update);
       observations.update = outcome;
       await prepareInstalledPackage({ ...input, installRoot });
+      await recordProgress("updated-candidate:hash-verified");
       const candidateIdentity = await readInstalledBuildIdentity(
         installRoot,
         input.candidate.version,
@@ -428,6 +410,7 @@ export async function runInstalledLifecycle(
       assert.deepEqual(await fs.readFile(peer.configPath), peerConfig);
       observations.extraServices = extras;
       assert.deepEqual(await hashInstall(peer.installRoot), peerInstallBefore);
+      await recordProgress("peer-after-update:hash-verified");
       observations.peerPreserved = true;
       await cli(peer, ["gateway", "stop", "--force", "--json"]);
       await owners.waitForLoopbackPortRelease(peer.gatewayPort);
@@ -472,6 +455,7 @@ export async function runInstalledLifecycle(
         task: selected,
         foreignInstallRoot: authorityPeerRoot,
         canBindLoopbackPort: owners.canBindLoopbackPort,
+        recordProgress,
       });
     }
     const xml = await readTaskXml(selected.taskName);
@@ -535,6 +519,7 @@ export async function runInstalledLifecycle(
     assert.equal(probeScheduledTaskExists(selected.taskName), false);
     if (key === "fresh") {
       assert.deepEqual(await hashInstall(installRoot), initial.installed);
+      await recordProgress("fresh-final:hash-verified");
     }
   } catch (error) {
     cellFailure = toErrorObject(error, "Installed Scheduled Task fixture failed");
@@ -566,6 +551,7 @@ export async function runInstalledLifecycle(
           rootDir,
           commands,
         );
+        await recordProgress("native-cleanup:command-result");
       });
       await cleanupTask(task, packageRoot(task.installRoot), path.join(rootDir, "commands.json"));
       await owners.waitForLoopbackPortRelease(task.gatewayPort);
