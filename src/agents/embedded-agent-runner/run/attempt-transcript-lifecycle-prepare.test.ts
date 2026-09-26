@@ -13,6 +13,7 @@ import {
 import type { InternalSessionEntry } from "../../../config/sessions/types.js";
 import { getAgentRunLifecycleGeneration } from "../../../infra/agent-run-registry.js";
 import { mirrorDeliveredPayloads } from "../../../infra/outbound/deliver-transcript.js";
+import { enqueueCommandInLane } from "../../../process/command-queue.js";
 import {
   isSessionWorkAdmissionActive,
   runExclusiveSessionLifecycleMutation,
@@ -30,6 +31,7 @@ import { createAssistantErrorTranscript } from "../../assistant-error-transcript
 import { installSessionToolResultGuard } from "../../session-tool-result-guard.js";
 import { SessionManager } from "../../sessions/session-manager.js";
 import { makeAgentAssistantMessage } from "../../test-helpers/agent-message-fixtures.js";
+import { resolveSessionLane } from "../lanes.js";
 import { rewriteTranscriptEntriesInSessionManager } from "../transcript-rewrite.js";
 import { prepareEmbeddedAttemptTranscriptLifecycle } from "./attempt-transcript-lifecycle-prepare.js";
 import type { PreparedEmbeddedRunInput } from "./execution-context.js";
@@ -355,6 +357,80 @@ describe("admitted lazy session writer", () => {
           "user",
           'delivery-mirror:[{"type":"text","text":"child result"}]',
           expect.stringContaining("wake reply"),
+        ]);
+      },
+      { existing: true },
+    );
+  });
+
+  it("holds a direct completion mirror until the requester turn releases the session lane", async () => {
+    await withInitialWriter(
+      async ({ openManager, runParams, target }) => {
+        const sessionLane = resolveSessionLane(target.sessionKey);
+        const turnEntered = createDeferredCore();
+        const releaseTurn = createDeferredCore();
+        const turn = enqueueCommandInLane(sessionLane, async () => {
+          turnEntered.resolve();
+          await releaseTurn.promise;
+        });
+        await turnEntered.promise;
+        const messageRows = () =>
+          SessionManager.open(target)
+            .getBranch()
+            .flatMap((entry) =>
+              entry.type === "message"
+                ? [
+                    entry.message.role === "assistant"
+                      ? `${entry.message.model}:${JSON.stringify(entry.message.content)}`
+                      : entry.message.role,
+                  ]
+                : [],
+            );
+        const message = { ...userMessage, idempotencyKey: `${runParams.runId}:user` };
+        const recorder = createUserTurnTranscriptRecorder({
+          message,
+          target: { ...target, sessionEntry: undefined },
+        });
+        const wakeUserId = openManager().appendMessage(message);
+        await mirrorDeliveredPayloads({
+          delivery: {
+            cfg: {},
+            channel: "discord",
+            to: "dm:U123",
+            payloads: [],
+            mirror: {
+              agentId: target.agentId,
+              sessionKey: target.sessionKey,
+              expectedSessionId: target.sessionId,
+              idempotencyKey: "announce:v1:child:text-direct",
+              deliveryMirror: { kind: "subagent-completion-direct" },
+              deferToSessionLane: true,
+            },
+          },
+          payloads: [{ text: "child result", mediaUrls: [] }],
+          channel: "discord",
+          to: "dm:U123",
+        });
+        const attemptManager = openManager();
+        await preparePersistedCurrentUserTurn({
+          sessionManager: attemptManager,
+          message,
+          recorder,
+          runId: runParams.runId,
+        });
+        expect(attemptManager.appendMessage(message)).toBe(wakeUserId);
+        attemptManager.appendMessage(
+          makeAgentAssistantMessage({ content: [{ type: "text", text: "wake reply" }] }),
+        );
+        expect(messageRows()).toEqual(["user", expect.stringContaining("wake reply")]);
+
+        releaseTurn.resolve();
+        await turn;
+        await enqueueCommandInLane(sessionLane, async () => {});
+        expect(messageRows()).toEqual([
+          "user",
+          expect.stringContaining("wake reply"),
+          'delivery-mirror:[{"type":"text","text":"child result"}]',
         ]);
       },
       { existing: true },

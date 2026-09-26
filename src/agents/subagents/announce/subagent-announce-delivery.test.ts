@@ -1758,6 +1758,7 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
         mirror: expect.objectContaining({
           idempotencyKey: "announce-dm-fallback-empty:text-direct",
           deliveryMirror: { kind: "subagent-completion-direct" },
+          deferToSessionLane: true,
         }),
       }),
     );
