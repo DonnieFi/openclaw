@@ -125,6 +125,9 @@ describe("findExtraGatewayServices (win32)", () => {
       "\\OpenClaw Gateway (dev)",
       "\\OpenClaw Gateway Backup",
     ]);
+    for (const service of result.services) {
+      expect(service).not.toHaveProperty("windowsProfile");
+    }
     for (const service of [...managed.services, ...result.services]) {
       expect(service).not.toHaveProperty("extra");
       expect(service).not.toHaveProperty("managedGateway");
@@ -149,7 +152,10 @@ describe("findExtraGatewayServices (win32)", () => {
         expect.objectContaining({ label: "\\Custom Service", marker: "openclaw", legacy: false }),
       ]);
       const managed = await listManagedOpenClawGatewayServices({});
-      expect(managed).toEqual({ services: kind === "gateway" ? result.services : [], errors: [] });
+      expect(managed).toEqual({
+        services: kind === "gateway" ? [{ ...result.services[0], windowsProfile: "default" }] : [],
+        errors: [],
+      });
     },
   );
 
@@ -196,7 +202,7 @@ describe("findExtraGatewayServices (win32)", () => {
       expect(extras.errors).toEqual([]);
       expect(extras.services).toEqual(extra ? [expect.objectContaining({ label, marker })] : []);
       expect(renderGatewayServiceCleanupHints(extras.services)).toEqual(
-        extra ? [`schtasks /Delete /TN "${label}" /F`] : [],
+        extra ? [`schtasks /Query /TN "${label}" /V /FO LIST`] : [],
       );
       const managed = await listManagedOpenClawGatewayServices(env);
       expect(managed.services).toEqual(

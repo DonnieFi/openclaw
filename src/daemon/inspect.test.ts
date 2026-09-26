@@ -214,7 +214,7 @@ describe("renderGatewayServiceCleanupHints", () => {
     ).toEqual([firstHint, secondHint]);
   });
 
-  it("targets the detected Windows scheduled task", () => {
+  it("inspects the detected Windows scheduled task without suggesting removal", () => {
     expect(
       renderGatewayServiceCleanupHints([
         {
@@ -224,7 +224,7 @@ describe("renderGatewayServiceCleanupHints", () => {
           scope: "system",
         },
       ]),
-    ).toEqual(['schtasks /Delete /TN "\\OpenClaw Gateway Backup" /F']);
+    ).toEqual(['schtasks /Query /TN "\\OpenClaw Gateway Backup" /V /FO LIST']);
   });
 
   it.each(["$(Start-Process calc)", "%OPENCLAW_GATEWAY_TASK%", "unsafe&task", "task`name"])(
@@ -751,6 +751,63 @@ describe("managed Gateway inventory projections", () => {
       expect(service).not.toHaveProperty("managedGateway");
     }
   });
+
+  it.each([
+    {
+      name: "default",
+      label: "ai.openclaw.gateway",
+      env: {},
+      executable: "/usr/bin/openclaw",
+      metadata: "",
+    },
+    {
+      name: "named profile",
+      label: "ai.openclaw.rescue",
+      env: { OPENCLAW_PROFILE: "rescue" },
+      executable: "/usr/bin/openclaw",
+      metadata: "",
+    },
+    {
+      name: "custom managed label",
+      label: "org.example.rescue",
+      env: { OPENCLAW_LAUNCHD_LABEL: "org.example.rescue" },
+      executable: "/usr/bin/worker",
+      metadata:
+        "<key>EnvironmentVariables</key><dict><key>OPENCLAW_SERVICE_MARKER</key><string>openclaw</string><key>OPENCLAW_SERVICE_KIND</key><string>gateway</string></dict>",
+    },
+  ])(
+    "reports global copies of the $name user LaunchAgent",
+    async ({ label, env, executable, metadata }) => {
+      Object.defineProperty(process, "platform", { configurable: true, value: "darwin" });
+      const home = tempDirs.make("launchd-global-copies-", os.tmpdir());
+      const write = isolateNativeRoots(home);
+      const plist = `<plist><dict><key>Label</key><string>${label}</string><key>ProgramArguments</key><array><string>${executable}</string><string>gateway</string></array>${metadata}</dict></plist>`;
+      const globalPaths = [
+        `/Library/LaunchAgents/${label}.plist`,
+        `/Library/LaunchDaemons/${label}.plist`,
+      ];
+      for (const file of [
+        path.join(home, "Library/LaunchAgents", `${label}.plist`),
+        ...globalPaths,
+      ]) {
+        await write(file, plist);
+      }
+
+      const inventory = await findExtraGatewayServices({ HOME: home, ...env }, { deep: true });
+
+      expect(inventory).toEqual({
+        services: globalPaths.map((file) => ({
+          platform: "darwin",
+          label,
+          detail: `plist: ${file}`,
+          scope: "system",
+          marker: "openclaw",
+          legacy: false,
+        })),
+        errors: [],
+      });
+    },
+  );
 
   it("includes user and global launchd Gateways without admitting Node or legacy jobs", async () => {
     Object.defineProperty(process, "platform", { configurable: true, value: "darwin" });

@@ -8,6 +8,7 @@ import { expect, it, vi } from "vitest";
 import * as doctorAdmission from "../../commands/doctor-maintenance-admission.js";
 import { beginDoctorMaintenance } from "../../commands/doctor-maintenance.js";
 import * as doctorServicePolicy from "../../commands/doctor-service-repair-policy.js";
+import * as schtasksExec from "../../daemon/schtasks-exec.js";
 import { readScheduledTaskRuntime } from "../../daemon/schtasks-runtime.js";
 import {
   GatewayServiceStopUnsafeError,
@@ -38,7 +39,7 @@ import {
   inspectManagedGatewayServiceBeforeUpdate,
 } from "./update-command-service-plan.js";
 
-const { mocks, withServiceHome, mockRegisteredWindowsLauncher } =
+const { mocks, nativeOfflineCases, withServiceHome, mockRegisteredWindowsLauncher } =
   await import("./update-command-service-maintenance.test-support.js");
 
 it.each(["direct", "authority-lost", "ordinary"] as const)(
@@ -358,84 +359,6 @@ it.each(["systemd-user-bus-unavailable", "service-manager-access-denied", undefi
     }),
 );
 
-type NativeOfflineCase = {
-  platform: NodeJS.Platform;
-  label: string;
-  runtime: "running" | "stopped" | "unknown";
-  loaded: boolean;
-  offline: boolean;
-  enabled?: boolean;
-  phase?: "inspect" | "prepare";
-  state?: number | string;
-};
-
-const nativeOfflineCases: NativeOfflineCase[] = [
-  {
-    platform: "linux",
-    label: "terminal inactive",
-    runtime: "stopped",
-    loaded: true,
-    offline: true,
-  },
-  {
-    platform: "linux",
-    label: "restart transition",
-    runtime: "unknown",
-    loaded: true,
-    offline: false,
-  },
-  { platform: "linux", label: "running", runtime: "running", loaded: true, offline: false },
-  { platform: "darwin", label: "unloaded", runtime: "stopped", loaded: false, offline: true },
-  {
-    platform: "darwin",
-    label: "loaded enabled",
-    runtime: "stopped",
-    loaded: true,
-    enabled: true,
-    offline: false,
-  },
-  {
-    platform: "darwin",
-    label: "loaded disabled",
-    runtime: "stopped",
-    loaded: true,
-    enabled: false,
-    offline: false,
-  },
-  {
-    platform: "darwin",
-    label: "loaded disabled preparation",
-    runtime: "stopped",
-    loaded: true,
-    enabled: false,
-    offline: false,
-    phase: "prepare",
-  },
-  {
-    platform: "darwin",
-    label: "enabled unknown",
-    runtime: "stopped",
-    loaded: true,
-    offline: false,
-  },
-  ...[
-    { label: "disabled", state: 1, offline: true },
-    { label: "ready", state: 3, offline: true },
-    { label: "queued", state: 2, offline: false },
-    { label: "running", state: 4, offline: false },
-    { label: "unknown", state: 0, offline: false },
-    { label: "malformed", state: "3 trailing output", offline: false },
-  ].map<NativeOfflineCase>((task) => ({
-    platform: "win32",
-    runtime:
-      task.state === 1 || task.state === 3 ? "stopped" : task.state === 4 ? "running" : "unknown",
-    loaded: true,
-    label: task.label,
-    state: task.state,
-    offline: task.offline,
-  })),
-];
-
 it.each(nativeOfflineCases)(
   "requires affirmative native offline proof for owned $platform service ($label)",
   (scenario) =>
@@ -493,6 +416,7 @@ it.each([
 ])("handles Scheduled Task probe failures before update: %j", (scenario) =>
   withServiceHome(async (home) => {
     mockProcessPlatform("win32");
+    vi.spyOn(performance, "now").mockReturnValue(1_000); // Native mocks consume no time.
     mocks.taskState = 4;
     vi.mocked(spawnSync).mockReset();
     for (let attempt = 0; attempt < scenario.failures; attempt++) {
@@ -921,5 +845,101 @@ it.each(["before stop", "after stop"] as const)(
       expect(String(nativeFailure)).toMatch(/executor/);
       expect(stop).toHaveBeenCalledTimes(when === "before stop" ? 0 : 1);
       expect(store.read(root).kind).toBe("current");
+    }),
+);
+
+it.each(["disable", "restore", "compensation", "never"] as const)(
+  "retains caller authority when Windows task recovery loses its owner before %s",
+  (lostBefore) =>
+    withServiceHome(async (home) => {
+      mockProcessPlatform("win32");
+      let current = true;
+      let revokeDuringInspection = false;
+      let enabled = true;
+      const mutations: string[] = [];
+      vi.spyOn(schtasksExec, "execSchtasks").mockImplementation(async (args) => {
+        if (args[0] === "/Query") {
+          if (lostBefore === "disable") {
+            current = false;
+          }
+          return {
+            code: 0,
+            stdout: `<Task><Settings><Enabled>${enabled}</Enabled></Settings></Task>`,
+            stderr: "",
+          };
+        }
+        expect(args[0]).toBe("/Change");
+        const action = args.at(-1);
+        if (action !== "/ENABLE" && action !== "/DISABLE") {
+          throw new Error("Unexpected Scheduled Task mutation");
+        }
+        mutations.push(action);
+        enabled = action === "/ENABLE";
+        return { code: 0, stdout: "", stderr: "" };
+      });
+      mocks.service.mockReturnValue(
+        createMockGatewayService({
+          readCommand: async () => ({
+            programArguments: [
+              process.execPath,
+              path.join(process.cwd(), "openclaw.mjs"),
+              "gateway",
+            ],
+            environment: { HOME: home },
+            sourcePath: path.join(home, "gateway.cmd"),
+          }),
+          readRuntime: async () => {
+            if (revokeDuringInspection) {
+              current = false;
+            }
+            return { status: "running" };
+          },
+          isLoaded: async () => true,
+        }),
+      );
+      let stopped: PreManagedServiceStop | undefined;
+      let failure: unknown;
+      try {
+        try {
+          stopped = await maybeStopManagedServiceBeforeMutableUpdate({
+            root: process.cwd(),
+            updateInstallKind: "package",
+            shouldRestart: lostBefore !== "disable",
+            jsonMode: true,
+            assertCurrent: () => {
+              if (!current) {
+                throw new Error("Repair continuation no longer owns this task");
+              }
+            },
+          });
+          const recovery = stopped.windowsTaskAutoStartRecovery;
+          if (!recovery) {
+            throw new Error("Missing Windows task recovery");
+          }
+          revokeDuringInspection = lostBefore === "restore";
+          await recovery.restore();
+          revokeDuringInspection = lostBefore === "compensation";
+          await recovery.complete(false);
+        } catch (error) {
+          failure = error;
+        }
+        expect(mutations).toEqual(
+          lostBefore === "disable"
+            ? []
+            : lostBefore === "restore"
+              ? ["/DISABLE"]
+              : lostBefore === "compensation"
+                ? ["/DISABLE", "/ENABLE"]
+                : ["/DISABLE", "/ENABLE", "/DISABLE"],
+        );
+        expect(enabled).toBe(lostBefore === "disable" || lostBefore === "compensation");
+        if (lostBefore === "never") {
+          expect(failure).toBeUndefined();
+        } else {
+          expect(String(failure)).toContain("Repair continuation no longer owns this task");
+        }
+      } finally {
+        await stopped?.windowsTaskAutoStartRecovery?.complete();
+      }
     }),
 );

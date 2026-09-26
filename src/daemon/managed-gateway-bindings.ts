@@ -2,7 +2,7 @@
 import fs from "node:fs/promises";
 import { isRecord, readStringField } from "@openclaw/normalization-core/record-coerce";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
-import { resolveGatewayLaunchAgentLabel, resolveGatewayWindowsTaskName } from "./constants.js";
+import { resolveGatewayLaunchAgentLabel } from "./constants.js";
 import { listManagedOpenClawGatewayServices, type ExtraGatewayService } from "./inspect.js";
 import { decodeLaunchdPlistMetadata } from "./launchd-plist.js";
 import type { GatewayServiceEnv, SystemdServiceReadTarget } from "./service-types.js";
@@ -87,16 +87,6 @@ function inferProfileFromLaunchdLabel(label: string): string | undefined {
   return undefined;
 }
 
-function inferProfileFromWindowsTaskName(name: string): string | undefined {
-  const stripped = name.replace(/^\\+/, "").trim();
-  const defaultName = resolveGatewayWindowsTaskName();
-  if (normalizeLowercaseStringOrEmpty(stripped) === normalizeLowercaseStringOrEmpty(defaultName)) {
-    return "default";
-  }
-  const match = stripped.match(/^OpenClaw Gateway \((.+)\)$/i);
-  return match?.[1]?.trim() || undefined;
-}
-
 function detailPath(prefix: string, detail: string): string | undefined {
   if (!detail.startsWith(prefix)) {
     return undefined;
@@ -177,9 +167,9 @@ async function bindingFromLaunchdService(
 
 function bindingFromWindowsTask(
   name: string,
+  profile: string,
   env: Record<string, string | undefined>,
 ): ManagedGatewayBinding {
-  const profile = normalizeDiscoveredProfile(inferProfileFromWindowsTaskName(name) ?? "default");
   return {
     profile,
     scope: "system",
@@ -219,7 +209,9 @@ export async function discoverManagedGatewayBindings(
         push(await bindingFromLaunchdService(svc, env));
         continue;
       }
-      push(bindingFromWindowsTask(svc.label, env));
+      if (svc.windowsProfile !== undefined) {
+        push(bindingFromWindowsTask(svc.label, svc.windowsProfile, env));
+      }
     }
   } catch {
     return results;
