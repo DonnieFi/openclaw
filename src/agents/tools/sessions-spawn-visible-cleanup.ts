@@ -7,8 +7,12 @@ import type { InProcessGatewayCaller } from "./in-process-gateway.js";
 const log = createSubsystemLogger("agents/sessions");
 
 export function summarizeVisibleSessionSpawnError(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  if (typeof error === "string") return error;
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (typeof error === "string") {
+    return error;
+  }
   return isRecord(error) && typeof error.message === "string" ? error.message : "error";
 }
 
