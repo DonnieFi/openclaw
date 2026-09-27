@@ -9,6 +9,7 @@ import {
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { enqueueCommandInLane } from "../../process/command-queue.js";
+import { retainGatewayRootWorkAdmissionContinuation } from "../../process/gateway-work-admission.js";
 import { createLazyRuntimeModule } from "../../shared/lazy-runtime.js";
 import { formatErrorMessage } from "../errors.js";
 import type { DeliverOutboundPayloadsCoreParams } from "./deliver-contracts.js";
@@ -54,13 +55,18 @@ export async function mirrorDeliveredPayloads(params: {
   if (mirror.deferToSessionLane) {
     // A non-owner append while another run prepares its context breaks that
     // run's transcript fences. The session lane orders it after that run.
+    // The delivering request returns first; its Gateway root stays open until
+    // the append settles so graceful shutdown waits for it.
+    const releaseRootWork = retainGatewayRootWorkAdmissionContinuation();
     // Lane tasks inherit the enqueuer's async context; a sender's writer claim
     // is stale by the time this runs.
     enqueueCommandInLane(
       resolveSessionLane(mirror.sessionKey),
       () => runWithoutOwnedSessionTranscriptWrites(() => appendMirrorBestEffort(append)),
       { taskIdentity: { taskKind: "delivery-mirror", sessionKey: mirror.sessionKey } },
-    ).catch((err: unknown) => warnMirrorFailed(append, formatErrorMessage(err)));
+    )
+      .catch((err: unknown) => warnMirrorFailed(append, formatErrorMessage(err)))
+      .finally(() => releaseRootWork?.());
     return;
   }
   // Fence against the session this mirror lands in, not whichever run is delivering:
