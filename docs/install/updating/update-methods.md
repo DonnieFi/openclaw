@@ -99,9 +99,12 @@ openclaw gateway start
 
 Stop every listed sibling before building and start each one afterward. Preserve
 its profile and custom service overrides, or use the matching native service
-commands. Start services only after the build succeeds. `openclaw update` can
-apply an available update, but `skipped` / `already-current` does not rebuild stale
-`dist`; use the external stop, rebuild, and start sequence for that case.
+commands. Start services only after the build succeeds.
+If this checkout's built runtime is missing and the CLI cannot run, use those
+native controls before rebuilding.
+`openclaw update` can apply an available update, but `skipped` / `already-current`
+does not rebuild stale `dist`; use the external stop, rebuild, and start sequence
+for that case.
 
 A separate candidate checkout with independent output can build while the installed Gateway
 continues serving. This check observes current services; it does not prevent a
