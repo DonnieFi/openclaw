@@ -130,10 +130,13 @@ describe("SessionManager user idempotency", () => {
   );
 
   it.each([
-    { kind: "subagent-completion-direct", adopts: true },
-    { kind: "channel-final", adopts: false },
+    { name: "subagent-completion-direct", kind: "subagent-completion-direct", adopts: true },
+    { name: "channel-final", kind: "channel-final", adopts: false },
+    // Rows written before the direct-completion kind existed keep their
+    // original turn-closing semantics after upgrade.
+    { name: "pre-upgrade unmarked direct", kind: undefined, adopts: false },
   ] as const)(
-    "keyed wake user behind a $kind mirror (adopts: $adopts)",
+    "keyed wake user behind a $name mirror (adopts: $adopts)",
     async ({ kind, adopts }) => {
       const dir = tempDirs.make("openclaw-session-manager-user-idempotency-");
       const scope = {
@@ -164,8 +167,8 @@ describe("SessionManager user idempotency", () => {
         sessionKey: scope.sessionKey,
         storePath: scope.storePath,
         text: "subagent result",
-        idempotencyKey: `announce:v1:child:${kind}`,
-        deliveryMirror: { kind },
+        idempotencyKey: `announce:v1:child:${kind ?? "text-direct"}`,
+        ...(kind ? { deliveryMirror: { kind } } : {}),
       });
       expect(mirror.ok).toBe(true);
       const sessionManager = SessionManager.openBounded(scope, {
