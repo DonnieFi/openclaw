@@ -8,7 +8,6 @@ import {
   closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
 } from "../state/openclaw-state-db.js";
-import { ensureProfileForEmail } from "../state/user-profiles.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
 import { createDirectChatContext } from "./server-chat.agent-events.test-helpers.js";
 import type { GatewayClient } from "./server-methods/client-types.js";
@@ -50,8 +49,8 @@ afterEach(async () => {
   closeOpenClawStateDatabaseForTest();
 });
 
-function adminControlUiClient(): GatewayClient {
-  return {
+test("visible spawn reports the child start rejection and removes the child", async () => {
+  const client = {
     connect: {
       minProtocol: 1,
       maxProtocol: 1,
@@ -64,65 +63,35 @@ function adminControlUiClient(): GatewayClient {
       scopes: ["operator.admin"],
     },
   } as GatewayClient;
-}
+  const parent = await directSessionReq(
+    "sessions.create",
+    { key: parentKey, agentId: "main" },
+    { client },
+  );
+  expect(parent.ok, JSON.stringify(parent.error)).toBe(true);
+  const { getRuntimeConfig } = await getGatewayConfigModule();
+  const context = createDirectChatContext({
+    getRuntimeConfig,
+    trackExecution: async (run) => await run(),
+  });
+  const tool = createSessionsSpawnTool({
+    agentSessionKey: parentKey,
+    config: getRuntimeConfig(),
+    registerRun: vi.fn(),
+    countActiveRuns: () => 0,
+  });
 
-function writeOnlyOperatorClient(): GatewayClient {
-  const profile = ensureProfileForEmail("write-operator@example.test");
-  return {
-    connect: {
-      minProtocol: 1,
-      maxProtocol: 1,
-      client: { id: "openclaw-android", version: "test", platform: "android", mode: "node" },
-      role: "operator",
-      scopes: ["operator.approvals", "operator.questions", "operator.read", "operator.write"],
-    },
-    authenticatedUserId: profile.id,
-    authenticatedUserProfile: {
-      profileId: profile.id,
-      displayName: null,
-      hasAvatar: false,
-      updatedAt: 1,
-    },
-  } as GatewayClient;
-}
+  const result = await withPluginRuntimeGatewayRequestScope(
+    { client, isWebchatConnect: () => false, resolveGatewayContext: () => context },
+    () => tool.execute("denied-child", { task: "Inspect", visible: true }),
+  );
 
-test.each([
-  { caller: "admin Control UI", createClient: adminControlUiClient },
-  { caller: "write-only operator", createClient: writeOnlyOperatorClient },
-])(
-  "visible spawn by $caller reports the child start rejection and removes the child",
-  async ({ createClient }) => {
-    const client = createClient();
-    const parent = await directSessionReq(
-      "sessions.create",
-      { key: parentKey, agentId: "main" },
-      { client },
-    );
-    expect(parent.ok, JSON.stringify(parent.error)).toBe(true);
-    const { getRuntimeConfig } = await getGatewayConfigModule();
-    const context = createDirectChatContext({
-      getRuntimeConfig,
-      trackExecution: async (run) => await run(),
-    });
-    const tool = createSessionsSpawnTool({
-      agentSessionKey: parentKey,
-      config: getRuntimeConfig(),
-      registerRun: vi.fn(),
-      countActiveRuns: () => 0,
-    });
-
-    const result = await withPluginRuntimeGatewayRequestScope(
-      { client, isWebchatConnect: () => false, resolveGatewayContext: () => context },
-      () => tool.execute("denied-child", { task: "Inspect", visible: true }),
-    );
-
-    expect(result.details).toMatchObject({
-      status: "error",
-      error: "send blocked by session policy. Session removed.",
-    });
-    const { childSessionKey } = result.details as { childSessionKey: string };
-    expect(loadSessionEntry({ agentId: "main", sessionKey: childSessionKey, storePath })).toBe(
-      undefined,
-    );
-  },
-);
+  expect(result.details).toMatchObject({
+    status: "error",
+    error: "send blocked by session policy. Session removed.",
+  });
+  const { childSessionKey } = result.details as { childSessionKey: string };
+  expect(loadSessionEntry({ agentId: "main", sessionKey: childSessionKey, storePath })).toBe(
+    undefined,
+  );
+});

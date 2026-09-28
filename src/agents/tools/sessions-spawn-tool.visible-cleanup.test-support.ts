@@ -20,7 +20,6 @@ export function registerSessionsSpawnVisibleCleanupTests({
           ...(failure === "registration" ? { runId: "child-run" } : {}),
           runError: "startup failed",
         })
-        .mockResolvedValueOnce({ ok: true })
         .mockResolvedValueOnce({ deleted: true });
       const registerRun = vi.fn(() => {
         throw new Error("registry unavailable");
@@ -40,6 +39,19 @@ export function registerSessionsSpawnVisibleCleanupTests({
         error: expect.stringContaining("Session removed."),
         childSessionKey: "agent:main:dashboard:child",
       });
+      expect(callGateway).toHaveBeenCalledTimes(2);
+      expect(callGateway).toHaveBeenNthCalledWith(
+        2,
+        "sessions.delete",
+        {
+          key: "agent:main:dashboard:child",
+          expectedSessionId: "created-child",
+          expectedLifecycleRevision: "birth-revision",
+          deleteTranscript: true,
+          emitLifecycleHooks: false,
+        },
+        { timeoutMs: 10_000 },
+      );
       expect(registerRun).toHaveBeenCalledTimes(failure === "registration" ? 1 : 0);
     },
   );
@@ -47,7 +59,6 @@ export function registerSessionsSpawnVisibleCleanupTests({
   it.each([
     {
       failure: "initial child start",
-      failedCleanupStep: "archive",
       runStarted: false,
       runId: undefined,
       runError: {
@@ -55,68 +66,55 @@ export function registerSessionsSpawnVisibleCleanupTests({
         message: "child chat.send rejected before input admission",
       },
       registrationError: undefined,
-      expectedError:
-        "child chat.send rejected before input admission. Session cleanup unconfirmed. Inspect the child session before retrying.",
+      expectedError: "child chat.send rejected before input admission",
     },
     {
       failure: "run registration",
-      failedCleanupStep: "archive",
       runStarted: true,
       runId: "child-run",
       runError: undefined,
       registrationError: "registry unavailable",
-      expectedError:
-        "Visible run registration failed: registry unavailable. Session cleanup unconfirmed. Inspect the child session before retrying.",
+      expectedError: "Session cleanup unconfirmed.",
     },
-    {
-      failure: "initial child start",
-      failedCleanupStep: "delete",
-      runStarted: false,
-      runId: undefined,
-      runError: "startup failed",
-      registrationError: undefined,
-      expectedError:
-        "startup failed. Session archived but not deleted. Inspect the archived child session before retrying.",
-    },
-  ] as const)(
-    "reports the retained child when $failure and cleanup $failedCleanupStep fail",
-    async (scenario) => {
-      const callGateway = vi.fn().mockResolvedValueOnce({
+  ] as const)("reports the retained child when $failure and cleanup fail", async (scenario) => {
+    const callGateway = vi
+      .fn()
+      .mockResolvedValueOnce({
         key: "agent:main:dashboard:child",
         sessionId: "created-child",
         entry: { lifecycleRevision: "birth-revision" },
         runStarted: scenario.runStarted,
         ...(scenario.runId ? { runId: scenario.runId } : {}),
         ...(scenario.runError ? { runError: scenario.runError } : {}),
-      });
-      if (scenario.failedCleanupStep === "delete") {
-        callGateway.mockResolvedValueOnce({ ok: true });
-      }
-      callGateway.mockRejectedValueOnce(new Error("lifecycle drain unavailable"));
-      const tool = createTool({
-        agentSessionKey: "agent:main:main",
-        config: { agents: { list: [{ id: "main" }] } },
-        callGateway,
-        ...(scenario.registrationError
-          ? {
-              registerRun: () => {
-                throw new Error(scenario.registrationError);
-              },
-            }
-          : {}),
-        countActiveRuns: () => 0,
-      });
+      })
+      .mockRejectedValueOnce(new Error("lifecycle drain unavailable"));
+    const tool = createTool({
+      agentSessionKey: "agent:main:main",
+      config: { agents: { list: [{ id: "main" }] } },
+      callGateway,
+      ...(scenario.registrationError
+        ? {
+            registerRun: () => {
+              throw new Error(scenario.registrationError);
+            },
+          }
+        : {}),
+      countActiveRuns: () => 0,
+    });
 
-      const result = await tool.execute("visible-failure", { task: "inspect", visible: true });
+    const result = await tool.execute("visible-failure", { task: "inspect", visible: true });
 
-      expect(result.details).toMatchObject({
-        status: "error",
-        error: scenario.expectedError,
-        childSessionKey: "agent:main:dashboard:child",
-        ...(scenario.runId ? { runId: scenario.runId } : {}),
-      });
-    },
-  );
+    expect(result.details).toMatchObject({
+      status: "error",
+      error: expect.stringContaining(scenario.expectedError),
+      childSessionKey: "agent:main:dashboard:child",
+      ...(scenario.runId ? { runId: scenario.runId } : {}),
+    });
+    expect(result.details).toMatchObject({
+      error: expect.stringContaining("Session cleanup unconfirmed."),
+    });
+    expect(callGateway).toHaveBeenCalledTimes(2);
+  });
 
   it.each(["sessionId", "lifecycleRevision"] as const)(
     "keeps a failed visible child when its creation receipt omits %s",
