@@ -23,6 +23,7 @@ import { buildDashboardSessionTitleSource } from "../dashboard-session-title.js"
 import { acceptGatewayDeviceSourceAuthority } from "../device-revocation.js";
 import { ADMIN_SCOPE, authorizeOperatorScopesForRequiredScope } from "../method-scopes.js";
 import { ModelAccountConnectAuthorityError } from "../model-account-connect.js";
+import { ModelCatalogLoadingError, waitForModelCatalog } from "../model-catalog-wait.js";
 import { captureGatewayOperatorRunAuthority } from "../operator-run-authority.js";
 import { startSessionCreateDiagnostics } from "../session-create-diagnostics.js";
 import { buildDashboardSessionKey } from "../session-create-key.js";
@@ -52,10 +53,6 @@ import {
   resolveSessionCreateInitialTurn,
   isFreshChatSendStarted,
 } from "./session-create-initial-turn.js";
-import {
-  SessionCreateModelCatalogUnavailableError,
-  waitForSessionCreateModelCatalog,
-} from "./session-create-model-catalog.js";
 import {
   normalizeSessionProjectGitUrl,
   prepareSessionRepositoryWorkspace,
@@ -563,10 +560,11 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
       authorizedPluginId: normalizeOptionalString(client?.internal?.pluginRuntimeOwnerId),
       armSessionDiffBaselineCapture: !repository,
       loadGatewayModelCatalogSnapshot: () =>
-        waitForSessionCreateModelCatalog(
-          context.loadGatewayModelCatalogSnapshot({ agentId: sessionAgentId }),
-          { signal, connectionSignal: client?.connectionSignal, commitGuard },
-        ),
+        waitForModelCatalog(context.loadGatewayModelCatalogSnapshot({ agentId: sessionAgentId }), {
+          signal,
+          connectionSignal: client?.connectionSignal,
+          assertCurrent: commitGuard,
+        }),
       commitGuard,
       afterSessionCommitted: (entry, source) =>
         registerCommittedSessionCategory(
@@ -627,7 +625,7 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
         respond(false, undefined, errorShape(ErrorCodes.FORBIDDEN, error.message));
         return undefined;
       }
-      if (error instanceof SessionCreateModelCatalogUnavailableError) {
+      if (error instanceof ModelCatalogLoadingError) {
         respond(
           false,
           undefined,

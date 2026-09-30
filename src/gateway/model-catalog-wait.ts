@@ -1,21 +1,21 @@
-import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
+import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 
-const SESSION_CREATE_MODEL_CATALOG_WAIT_MS = 30_000;
+const MODEL_CATALOG_WAIT_MS = 30_000;
 
-export class SessionCreateModelCatalogUnavailableError extends Error {
+export class ModelCatalogLoadingError extends Error {
   constructor() {
     super("Models are still loading; retry in a moment.");
-    this.name = "SessionCreateModelCatalogUnavailableError";
+    this.name = "ModelCatalogLoadingError";
   }
 }
 
-/** Bounds one creation's catalog wait; the shared catalog publication keeps running. */
-export async function waitForSessionCreateModelCatalog<T>(
+/** Bounds one request's catalog wait; the shared catalog publication keeps running. */
+export async function waitForModelCatalog<T>(
   catalog: Promise<T>,
-  params: { signal?: AbortSignal; connectionSignal?: AbortSignal; commitGuard: () => void },
+  params: { signal?: AbortSignal; connectionSignal?: AbortSignal; assertCurrent: () => void },
 ): Promise<T> {
   const deadline = new AbortController();
-  const timer = setTimeout(() => deadline.abort(), SESSION_CREATE_MODEL_CATALOG_WAIT_MS);
+  const timer = setTimeout(() => deadline.abort(), MODEL_CATALOG_WAIT_MS);
   const waitSignal = params.signal
     ? AbortSignal.any([deadline.signal, params.signal])
     : deadline.signal;
@@ -31,10 +31,10 @@ export async function waitForSessionCreateModelCatalog<T>(
         if (!waitSignal.aborted && !connectionSignal?.aborted) {
           throw error;
         }
-        // Disconnect ends only creations whose commit authority belonged to that connection.
-        params.commitGuard();
+        // Disconnect ends only requests whose authority belonged to that connection.
+        params.assertCurrent();
         if (waitSignal.aborted) {
-          throw new SessionCreateModelCatalogUnavailableError();
+          throw new ModelCatalogLoadingError();
         }
         connectionSignal = undefined;
       }
