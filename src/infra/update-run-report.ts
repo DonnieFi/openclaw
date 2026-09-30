@@ -375,9 +375,11 @@ export function renderUpdateRunReport(
       ),
     );
   }
+  const warningStart = lines.length;
   for (const message of updateRunWarningMessages(run.steps, 3)) {
     lines.push(`Warning: ${bounded(message, 500)}`);
   }
+  const warningEnd = lines.length;
   const facts = run.verification;
   const observation = run.steps.findLast((step) => step.step === "gateway recovery verification");
   const recovery = observation && formatUpdateRunRecovery(facts, observation);
@@ -484,9 +486,32 @@ export function renderUpdateRunReport(
     };
   }
   lines.push(...hints);
-  const body = [headline, ...lines.filter((line) => line !== next)].join("\n");
   const suffix = next ? `\n${bounded(next, 1100)}` : "";
-  return { headline, lines, markdown: `${bounded(body, 1500 - suffix.length)}${suffix}` };
+  const budget = 1500 - suffix.length;
+  // Advisory warnings yield the chat budget before the recovery and verification facts
+  // after them. Trailing warnings go first: the first one can be the operator's restart command.
+  const renderBody = (keptWarnings: number) => {
+    const omitted = warningEnd - warningStart - keptWarnings;
+    return [
+      headline,
+      ...lines.slice(0, warningStart + keptWarnings),
+      ...(omitted > 0
+        ? [
+            `Warning: ${omitted} more warning${omitted === 1 ? "" : "s"} omitted; run openclaw update status for the full report.`,
+          ]
+        : []),
+      ...lines.slice(warningEnd),
+    ]
+      .filter((line) => line !== next)
+      .join("\n");
+  };
+  let keptWarnings = warningEnd - warningStart;
+  let body = renderBody(keptWarnings);
+  while (body.length > budget && keptWarnings > 0) {
+    keptWarnings -= 1;
+    body = renderBody(keptWarnings);
+  }
+  return { headline, lines, markdown: `${bounded(body, budget)}${suffix}` };
 }
 
 /** Old CLI finalization paths still return runner results; all wording stays in the report. */
