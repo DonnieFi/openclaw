@@ -7,6 +7,7 @@ import { normalizeAgentId } from "../../lib/sessions/session-key.ts";
 const WORKTREE_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 // The Gateway validates these against its published model catalog before it creates the session.
 const MODEL_CATALOG_CREATE_FIELDS = [
+  "catalogId",
   "model",
   "agentRuntime",
   "contextWindow",
