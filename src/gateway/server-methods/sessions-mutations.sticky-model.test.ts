@@ -614,6 +614,51 @@ describe("sessions.patch personal model-account ownership", () => {
     },
   );
 
+  it("rejects a personal selection when its connection closes before the model catalog publishes", async () => {
+    const sessionKey = "agent:main:dm:personal-selection-connection-closed";
+    await upsertSessionEntryCore(
+      { agentId: "main", sessionKey },
+      { sessionId: sessionKey, updatedAt: 1, label: "Before catalog" },
+    );
+    const before = loadSessionEntry({ agentId: "main", sessionKey });
+    const connection = new AbortController();
+    const caller: TestClient = {
+      ...personClient(accountOwnerId),
+      connectionSignal: connection.signal,
+    };
+    const connections = new Set([caller]);
+    const requestContext = context(connections);
+    const catalogStarted = createDeferredCore();
+    requestContext.loadGatewayModelCatalogSnapshot.mockImplementationOnce(() => {
+      catalogStarted.resolve();
+      return new Promise(() => {});
+    });
+    const pending = patchSession(
+      {
+        key: sessionKey,
+        model: `openai/gpt-5.6-sol@${personalAuthProfileId}`,
+        label: "Must not commit",
+      },
+      caller.connect.scopes,
+      requestContext,
+      caller,
+    );
+    await catalogStarted.promise;
+    connection.abort();
+    connections.delete(caller);
+    let stillWaiting: NodeJS.Timeout | undefined;
+    const response = await Promise.race([
+      pending,
+      new Promise((resolve) => {
+        stillWaiting = setTimeout(() => resolve("still waiting on the model catalog"), 5_000);
+      }),
+    ]);
+    clearTimeout(stillWaiting);
+
+    expect(response).toEqual([false, undefined, expect.objectContaining({ code: "FORBIDDEN" })]);
+    expect(loadSessionEntry({ agentId: "main", sessionKey })).toEqual(before);
+  });
+
   it("reports lost personal authority during archive drain as forbidden", async () => {
     const sessionKey = "agent:main:dm:personal-selection-archive-drain";
     await upsertSessionEntryCore(
