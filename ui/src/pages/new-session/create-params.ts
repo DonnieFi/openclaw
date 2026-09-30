@@ -7,7 +7,6 @@ import { normalizeAgentId } from "../../lib/sessions/session-key.ts";
 const WORKTREE_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 // The Gateway validates these against its published model catalog before it creates the session.
 const MODEL_CATALOG_CREATE_FIELDS = [
-  "catalogId",
   "model",
   "agentRuntime",
   "contextWindow",
@@ -43,11 +42,17 @@ export function canStartSessionAsDraft(params: {
   );
 }
 
-/** The create with the Gateway's default model; undefined when it selects nothing catalog-bound. */
+/**
+ * The create with the Gateway's default model; undefined when it selects nothing catalog-bound
+ * or targets a catalog entry, whose plugin owns the session and its model.
+ */
 export function withoutModelCatalogSelection(
   params: SessionCreateParams,
 ): SessionCreateParams | undefined {
-  if (!MODEL_CATALOG_CREATE_FIELDS.some((field) => params[field] !== undefined)) {
+  if (
+    params.catalogId !== undefined ||
+    !MODEL_CATALOG_CREATE_FIELDS.some((field) => params[field] !== undefined)
+  ) {
     return undefined;
   }
   const next = { ...params };
