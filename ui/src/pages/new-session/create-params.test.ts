@@ -298,7 +298,7 @@ describe("buildDraftSessionCreateParams", () => {
 });
 
 describe("withoutModelCatalogSelection", () => {
-  it("drops a catalog entry the same way as an explicit model selection", () => {
+  it("keeps a catalog entry's plugin-owned session instead of downgrading it to the default model", () => {
     const catalogEntry = buildDraftSessionCreateParams({
       agentId: "main",
       message: "Review the deployment plan",
@@ -316,11 +316,16 @@ describe("withoutModelCatalogSelection", () => {
       catalogId: "catalog-entry-1",
       category: "ops",
     });
-    expect(withoutModelCatalogSelection(catalogEntry)).toEqual({
-      agentId: "main",
-      message: "Review the deployment plan",
-      category: "ops",
-    });
+    expect(withoutModelCatalogSelection(catalogEntry)).toBeUndefined();
+    expect(
+      withoutModelCatalogSelection({
+        agentId: "main",
+        message: "Review the deployment plan",
+        model: "openai/gpt-5.6-sol",
+        thinkingLevel: "high",
+        fastMode: true,
+      }),
+    ).toEqual({ agentId: "main", message: "Review the deployment plan", fastMode: true });
     expect(
       withoutModelCatalogSelection({ agentId: "main", message: "Review the deployment plan" }),
     ).toBeUndefined();
