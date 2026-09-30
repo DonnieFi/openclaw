@@ -23,7 +23,11 @@ import { buildDashboardSessionTitleSource } from "../dashboard-session-title.js"
 import { acceptGatewayDeviceSourceAuthority } from "../device-revocation.js";
 import { ADMIN_SCOPE, authorizeOperatorScopesForRequiredScope } from "../method-scopes.js";
 import { ModelAccountConnectAuthorityError } from "../model-account-connect.js";
-import { ModelCatalogLoadingError, waitForModelCatalog } from "../model-catalog-wait.js";
+import {
+  ModelCatalogLoadingError,
+  modelCatalogLoadingError,
+  waitForModelCatalog,
+} from "../model-catalog-wait.js";
 import { captureGatewayOperatorRunAuthority } from "../operator-run-authority.js";
 import { startSessionCreateDiagnostics } from "../session-create-diagnostics.js";
 import { buildDashboardSessionKey } from "../session-create-key.js";
@@ -626,11 +630,7 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
         return undefined;
       }
       if (error instanceof ModelCatalogLoadingError) {
-        respond(
-          false,
-          undefined,
-          errorShape(ErrorCodes.UNAVAILABLE, error.message, { retryable: true }),
-        );
+        respond(false, undefined, modelCatalogLoadingError());
         return undefined;
       }
       return authority.handleClosedError(error);

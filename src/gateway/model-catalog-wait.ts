@@ -1,10 +1,25 @@
+import {
+  ErrorCodes,
+  errorShape,
+  type ErrorShape,
+  GatewayErrorDetailCodes,
+} from "../../packages/gateway-protocol/src/index.js";
 import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 
 const MODEL_CATALOG_WAIT_MS = 30_000;
+const MODEL_CATALOG_LOADING_MESSAGE = "Models are still loading; retry in a moment.";
+
+/** The one wire shape for a request that gave up waiting on the published model catalog. */
+export function modelCatalogLoadingError(): ErrorShape {
+  return errorShape(ErrorCodes.UNAVAILABLE, MODEL_CATALOG_LOADING_MESSAGE, {
+    retryable: true,
+    details: { code: GatewayErrorDetailCodes.MODEL_CATALOG_LOADING },
+  });
+}
 
 export class ModelCatalogLoadingError extends Error {
   constructor() {
-    super("Models are still loading; retry in a moment.");
+    super(MODEL_CATALOG_LOADING_MESSAGE);
     this.name = "ModelCatalogLoadingError";
   }
 }
