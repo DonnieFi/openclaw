@@ -76,7 +76,7 @@ describe("sessions_spawn visible work receipts", () => {
           deny: ["exec"],
         },
       },
-      undefined,
+      { timeoutMs: 120_000 },
     );
     expectRegisteredSubagentRun(registerRun, {
       childSessionKey: "agent:main:dashboard:restricted-child",
@@ -114,10 +114,10 @@ describe("sessions_spawn visible work receipts", () => {
         childSessionKey: "agent:main:dashboard:late-catalog",
         runId: "run-late-catalog",
       });
-      expect(hoisted.inProcessCreationMock.mock.calls.map(([method]) => method)).toEqual([
-        "sessions.create",
-        "sessions.create",
-        "sessions.create",
+      expect(hoisted.inProcessCreationMock.mock.calls.map((call) => [call[0], call[3]])).toEqual([
+        ["sessions.create", { timeoutMs: 120_000 }],
+        ["sessions.create", { timeoutMs: 120_000 }],
+        ["sessions.create", { timeoutMs: 120_000 }],
       ]);
     });
 
