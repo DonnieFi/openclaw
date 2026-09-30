@@ -72,7 +72,7 @@ export function renderNewSessionDraftView(options: {
         attachmentDraft: submission.attachmentDraft,
         canSubmit: !submission.submitting && !dictationLocked && submission.canSubmit(),
         submitDisabledReason: submission.submitDisabledReason(),
-        blockedSubmitNotice: submission.blockedSubmitNotice(),
+        submitNotice: submission.blockedSubmitNotice(),
         get dictationActive() {
           return dictation.active;
         },
