@@ -705,6 +705,70 @@ test("sessions.create stops waiting for an unpublished model catalog after 30 se
   });
 });
 
+test("sessions.create shares one 30 second catalog budget across its catalog waits", async () => {
+  await withSessionTestState({ layout: "state-only" }, async () => {
+    const { storePath, client, catalog, context } = await createPersonalAccountSessionFixture();
+    const key = "agent:main:dashboard:catalog-budget";
+    // A write-scoped create on an existing row checks the selection, then projects it.
+    await writeSessionStore({
+      entries: {
+        [key]: sessionStoreEntry("catalog-budget", {
+          providerOverride: "openai",
+          modelOverride: "gpt-5.6-sol",
+          modelOverrideSource: "user",
+        }),
+      },
+    });
+    const before = loadSessionEntry({ sessionKey: key, storePath });
+    const firstCatalogStarted = createDeferredCore();
+    const secondCatalogStarted = createDeferredCore();
+    context.loadGatewayModelCatalogSnapshot
+      .mockImplementationOnce(async () => {
+        firstCatalogStarted.resolve();
+        await new Promise((resolve) => {
+          setTimeout(resolve, 20_000);
+        });
+        return { entries: catalog, routeVariants: catalog };
+      })
+      .mockImplementationOnce(async () => {
+        secondCatalogStarted.resolve();
+        return await new Promise<never>(() => {});
+      });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    try {
+      const creating = directSessionReq(
+        "sessions.create",
+        { key, model: "openai/gpt-5.6-sol" },
+        { client, context },
+      );
+      let settled = false;
+      void creating.finally(() => {
+        settled = true;
+      });
+      await firstCatalogStarted.promise;
+      await vi.advanceTimersByTimeAsync(20_000);
+      await secondCatalogStarted.promise;
+      await vi.advanceTimersByTimeAsync(9_999);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await vi.waitFor(() => expect(settled).toBe(true));
+
+      await expect(creating).resolves.toEqual({
+        ok: false,
+        error: {
+          code: "UNAVAILABLE",
+          message: "Models are still loading; retry in a moment.",
+          retryable: true,
+          details: { code: "MODEL_CATALOG_LOADING" },
+        },
+      });
+      expect(loadSessionEntry({ sessionKey: key, storePath })).toEqual(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 test("sessions.create names an adopted worktree with its committed account before selecting a new personal account", async () => {
   await withSessionTestState({ layout: "state-only" }, async (state) => {
     const workspace = await copyGitWorkspace(gitWorkspaceTemplate, state.root);
