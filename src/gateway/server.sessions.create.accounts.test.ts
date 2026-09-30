@@ -769,6 +769,60 @@ test("sessions.create shares one 30 second catalog budget across its catalog wai
   });
 });
 
+test("sessions.create waits for the model catalog before preparing a worktree", async () => {
+  await withSessionTestState({ layout: "state-only" }, async (state) => {
+    const workspace = await copyGitWorkspace(gitWorkspaceTemplate, state.root);
+    testState.agentConfig = { workspace };
+    const { storePath, client, context } = await createPersonalAccountSessionFixture();
+    client.connect.scopes = ["operator.admin"];
+    const catalogStarted = createDeferredCore();
+    context.loadGatewayModelCatalogSnapshot.mockImplementationOnce(async () => {
+      catalogStarted.resolve();
+      return await new Promise<never>(() => {});
+    });
+    const createWorktree = vi.spyOn(managedWorktrees, "createWithOutcome");
+    const key = "agent:main:dashboard:catalog-before-worktree";
+    const params = { key, model: "openai/gpt-5.6-sol", worktree: true };
+    try {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+      try {
+        const timedOut = directSessionReq("sessions.create", params, { client, context });
+        await catalogStarted.promise;
+        await vi.advanceTimersByTimeAsync(30_000);
+        await expect(timedOut).resolves.toEqual({
+          ok: false,
+          error: {
+            code: "UNAVAILABLE",
+            message: "Models are still loading; retry in a moment.",
+            retryable: true,
+            details: { code: "MODEL_CATALOG_LOADING" },
+          },
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(createWorktree).toHaveBeenCalledTimes(0);
+      expect(loadSessionEntry({ sessionKey: key, storePath })).toBeUndefined();
+
+      const retried = await directSessionReq("sessions.create", params, { client, context });
+
+      expect(retried.ok, JSON.stringify(retried.error)).toBe(true);
+      expect(createWorktree).toHaveBeenCalledTimes(1);
+    } finally {
+      const worktree = managedWorktrees.findLiveByOwner("session", key);
+      if (worktree) {
+        await managedWorktrees.remove({
+          id: worktree.id,
+          reason: "test-cleanup",
+          allowSnapshotLoss: true,
+        });
+      }
+      createWorktree.mockRestore();
+      testState.agentConfig = undefined;
+    }
+  });
+});
+
 test("sessions.create names an adopted worktree with its committed account before selecting a new personal account", async () => {
   await withSessionTestState({ layout: "state-only" }, async (state) => {
     const workspace = await copyGitWorkspace(gitWorkspaceTemplate, state.root);
