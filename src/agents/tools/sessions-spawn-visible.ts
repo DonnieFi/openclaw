@@ -1,10 +1,7 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { Value } from "typebox/value";
-import {
-  isModelCatalogLoadingError,
-  readMissingScopeErrorDetails,
-} from "../../../packages/gateway-protocol/src/gateway-error-details.js";
+import { readMissingScopeErrorDetails } from "../../../packages/gateway-protocol/src/gateway-error-details.js";
 import type { SessionsDispatchResult } from "../../../packages/gateway-protocol/src/schema/session-placement.js";
 import {
   DEFAULT_SUBAGENT_MAX_CHILDREN_PER_AGENT,
@@ -17,7 +14,6 @@ import type { SessionEntry } from "../../config/sessions.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { ADMIN_SCOPE } from "../../gateway/method-scopes.js";
-import { MODEL_CATALOG_WAIT_MS } from "../../gateway/model-catalog-wait.js";
 import { resolveWorkspacePathContainment } from "../../gateway/server-methods/workspace-path-containment.js";
 import { resolveGatewaySessionStoreTargetInWorker } from "../../gateway/session-utils-store-worker.js";
 import { resolveWorkerPlacementDestination } from "../../gateway/worker-environments/placement-destination.js";
@@ -99,28 +95,6 @@ type VisibleSessionsSpawnOptions = SessionsSpawnToolOptions & {
   onSpawnEffectsStart?: () => void;
   assertActive?: () => void;
 };
-
-// Each attempt already spends the Gateway's full catalog wait, so retries need no backoff.
-const MODEL_CATALOG_LOADING_CREATE_ATTEMPTS = 4;
-// Outlasts that wait with room for admission on slow hosts, so its answer reaches the retry.
-const VISIBLE_CREATE_TIMEOUT_MS = MODEL_CATALOG_WAIT_MS + 90_000;
-
-/** Agent turns have no operator to press Retry, so the tool absorbs a slow catalog publication. */
-async function createWhileModelCatalogLoads<T>(
-  create: () => Promise<T>,
-  assertActive: () => void,
-): Promise<T> {
-  for (let attempt = 1; ; attempt++) {
-    try {
-      return await create();
-    } catch (error) {
-      if (attempt >= MODEL_CATALOG_LOADING_CREATE_ATTEMPTS || !isModelCatalogLoadingError(error)) {
-        throw error;
-      }
-      assertActive();
-    }
-  }
-}
 
 function summarizeSessionsSpawnError(error: unknown): string {
   return error instanceof Error ? error.message : typeof error === "string" ? error : "error";
@@ -442,7 +416,7 @@ export async function maybeSpawnVisibleSession(params: {
             },
             ...(inheritedModel ? { resolvedModel: inheritedModel } : {}),
           },
-          { timeoutMs: VISIBLE_CREATE_TIMEOUT_MS, ...requestOptions },
+          requestOptions,
         ));
     let response: {
       key?: string;
@@ -484,17 +458,13 @@ export async function maybeSpawnVisibleSession(params: {
         ...(worktreeName ? { worktreeName } : {}),
         ...(worktreeBaseRef ? { worktreeBaseRef } : {}),
       };
-      response = await createWhileModelCatalogLoads(
-        () =>
-          placement
-            ? createGatewayCall("sessions.create", createParams, {
-                signal: params.options?.signal,
-                sessionMutationCommitGuard: params.options?.assertActive,
-                timeoutMs: null,
-              })
-            : createGatewayCall("sessions.create", createParams),
-        assertActive,
-      );
+      response = placement
+        ? await createGatewayCall("sessions.create", createParams, {
+            signal: params.options?.signal,
+            sessionMutationCommitGuard: params.options?.assertActive,
+            timeoutMs: null,
+          })
+        : await createGatewayCall("sessions.create", createParams);
     } catch (error) {
       const missingScope = readMissingScopeErrorDetails(
         error && typeof error === "object" && "details" in error ? error.details : undefined,

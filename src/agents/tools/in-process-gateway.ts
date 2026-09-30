@@ -457,11 +457,11 @@ export async function callInProcessGatewayToolWithCreation<T = Record<string, un
     async (scopes) => {
       // The fallback is a real local Gateway request. Carry spawn policy only in
       // the signed agent-runtime identity token, never in model-authored params.
-      const transport = options.timeoutMs == null ? {} : { timeoutMs: options.timeoutMs };
       if (trustedCreation.via !== "spawn" || !trustedCreation.inheritedToolPolicy) {
-        return await callGatewayTool<T>(method, transport, params, {
+        return await callGatewayTool<T>(method, {}, params, {
           scopes,
           ...(options.signal ? { signal: options.signal } : {}),
+          ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
         });
       }
       return await runWithGatewaySessionSpawnContext(
@@ -484,10 +484,11 @@ export async function callInProcessGatewayToolWithCreation<T = Record<string, un
             : {}),
         },
         () =>
-          callGatewayTool<T>(method, transport, params, {
+          callGatewayTool<T>(method, {}, params, {
             scopes,
             requireAgentRuntimeIdentity: true,
             ...(options.signal ? { signal: options.signal } : {}),
+            ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
           }),
       );
     },
