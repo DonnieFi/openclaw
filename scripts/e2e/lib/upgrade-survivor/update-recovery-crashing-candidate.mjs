@@ -175,11 +175,18 @@ function run(ctx) {
   const reportPath = /^Report: (.+)$/mu.exec(update.stdout)?.[1]?.trim();
   assert(reportPath && childOf(ctx.state, reportPath), "Update report was not saved in state");
   const report = fs.readFileSync(reportPath, "utf8");
-  // The saved markdown is length-bounded; only the next action has reserved room.
-  assert(report.includes(nextAction), "Saved report lacks the next action");
   fs.writeFileSync(path.join(ctx.artifacts, "update-recovery-crash-report.md"), report, {
     flag: "wx",
   });
+  const reportLines = report.split("\n");
+  // Advisory warnings yield the length-bounded markdown before these facts.
+  assert(reportLines.includes(recovery), "Saved report lacks the recovery line");
+  assert(
+    reportLines.some((line) => line.startsWith("Verification: version verified;")),
+    "Saved report lacks the verification line",
+  );
+  // The next action line continues with triage guidance.
+  assert(report.includes(nextAction), "Saved report lacks the next action");
 
   const status = JSON.parse(runCli(ctx, "status", ["update", "status", "--json"], 0).stdout);
   const record = status.lastRun;
