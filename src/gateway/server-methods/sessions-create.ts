@@ -24,9 +24,9 @@ import { acceptGatewayDeviceSourceAuthority } from "../device-revocation.js";
 import { ADMIN_SCOPE, authorizeOperatorScopesForRequiredScope } from "../method-scopes.js";
 import { ModelAccountConnectAuthorityError } from "../model-account-connect.js";
 import {
+  createModelCatalogWait,
   ModelCatalogLoadingError,
   modelCatalogLoadingError,
-  waitForModelCatalog,
 } from "../model-catalog-wait.js";
 import { captureGatewayOperatorRunAuthority } from "../operator-run-authority.js";
 import { startSessionCreateDiagnostics } from "../session-create-diagnostics.js";
@@ -158,6 +158,11 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
       personalModelSelection?.assertCurrent();
       personalAccountDefaults?.assertCurrent();
     };
+    const waitForModelCatalog = createModelCatalogWait({
+      signal,
+      connectionSignal: client?.connectionSignal,
+      assertCurrent: commitGuard,
+    });
     await using operatorCapture = {
       preparation: captureGatewayOperatorRunAuthority({
         client,
@@ -564,11 +569,7 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
       authorizedPluginId: normalizeOptionalString(client?.internal?.pluginRuntimeOwnerId),
       armSessionDiffBaselineCapture: !repository,
       loadGatewayModelCatalogSnapshot: () =>
-        waitForModelCatalog(context.loadGatewayModelCatalogSnapshot({ agentId: sessionAgentId }), {
-          signal,
-          connectionSignal: client?.connectionSignal,
-          assertCurrent: commitGuard,
-        }),
+        waitForModelCatalog(context.loadGatewayModelCatalogSnapshot({ agentId: sessionAgentId })),
       commitGuard,
       afterSessionCommitted: (entry, source) =>
         registerCommittedSessionCategory(
