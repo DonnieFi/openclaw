@@ -17,6 +17,7 @@ import type { SessionEntry } from "../../config/sessions.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { ADMIN_SCOPE } from "../../gateway/method-scopes.js";
+import { MODEL_CATALOG_WAIT_MS } from "../../gateway/model-catalog-wait.js";
 import { resolveWorkspacePathContainment } from "../../gateway/server-methods/workspace-path-containment.js";
 import { resolveGatewaySessionStoreTargetInWorker } from "../../gateway/session-utils-store-worker.js";
 import { resolveWorkerPlacementDestination } from "../../gateway/worker-environments/placement-destination.js";
@@ -101,6 +102,8 @@ type VisibleSessionsSpawnOptions = SessionsSpawnToolOptions & {
 
 // Each attempt already spends the Gateway's full catalog wait, so retries need no backoff.
 const MODEL_CATALOG_LOADING_CREATE_ATTEMPTS = 4;
+// Outlasts that wait with room for admission on slow hosts, so its answer reaches the retry.
+const VISIBLE_CREATE_TIMEOUT_MS = MODEL_CATALOG_WAIT_MS + 90_000;
 
 /** Agent turns have no operator to press Retry, so the tool absorbs a slow catalog publication. */
 async function createWhileModelCatalogLoads<T>(
@@ -439,7 +442,7 @@ export async function maybeSpawnVisibleSession(params: {
             },
             ...(inheritedModel ? { resolvedModel: inheritedModel } : {}),
           },
-          requestOptions,
+          { timeoutMs: VISIBLE_CREATE_TIMEOUT_MS, ...requestOptions },
         ));
     let response: {
       key?: string;

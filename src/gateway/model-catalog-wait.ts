@@ -6,7 +6,7 @@ import {
 } from "../../packages/gateway-protocol/src/index.js";
 import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 
-const MODEL_CATALOG_WAIT_MS = 30_000;
+export const MODEL_CATALOG_WAIT_MS = 30_000;
 const MODEL_CATALOG_LOADING_MESSAGE = "Models are still loading; retry in a moment.";
 
 /** The one wire shape for a request that gave up waiting on the published model catalog. */
