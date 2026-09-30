@@ -502,13 +502,22 @@ export class NewSessionPage extends OpenClawLightDomElement {
         }
         ${renderNewSessionBody({
           error: this.submission.error,
-          errorAction: this.submission.canRetryError
-            ? {
-                label: t("common.retry"),
-                onClick: () => void this.submission.submit(),
-                disabled: this.context?.gateway.snapshot.phase !== "connected",
-              }
-            : undefined,
+          errorActions: this.submission.errorActions.map((action) =>
+            action === "cancel"
+              ? { label: t("common.cancel"), onClick: () => this.submission.clearError() }
+              : {
+                  label: t(
+                    action === "retry" ? "common.retry" : "newSession.startWithDefaultModel",
+                  ),
+                  onClick: () =>
+                    void this.submission.submit(
+                      undefined,
+                      false,
+                      action === "retry" ? "selected" : "default",
+                    ),
+                  disabled: this.context?.gateway.snapshot.phase !== "connected",
+                },
+          ),
           pendingMessage,
           userId: identity?.type === "profile" ? identity.id : null,
           submitting: this.submission.submitting,

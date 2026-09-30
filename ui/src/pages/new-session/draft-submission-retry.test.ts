@@ -34,12 +34,12 @@ it.each([
 
     expect({
       error: flow.error,
-      canRetryError: flow.canRetryError,
+      errorActions: flow.errorActions,
       message: flow.message,
       submitting: flow.submitting,
     }).toEqual({
       error: message,
-      canRetryError: retryable,
+      errorActions: retryable ? ["retry"] : [],
       message: "Review the deployment plan",
       submitting: false,
     });
@@ -49,9 +49,9 @@ it.each([
     expect(
       vi.mocked(context.sessions.createResult).mock.calls.map(([params]) => params?.message),
     ).toEqual(["Review the deployment plan", "Review the deployment plan"]);
-    expect({ error: flow.error, canRetryError: flow.canRetryError }).toEqual({
+    expect({ error: flow.error, errorActions: flow.errorActions }).toEqual({
       error: null,
-      canRetryError: false,
+      errorActions: [],
     });
     flow.disconnect();
   },
