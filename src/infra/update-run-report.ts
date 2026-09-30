@@ -21,7 +21,11 @@ import {
 } from "./update-run-legacy-expiry.js";
 import { isAcknowledgedAbandonedUpdateRun, type UpdateRunRecord } from "./update-run-record.js";
 import type { UpdateRunReportHealth } from "./update-run-report-health.js";
-import { updateRunStepsFromResultStep, updateRunWarningMessages } from "./update-run-step.js";
+import {
+  updateRunServiceWarning,
+  updateRunStepsFromResultStep,
+  updateRunWarningMessages,
+} from "./update-run-step.js";
 import type { UpdateRunResult } from "./update-runner-types.js";
 import { formatUpdateSnapshotCapacity } from "./update-snapshot-capacity.js";
 
@@ -489,7 +493,8 @@ export function renderUpdateRunReport(
   const suffix = next ? `\n${bounded(next, 1100)}` : "";
   const budget = 1500 - suffix.length;
   // Advisory warnings yield the chat budget before the recovery and verification facts
-  // after them. Trailing warnings go first: the first one can be the operator's restart command.
+  // after them. Trailing warnings go first; the operator's restart command leads and never yields.
+  const minWarnings = updateRunServiceWarning(run.steps) ? 1 : 0;
   const renderBody = (keptWarnings: number) => {
     const omitted = warningEnd - warningStart - keptWarnings;
     return [
@@ -497,7 +502,7 @@ export function renderUpdateRunReport(
       ...lines.slice(0, warningStart + keptWarnings),
       ...(omitted > 0
         ? [
-            `Warning: ${omitted} more warning${omitted === 1 ? "" : "s"} omitted; run openclaw update status for the full report.`,
+            `Warning: ${omitted} ${keptWarnings ? "more " : ""}warning${omitted === 1 ? "" : "s"} omitted; run openclaw update status for the full report.`,
           ]
         : []),
       ...lines.slice(warningEnd),
@@ -507,7 +512,7 @@ export function renderUpdateRunReport(
   };
   let keptWarnings = warningEnd - warningStart;
   let body = renderBody(keptWarnings);
-  while (body.length > budget && keptWarnings > 0) {
+  while (body.length > budget && keptWarnings > minWarnings) {
     keptWarnings -= 1;
     body = renderBody(keptWarnings);
   }

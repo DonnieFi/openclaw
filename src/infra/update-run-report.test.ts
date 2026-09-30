@@ -594,6 +594,56 @@ describe("update run report", () => {
     expect(report.lines.filter((line) => line.startsWith("Warning:"))).toHaveLength(3);
   });
 
+  it("keeps the restart command warning when the lines before warnings fill the chat budget", () => {
+    const restartWarning = "Restart the gateway service yourself: openclaw gateway restart --force";
+    const report = renderUpdateRunReport(
+      run({
+        status: "failed",
+        reason: "runtime-verification-failed",
+        steps: [
+          {
+            step: "doctor",
+            status: "completed",
+            configChange: {
+              kind: "migration",
+              message: `Moved legacy entries: ${"k".repeat(190)}`,
+            },
+          },
+          ...[1, 2, 3].map((index) => ({
+            step: `candidate-check-${index}`,
+            status: "failed" as const,
+            detail: `check ${index} failed: ${"x".repeat(270)}`,
+          })),
+          {
+            step: "warning:managed-service-reconciliation",
+            status: "completed",
+            detail: restartWarning,
+          },
+          ...["A", "B"].map((label) => ({
+            step: `warning:${label}`,
+            status: "completed" as const,
+            detail: `Warning ${label}: ${"advisory detail ".repeat(40)}`,
+          })),
+          { step: "gateway recovery verification", status: "completed", exitCode: 0 },
+        ],
+        verification: {
+          runningVersion: "2026.9.7",
+          versionMatch: true,
+          readyz: true,
+          settled: true,
+          recovery: { serviceRestartSafe: false, reason: "runtime-verification-failed" },
+        },
+      }),
+      { nextAction: "Restart the gateway manually after reviewing the warnings." },
+    );
+    const markdownLines = report.markdown.split("\n");
+    expect(markdownLines).toContain(`Warning: ${restartWarning}`);
+    expect(markdownLines).toContain(
+      "Warning: 2 more warnings omitted; run openclaw update status for the full report.",
+    );
+    expect(report.markdown.length).toBeLessThanOrEqual(1500);
+  });
+
   it.each([
     ["preflight-insufficient-space", "Free space on the preflight staging"],
     ["pnpm-corepack-missing", "corepack is missing"],
