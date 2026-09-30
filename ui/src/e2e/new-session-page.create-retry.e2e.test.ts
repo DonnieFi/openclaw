@@ -29,6 +29,15 @@ async function captureRetryProof(page: Page, fileName: string, content: string) 
   }
   const dir = path.join(suite.artifactDir, "sessions-create-retry");
   await mkdir(dir, { recursive: true });
+  // Composer controls transition after typing; the proof shows their settled state.
+  await page.evaluate(() =>
+    Promise.all(
+      document
+        .getAnimations()
+        .filter((animation) => Number.isFinite(animation.effect?.getComputedTiming().endTime))
+        .map((animation) => animation.finished.catch(() => undefined)),
+    ),
+  );
   await writeFile(
     path.join(dir, fileName),
     await takeControlUiViewportScreenshot(page, page.locator(".shell"), [page.locator(content)]),
@@ -123,9 +132,10 @@ suite.define(() => {
         ).toBe(
           "Models aren't ready yet. Starting with your model or thinking choice may wait for them.",
         );
+        const start = page.getByRole("button", { name: "Start session" });
+        await expect.poll(() => start.isEnabled()).toBe(true);
         await captureRetryProof(page, "03-model-catalog-notice.png", ".new-session-page__composer");
 
-        const start = page.getByRole("button", { name: "Start session" });
         const alert = page.locator(".new-session-page__alert");
         const failCatalogWait = async () => {
           await gateway.deferNext("sessions.create");
