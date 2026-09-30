@@ -538,6 +538,62 @@ describe("update run report", () => {
     expect(report.lines.join("\n").length).toBeGreaterThan(1500);
   });
 
+  it("drops trailing warnings before recovery facts when warnings fill the chat budget", () => {
+    const advisory = (label: string) => `${label}: ${"advisory detail ".repeat(40)}`;
+    const nextAction =
+      "The gateway is serving 2026.9.7 and passed recovery verification, but restarting it is not verified safe (runtime-verification-failed).";
+    const report = renderUpdateRunReport(
+      run({
+        status: "failed",
+        reason: "runtime-verification-failed",
+        steps: [
+          {
+            step: "candidate-gateway-startup",
+            status: "failed",
+            exitCode: 1,
+            detail: "Exit code: 1",
+          },
+          ...["A", "B", "C"].map((label) => ({
+            step: `warning:${label}`,
+            status: "completed" as const,
+            detail: advisory(`Warning ${label}`),
+          })),
+          { step: "gateway recovery verification", status: "completed", exitCode: 0 },
+        ],
+        verification: {
+          runningVersion: "2026.9.7",
+          versionMatch: true,
+          readyz: true,
+          settled: true,
+          recovery: { serviceRestartSafe: false, reason: "runtime-verification-failed" },
+        },
+      }),
+      { nextAction },
+    );
+    const markdownLines = report.markdown.split("\n");
+    expect(markdownLines.map((line) => line.split(":")[0])).toEqual([
+      "⚠️ OpenClaw update failed",
+      "Failed",
+      "Warning",
+      "Warning",
+      "Warning",
+      "Recovery",
+      "Verification",
+      "The gateway is serving 2026.9.7 and passed recovery verification, but restarting it is not verified safe (runtime-verification-failed).",
+    ]);
+    expect(markdownLines[2]).toMatch(/^Warning: Warning A: advisory detail/u);
+    expect(markdownLines[3]).toMatch(/^Warning: Warning B: advisory detail/u);
+    expect(markdownLines[4]).toBe(
+      "Warning: 1 more warning omitted; run openclaw update status for the full report.",
+    );
+    expect(markdownLines[5]).toBe(
+      "Recovery: verified serving 2026.9.7; restart remains unsafe (runtime-verification-failed).",
+    );
+    expect(markdownLines[6]).toBe("Verification: version verified; HTTP ready.");
+    expect(report.markdown.length).toBeLessThanOrEqual(1500);
+    expect(report.lines.filter((line) => line.startsWith("Warning:"))).toHaveLength(3);
+  });
+
   it.each([
     ["preflight-insufficient-space", "Free space on the preflight staging"],
     ["pnpm-corepack-missing", "corepack is missing"],
