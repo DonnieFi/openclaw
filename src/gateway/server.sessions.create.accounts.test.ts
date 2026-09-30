@@ -689,12 +689,13 @@ test("sessions.create stops waiting for an unpublished model catalog after 30 se
       await vi.advanceTimersByTimeAsync(1);
       await vi.waitFor(() => expect(settled).toBe(true));
 
-      await expect(creating).resolves.toMatchObject({
+      await expect(creating).resolves.toEqual({
         ok: false,
         error: {
           code: "UNAVAILABLE",
           message: "Models are still loading; retry in a moment.",
           retryable: true,
+          details: { code: "MODEL_CATALOG_LOADING" },
         },
       });
       expect(loadSessionEntry({ sessionKey: key, storePath })).toBeUndefined();
