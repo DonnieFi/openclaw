@@ -25,9 +25,10 @@ export class ModelCatalogLoadingError extends Error {
 }
 
 /**
- * Bounds every catalog wait in one request by one shared budget. Only time spent
- * waiting draws from it, so slow preparation between waits cannot fail a published
- * catalog. The shared catalog publication keeps running after a timeout.
+ * Bounds every catalog wait in one request by one shared budget. Only time while some
+ * wait is pending draws from it, so slow preparation between waits cannot fail a
+ * published catalog and concurrent waits cannot stretch it. The shared catalog
+ * publication keeps running after a timeout.
  */
 export function createModelCatalogWait(params: {
   signal?: AbortSignal;
@@ -36,10 +37,18 @@ export function createModelCatalogWait(params: {
 }): <T>(catalog: Promise<T>) => Promise<T> {
   let remainingMs = MODEL_CATALOG_WAIT_MS;
   let connectionSignal = params.connectionSignal;
+  let deadline = new AbortController();
+  let pendingWaits = 0;
+  let pendingSince = 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   return async (catalog) => {
-    const startedAt = performance.now();
-    const deadline = new AbortController();
-    const timer = setTimeout(() => deadline.abort(), Math.max(remainingMs, 0));
+    if (pendingWaits++ === 0) {
+      // A fresh deadline lets a published catalog win even after the budget is spent.
+      const periodDeadline = new AbortController();
+      deadline = periodDeadline;
+      pendingSince = performance.now();
+      timer = setTimeout(() => periodDeadline.abort(), Math.max(remainingMs, 0));
+    }
     const waitSignal = params.signal
       ? AbortSignal.any([deadline.signal, params.signal])
       : deadline.signal;
@@ -63,8 +72,10 @@ export function createModelCatalogWait(params: {
         }
       }
     } finally {
-      clearTimeout(timer);
-      remainingMs -= performance.now() - startedAt;
+      if (--pendingWaits === 0) {
+        clearTimeout(timer);
+        remainingMs -= performance.now() - pendingSince;
+      }
     }
   };
 }

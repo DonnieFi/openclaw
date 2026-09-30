@@ -25,3 +25,13 @@ it("ends staggered overlapping catalog waits when the request's one budget runs 
     "second agent:Models are still loading; retry in a moment.",
   ]);
 });
+
+it("still returns a published catalog after an earlier wait spent the budget", async () => {
+  vi.useFakeTimers();
+  const waitForModelCatalog = createModelCatalogWait({ assertCurrent: () => {} });
+  const timedOut = waitForModelCatalog(new Promise<never>(() => {})).catch(() => "timed out");
+  await vi.advanceTimersByTimeAsync(30_000);
+
+  expect(await timedOut).toBe("timed out");
+  await expect(waitForModelCatalog(Promise.resolve("published"))).resolves.toBe("published");
+});
