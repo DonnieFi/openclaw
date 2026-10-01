@@ -21,13 +21,17 @@ class GatewayProxyCredentials(
 
 private fun isProxyControlCharacter(value: Char): Boolean = value.code < 0x20 || value.code == 0x7f
 
-/** A record without a password is a removed login that still binds the Gateway's proxy account. */
+/**
+ * A record without a password is a removed login that still binds the Gateway's proxy account.
+ * [forgetPending] marks a Forget that has retired Gateway auth but not yet purged local data.
+ */
 @Serializable
 internal class StoredGatewayProxyCredentials(
   val destination: String,
   val username: String,
   val password: String? = null,
   val version: Int = 1,
+  val forgetPending: Boolean = false,
 ) {
   override fun toString(): String = "StoredGatewayProxyCredentials([redacted])"
 }

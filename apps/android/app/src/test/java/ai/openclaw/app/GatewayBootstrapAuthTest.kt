@@ -2025,6 +2025,38 @@ class GatewayBootstrapAuthTest {
     }
 
   @Test
+  fun partialForgetKeepsTokenOnlyAndUnreadableBindingsLocked() =
+    runBlocking {
+      val app = RuntimeEnvironment.getApplication()
+      val prefs = testPrefs(app)
+      val transcriptCache = RecordingTranscriptCache().apply { failClear = true }
+      val runtime = trackRuntime(NodeRuntime(app, prefs, transcriptCache))
+      val deviceId = DeviceIdentityStore.withPrefs(app, prefs).loadOrCreate().deviceId
+      val tokenOnly = GatewayEndpoint.manual("token.example", 443, true)
+      val unreadable = GatewayEndpoint.manual("unreadable.example", 443, true)
+      val other = GatewayProxyCredentials("dummy-other", "dummy-other-password")
+      for (endpoint in listOf(tokenOnly, unreadable)) {
+        prefs.gatewayRegistry.upsert(gatewayRegistryEntry(endpoint, null))
+        assertEquals(GatewayProxySaveResult.SAVED, prefs.saveGatewayProxyCredentials(endpoint, GatewayProxyCredentials("dummy-user", "dummy-password")))
+        assertTrue(DeviceAuthStore(prefs).saveToken(endpoint.stableId, deviceId, "operator", "dummy-operator-token"))
+      }
+      prefs.putString("gateway.proxy.basic.${unreadable.stableId}", "unreadable")
+
+      for (endpoint in listOf(tokenOnly, unreadable)) {
+        assertFalse(runtime.forgetGateway(endpoint.stableId))
+        assertEquals(GatewayProxySaveResult.ACCOUNT_LOCKED, prefs.saveGatewayProxyCredentials(endpoint, other))
+      }
+      assertEquals("dummy-user", prefs.gatewayProxyPrincipal(tokenOnly.stableId)?.username)
+      assertEquals(GatewayProxySaveResult.ACCOUNT_LOCKED, prefs.saveGatewayProxyCredentials(unreadable, null))
+
+      transcriptCache.failClear = false
+      for (endpoint in listOf(tokenOnly, unreadable)) {
+        assertTrue(runtime.forgetGateway(endpoint.stableId))
+        assertNull(prefs.gatewayProxyPrincipal(endpoint.stableId))
+      }
+    }
+
+  @Test
   fun switchToUndiscoveredGatewayKeepsCurrentConnectionAndActiveGateway() {
     val (_, prefs, runtime) = gatewayFixture()
     neutralizeColdStartAutoConnect(runtime)
