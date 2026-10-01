@@ -91,20 +91,37 @@ configuration. These are separate from Gateway protocol authentication.
 
 ## Two screen wireframes
 
-These are conceptual wireframes, not screenshots of implemented UI. The drawn
-boards use synthetic destinations and credentials; colors and spacing are proposals,
-not a claim that the current Android theme renders this way.
+These are design renders and text wireframes, not screenshots of implemented
+Android UI. The earlier blue-pill boards have been replaced with the incumbent
+Android Claw visual system: bundled Manrope, default dark and companion light
+palettes, red primary actions, 10 dp controls, 12 dp panels, and 48 dp targets.
+The proposal preserves the existing Gateway settings registry and its Rename,
+Forget, Reconnect, Disconnect, and Add Gateway boundaries. It adds scoped proxy
+controls rather than replacing the screen with a new login visual identity.
 
-![Gateway setup, saved Gateway editing, and shared proxy login](design/proxy-login-overview.png)
+[Open the offline review prototype](design/proxy-login-preview.html). Its controls
+use dummy data and simulated transitions only; it sends no requests and stores
+nothing durably. The review wrapper and requirement annotations are outside the
+proposed Android screens. Browser pixels approximate native dp/sp; the renders do
+not prove native layout, keyboard, TalkBack, TLS, or Gateway behavior.
 
-![Rejected proxy login, removal confirmation, and setup recovery](design/proxy-login-recovery.png)
+![Gateway settings, QR review, and shared proxy login](design/proxy-login-overview.png)
+
+![Proxy rejection, Caddy connection stage, partial pairing, and removal](design/proxy-login-recovery.png)
+
+![TLS, network, identity, and known setup expiry](design/proxy-login-errors.png)
+
+![Unknown HTTP rejection, Gateway role rejection, opaque setup rejection, and admission](design/proxy-login-policy.png)
+
+![Light theme, large text, long destination, and rotating Lobsterdex previews](design/proxy-login-variants.png)
 
 ### Layout and interaction detail
 
 The boards depict two screen types with state variants, not additional navigation
 screens. Manual setup uses the same destination review and proxy row as QR review.
 Existing endpoint and Gateway credential controls remain owned by their current
-containers; the shaded Gateway-access block is a placeholder for those controls.
+containers; review renders describe that retained access rather than introducing
+proxy inputs into the Gateway credential fields.
 
 - Destination: show the confirmed scheme, host, effective port, and mount path in a
   wrapping, read-only block. Do not truncate away the host or route; long destinations
@@ -144,26 +161,95 @@ containers; the shaded Gateway-access block is a placeholder for those controls.
   landscape/foldable layouts wrap rather than clip. Removal is identified by text,
   not color alone. Screen readers announce saved-password status without a secret.
 
-### Optional Lobsterdex detail
+### Lobsterdex detail
 
-The rendered option replaces the decorative claw mark with a small static blue
-lobster, using the existing `blue` shell/claw colors in
-[`lobster-pet-palettes.ts`](../../ui/src/components/lobster-pet-palettes.ts).
-The drawn silhouette is a concept, not an exact port of the Control UI sprite.
-A final native asset must reuse approved artwork or receive artwork approval.
+The preview rotates a different character across each specimen and shifts the
+sequence across screenshot boards. Blue, Gold, Pixel, Flatpack, and Crimson are
+source-derived assets, not new hand-drawn silhouettes. Their small static presence
+in the trailing header keeps the existing layout, colors, and component vocabulary.
+Changing a character never communicates connection or security status.
 
-Proposed Easter egg: tapping the decorative mascot five times cycles a small
-approved Lobsterdex character set for this screen visit. Keep the selection in
-memory only; no new storage, network fetch, discovery tracking, or credential-derived
-selection. The default remains the normal brand mark unless this optional detail
-is approved. Expose an accessible “Change mascot” action so the hidden gesture is
-not the only way to use it. Mascot changes must not move fields, discard input,
-start connections, or change error/status announcements. Keep it static during
-entry and errors; respect reduced motion if animation is approved later. The
-mascot never represents TLS trust, login success, or Gateway permissions.
+- Blue, Gold, and Crimson use neutral `renderLobsterSvg` dome/claws/eyes from
+  [`lobster-pet-look.ts`](../../ui/src/components/lobster-pet-look.ts) with perky
+  antennae from [`lobster-pet-sprites.ts`](../../ui/src/components/lobster-pet-sprites.ts).
+  Their shell/claw colors come from
+  [`lobster-pet-palettes.ts`](../../ui/src/components/lobster-pet-palettes.ts).
+- Pixel uses that source's `PIXEL_LOBSTER` geometry; Flatpack uses
+  [`FLATPACK_LOBSTER`](../../ui/src/components/lobster-pet-sprites-wild.ts).
+  Open eyes are frozen for deterministic renders. No product code is executed to
+  build the design assets.
+- The normal brand asset is the static geometry from
+  [`favicon.svg`](../../ui/public/favicon.svg), already owned natively by
+  [`OpenClawMascot.kt`](app/src/main/java/ai/openclaw/app/ui/design/OpenClawMascot.kt).
+  It remains available as the baseline; character rotation is a proposed option.
 
-This is a separable design option, not a requirement for the proxy-login fix.
-The renders preview the alternate mascot enabled.
+Proposed Easter egg: the chosen decorative character remains stable for the current
+screen visit and rotates on the next visit, rather than changing during credential
+entry, retry, or error rendering. A five-tap gesture may advance it, with an
+accessible Change mascot action as the alternative. Preview taps advance immediately
+to make the option reviewable. Keep selection in memory only: no new persistence,
+network fetch, collection tracking, credential-derived seed, or navigation effect.
+Do not move fields, discard input, trigger connections, or change error announcements.
+Keep it static and respect reduced motion if animation is approved later. This is
+separable from the login fix and still needs approval before native implementation.
+
+### Connection contract attached to the screens
+
+Configured, saved, proxy accepted, and Gateway connected are distinct facts.
+The following is the intended flow; the prototype only displays its states.
+
+```mermaid
+flowchart TD
+    A[Manual or QR destination review] --> B[Proxy login draft or existing destination-scoped record]
+    B --> C[Explicit Connect with current plan and credential revision]
+    C --> D[Verify TLS certificate and hostname]
+    D --> E[Caddy authenticates HTTP Basic]
+    E --> F[Caddy strips Basic Authorization and forwards established identity]
+    F --> G[Gateway verifies trusted ingress and identity]
+    G --> H[Chat: operator auth and scopes]
+    G --> I[Phone: node auth and pairing]
+    H --> J[Chat status]
+    I --> K[Phone status]
+    D --> L[TLS failure: stop before sending credentials]
+    E --> M[Proxy rejection: stable login recovery]
+    G --> N[Gateway identity or role rejection: policy recovery]
+    I --> O[Pairing pending: bounded wait and cancel]
+```
+
+| Screen or action | Required connection outcome | Existing owner and acceptance IDs |
+| --- | --- | --- |
+| Review destination | Show full origin, effective port, and mount. User review does not assert TLS verification. No credential-bearing I/O before confirmation. | Resolver and connection plan; R4/R6 |
+| None / HTTP Basic | Keep proxy intent separate from Gateway auth. None retains its existing transport and credential contracts. | Shared proxy row and plan; R1/R2/R10 |
+| Continue in manual or QR | Stage a heap-only draft and return to its original reviewed setup. Keep bootstrap/token/password and expiry metadata unchanged. Display Login configured, not Authenticated. | Existing onboarding/addition plan; R5/R6 |
+| Save an existing entry | Commit only proxy credentials, retire old grants/sockets/media capabilities, reconnect only that entry's enabled sessions. Do not switch an inactive entry into focus. Storage failure preserves previous credentials. | SecurePrefs and existing runtime lifecycle; R5/R8 |
+| Connecting securely | Verify CA and hostname on the actual socket; HTTPS text and a QR fingerprint alone do not establish trust. Fail before releasing Basic. | GatewayTls and ingress grant; R4/R7 |
+| Signing in to proxy | Basic reaches only the confirmed Caddy route. Caddy accepts it and strips Authorization before forwarding to the Gateway on upgrades and HTTP/media routes. | Destination-bound ingress contract and Caddy fixture; R2/R3 |
+| Connecting to Gateway | Proxy acceptance does not establish roles/scopes or pairing. Gateway owns trusted identity and admission; Android never manufactures identity headers. | Gateway auth and admission; R3/R9 |
+| Chat status | Independently reflect the operator handshake, role token, effective scopes, and rejection reason. | ConnectionManager operator and Gateway admission; R3/R9 |
+| Phone features status | Independently reflect node handshake and approval. Chat can remain connected while Phone waits. Cancel waiting stops the owned Phone wait, not accepted Chat or server-side pending pairing. | Node session and pairing owner; R8/R9 |
+| Proxy login rejected | Require a parsed Basic challenge to identify this failure. No automatic password retries. Keep the destination visible and offer explicit edit/retry/cancel. | Typed transport error and runtime pause; R7/R8 |
+| TLS / redirect / unknown HTTP / Gateway errors | Different messages and actions; no trust bypass, redirect following, fabricated identity, shared-token fallback, or inferred wrong password. | TLS, ingress, and structured Gateway errors; R4/R7 |
+| Expired or rejected setup | Known payload expiry can say expired. Opaque bootstrap rejection must say rejected. Recheck validity after proxy entry and before any resumed attempt. | Parser metadata and server bootstrap contract; R6/R7 |
+| Remove | Durable deletion retires this destination's capabilities. Keep registry entry, Gateway secrets, and pairing; show that protected access may require login again. | SecurePrefs and lifecycle owner; R5/R8 |
+| Reconnect or background wake | Revalidate destination/revision; honor the same terminal pause and bounded retry budget. Background work never repeatedly opens login UI. | Existing ConnectionManager/NodeRuntime/GatewaySession lifecycle; R8/R9 |
+
+### Design review evidence and limits
+
+Impeccable 4.4.0 was installed user-wide, outside this PR. Its repaired launcher
+loaded incumbent context; the design pass used Operate, Android, craft-floor, and
+polish guidance. Independent visual, Android interaction/accessibility, and Gateway
+contract reviewers identified and corrected theme drift, misleading saved/authenticated
+states, None selection, parent-flow recovery, edit validity, focus retention, and
+incomplete large-text scaling. Its mechanical HTML detector returned zero findings
+on the first refined prototype; that result is not native or security proof.
+
+The offline prototype was exercised with dummy inputs through real browser controls:
+None selection, manual/QR resume, replacement validity, unaffected-panel draft
+retention, focus restoration, cancellation, pairing-preserving removal, and scaled
+labels passed 22 focused checks in approximately 0.65 seconds. These checks validate
+only the review artifact. They are not the isolated Android/Caddy/Gateway tests
+specified below, and no QR end-to-end, upgrade, or actual connection success is
+claimed. Native screenshots and behavior proof remain pending implementation.
 
 Drawn boards show selected states; the implementation must also verify None,
 validation, saving, TLS/network/Gateway rejection, expired-code, and cancellation
@@ -215,7 +301,7 @@ Username
 [                                      ]
 Password
 [ ••••••••••••••••••••••••••••••••••• ]
-# Edit: “Password saved; leave unchanged to keep it.”
+# Edit: plain “Password saved” status + [Replace password]
 
 This signs in to the reverse proxy.
 Gateway permissions and device pairing still apply.
@@ -228,9 +314,10 @@ Gateway permissions and device pairing still apply.
 [Remove proxy login]  # enabled only if saved; confirmation inline
 ```
 
-The password is masked by default and is not read back into Compose. Keep/Replace
-are explicit input states; a blank field in edit mode means Keep, not an empty new
-password or removal. Username changes require a new password. Remove means remove
+New or replacement password input is masked; a saved secret is never read back into Compose. Keep/Replace
+are explicit input states; an unchanged saved-password status means Keep, not an empty new
+password or removal. Replace opens a new empty masked field; an empty replacement
+is invalid and cannot save. Username changes require a new password. Remove means remove
 only proxy credentials; it never forgets device pairing. Avoid saveable Bundle,
 navigation arguments, clipboard/copy actions, and diagnostic dumps for these fields.
 Use existing theme, insets, folding, keyboard, accessibility, and localization patterns.
