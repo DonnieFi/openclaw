@@ -605,7 +605,11 @@ export function renderUpdateRunReport(
   }
   lines.push(...hints);
   const overflowsQualifiedAction =
-    next === nextAction && savedAction && currentHealthQualification && next.length > 1100;
+    next !== undefined &&
+    next === nextAction &&
+    savedAction !== undefined &&
+    currentHealthQualification !== undefined &&
+    next.length > 1100;
   const suffixAction = overflowsQualifiedAction
     ? `Historical recovery advice: ${savedAction}`
     : next;

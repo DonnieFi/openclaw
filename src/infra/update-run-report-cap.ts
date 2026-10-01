@@ -45,38 +45,42 @@ export function renderProtectedReport(
   if (required.length === 0 || contentBudget < required.length) {
     return bounded(REPORT_DETAILS_OMITTED_COMPACT, limit);
   }
-  const reservedIndex = reservedLine ? required.indexOf(reservedLine) : -1;
-  const labelLengths = required.map(protectedLabelLength);
-  const allocations = required.map((line, index) =>
-    Math.min(line.length, labelLengths[index] + (line.length > labelLengths[index] ? 1 : 0)),
-  );
-  let remaining = contentBudget - allocations.reduce((sum, size) => sum + size, 0);
+  const entries = required.map((line) => {
+    const labelLength = protectedLabelLength(line);
+    return {
+      line,
+      labelLength,
+      allocation: Math.min(line.length, labelLength + (line.length > labelLength ? 1 : 0)),
+    };
+  });
+  const reserved = reservedLine ? entries.find((entry) => entry.line === reservedLine) : undefined;
+  let remaining = contentBudget - entries.reduce((sum, entry) => sum + entry.allocation, 0);
   if (remaining < 0) {
     return bounded(REPORT_DETAILS_OMITTED_COMPACT, limit);
   }
   // The owner-provided restart command gets first claim after every label. Flexible facts then
   // water-fill the residual budget, so short lines donate unused capacity to longer facts.
-  if (reservedIndex >= 0) {
-    const grant = Math.min(required[reservedIndex].length - allocations[reservedIndex], remaining);
-    allocations[reservedIndex] += grant;
+  if (reserved) {
+    const grant = Math.min(reserved.line.length - reserved.allocation, remaining);
+    reserved.allocation += grant;
     remaining -= grant;
   }
   while (remaining > 0) {
-    const expandable = allocations
-      .map((size, index) => ({ index, size }))
-      .filter(({ index, size }) => index !== reservedIndex && size < required[index].length);
+    const expandable = entries.filter(
+      (entry) => entry !== reserved && entry.allocation < entry.line.length,
+    );
     if (expandable.length === 0) {
       break;
     }
     const share = Math.max(1, Math.floor(remaining / expandable.length));
-    for (const { index } of expandable) {
-      const grant = Math.min(required[index].length - allocations[index], share, remaining);
-      allocations[index] += grant;
+    for (const entry of expandable) {
+      const grant = Math.min(entry.line.length - entry.allocation, share, remaining);
+      entry.allocation += grant;
       remaining -= grant;
     }
   }
-  const protectedLines = required.map((line, index) =>
-    boundedEdges(line, allocations[index], labelLengths[index]),
+  const protectedLines = entries.map((entry) =>
+    boundedEdges(entry.line, entry.allocation, entry.labelLength),
   );
   return [protectedLines[0], REPORT_DETAILS_OMITTED_COMPACT, ...protectedLines.slice(1)].join("\n");
 }
