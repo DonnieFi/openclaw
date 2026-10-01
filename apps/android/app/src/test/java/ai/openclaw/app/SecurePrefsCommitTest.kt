@@ -191,6 +191,24 @@ class SecurePrefsCommitTest {
     assertEquals("dummy-operator-token", tokens.loadToken(endpoint.stableId, "dummy-device", "operator"))
   }
 
+  @Test
+  fun pairingTokenLocksProxyAccountBeforeConnectionIsRecorded() {
+    val (prefs, _) = fixture()
+    val endpoint = GatewayEndpoint.manual("gateway.example", 443, true, "/openclaw")
+    prefs.gatewayRegistry.upsert(
+      GatewayRegistryEntry(endpoint.stableId, GatewayRegistryEntryKind.MANUAL, "Home", endpoint.host, endpoint.port, contextPath = endpoint.contextPath),
+    )
+    assertEquals(GatewayProxySaveResult.SAVED, prefs.saveGatewayProxyCredentials(endpoint, GatewayProxyCredentials("dummy-user", "dummy-password")))
+    assertTrue(DeviceAuthStore(prefs).saveToken(endpoint.stableId, "dummy-device", "node", "dummy-node-token"))
+
+    assertEquals(GatewayProxySaveResult.ACCOUNT_LOCKED, prefs.saveGatewayProxyCredentials(endpoint, GatewayProxyCredentials("dummy-other", "dummy-other-password")))
+
+    prefs.putString("gateway.proxy.basic.${endpoint.stableId}", "unreadable")
+    assertEquals(GatewayProxySaveResult.ACCOUNT_LOCKED, prefs.saveGatewayProxyCredentials(endpoint, GatewayProxyCredentials("dummy-other", "dummy-other-password")))
+    assertEquals(GatewayProxySaveResult.ACCOUNT_LOCKED, prefs.saveGatewayProxyCredentials(endpoint, null))
+    assertEquals("unreadable", prefs.getString("gateway.proxy.basic.${endpoint.stableId}"))
+  }
+
   private fun fixture(): Pair<SecurePrefs, CommitControlledPreferences> {
     val app = RuntimeEnvironment.getApplication()
     val backing = CommitControlledPreferences(app.getSharedPreferences("access-commit-${UUID.randomUUID()}", Context.MODE_PRIVATE))

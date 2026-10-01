@@ -32,12 +32,15 @@ internal class StoredGatewayProxyCredentials(
   override fun toString(): String = "StoredGatewayProxyCredentials([redacted])"
 }
 
-/** Proxy account a saved Gateway is bound to; once [locked], only Forget Gateway can switch accounts. */
+/**
+ * Proxy account a saved Gateway is bound to; once [locked], only Forget Gateway can switch accounts.
+ * A null [username] is an unreadable binding, which a locked Gateway can only leave through Forget.
+ */
 internal class GatewayProxyPrincipal(
-  val username: String,
+  val username: String?,
   val locked: Boolean,
 ) {
-  fun admits(credentials: GatewayProxyCredentials?): Boolean = !locked || credentials == null || credentials.username == username
+  fun admits(credentials: GatewayProxyCredentials?): Boolean = !locked || (username != null && (credentials == null || credentials.username == username))
 }
 
 internal enum class GatewayProxySaveResult { SAVED, ACCOUNT_LOCKED, FAILED }

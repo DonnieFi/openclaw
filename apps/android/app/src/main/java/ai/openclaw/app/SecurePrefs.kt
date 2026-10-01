@@ -14,6 +14,7 @@ import ai.openclaw.app.gateway.GatewayRegistryStore
 import ai.openclaw.app.gateway.GatewayStoreMigration
 import ai.openclaw.app.gateway.StoredGatewayProxyCredentials
 import ai.openclaw.app.gateway.gatewayProxyDestination
+import ai.openclaw.app.gateway.hasGatewayDeviceTokens
 import ai.openclaw.app.node.asStringOrNull
 import ai.openclaw.app.node.parseHexColorArgb
 import ai.openclaw.app.voice.VoiceWakePreferences
@@ -560,11 +561,13 @@ class SecurePrefs(
 
   internal fun gatewayProxyPrincipal(stableId: String): GatewayProxyPrincipal? =
     synchronized(gatewayProxyLock) {
-      val record = gatewayProxyRecord(stableId) ?: return@synchronized null
-      // A recorded connection precedes any pairing token or Gateway-scoped chat data, and
-      // Forget Gateway removes it together with the registry entry.
-      val established = gatewayRegistry.entries.value.any { it.stableId == stableId.trim() && it.lastConnectedAtMs > 0L }
-      GatewayProxyPrincipal(record.username, locked = established)
+      if (!securePrefs.contains(gatewayProxyKey(stableId))) return@synchronized null
+      // The handshake commits device tokens before markConnected persists asynchronously, so either
+      // fact establishes the Gateway; Forget Gateway clears both.
+      val established =
+        gatewayRegistry.entries.value.any { it.stableId == stableId.trim() && it.lastConnectedAtMs > 0L } ||
+          hasGatewayDeviceTokens(stableId)
+      GatewayProxyPrincipal(gatewayProxyRecord(stableId)?.username, locked = established)
     }
 
   internal fun saveGatewayProxyCredentials(
