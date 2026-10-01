@@ -2,10 +2,16 @@
 
 package ai.openclaw.app
 
+import ai.openclaw.app.gateway.GatewayBasicProxyAuthorization
 import ai.openclaw.app.gateway.GatewayBootstrapHandoff
 import ai.openclaw.app.gateway.GatewayCustomHeaders
+import ai.openclaw.app.gateway.GatewayEndpoint
+import ai.openclaw.app.gateway.GatewayIngressAuthorization
+import ai.openclaw.app.gateway.GatewayProxyCredentials
 import ai.openclaw.app.gateway.GatewayRegistryStore
 import ai.openclaw.app.gateway.GatewayStoreMigration
+import ai.openclaw.app.gateway.StoredGatewayProxyCredentials
+import ai.openclaw.app.gateway.gatewayProxyDestination
 import ai.openclaw.app.node.asStringOrNull
 import ai.openclaw.app.node.parseHexColorArgb
 import ai.openclaw.app.voice.VoiceWakePreferences
@@ -47,12 +53,14 @@ data class GatewayCredentials(
   val token: String? = null,
   val bootstrapToken: String? = null,
   val password: String? = null,
+  val bootstrapExpiresAtMs: Long? = null,
 ) {
   internal fun normalized(): GatewayCredentials =
     copy(
       token = token?.trim()?.takeIf { it.isNotEmpty() },
       bootstrapToken = bootstrapToken?.trim()?.takeIf { it.isNotEmpty() },
       password = password?.trim()?.takeIf { it.isNotEmpty() },
+      bootstrapExpiresAtMs = bootstrapExpiresAtMs.takeIf { !bootstrapToken.isNullOrBlank() },
     )
 }
 
@@ -491,8 +499,9 @@ class SecurePrefs(
     token: String? = null,
     bootstrapToken: String? = null,
     password: String? = null,
+    bootstrapExpiresAtMs: Long? = null,
   ) {
-    saveGatewayCredentials(stableId, GatewayCredentials(token, bootstrapToken, password))
+    saveGatewayCredentials(stableId, GatewayCredentials(token, bootstrapToken, password, bootstrapExpiresAtMs))
   }
 
   fun clearGatewayCredentials(stableId: String) {
@@ -525,6 +534,64 @@ class SecurePrefs(
       }
     }
   }
+
+  private val gatewayProxyLock = Any()
+  private val gatewayProxyRevisions = mutableMapOf<String, Long>()
+
+  fun hasGatewayProxyCredentials(stableId: String): Boolean = synchronized(gatewayProxyLock) { securePrefs.contains(gatewayProxyKey(stableId)) }
+
+  fun loadGatewayProxyCredentials(endpoint: GatewayEndpoint): GatewayProxyCredentials? =
+    synchronized(gatewayProxyLock) {
+      val raw = securePrefs.getString(gatewayProxyKey(endpoint.stableId), null) ?: return@synchronized null
+      val record =
+        runCatching { json.decodeFromString<StoredGatewayProxyCredentials>(raw) }.getOrElse {
+          throw IllegalStateException("Saved proxy login is unavailable. Re-enter proxy login.")
+        }
+      check(record.version == 1 && record.destination == gatewayProxyDestination(endpoint).toString()) {
+        "Saved proxy login does not match this secure Gateway destination. Reconfigure proxy login."
+      }
+      GatewayProxyCredentials(record.username, record.password)
+    }
+
+  fun saveGatewayProxyCredentials(
+    endpoint: GatewayEndpoint,
+    credentials: GatewayProxyCredentials?,
+  ): Boolean =
+    synchronized(gatewayProxyLock) {
+      val value =
+        credentials?.let {
+          check(loadGatewayCustomHeaders(endpoint.stableId).keys.none { name -> name.equals("Authorization", ignoreCase = true) }) {
+            "Proxy login conflicts with an existing Authorization header."
+          }
+          json.encodeToString(StoredGatewayProxyCredentials(gatewayProxyDestination(endpoint).toString(), it.username, it.password))
+        }
+      val key = gatewayProxyKey(endpoint.stableId)
+      if (!commitSecureStrings(mapOf(key to value))) return@synchronized false
+      gatewayProxyRevisions[key] = (gatewayProxyRevisions[key] ?: 0L) + 1L
+      true
+    }
+
+  internal fun clearGatewayProxyCredentials(stableId: String): Boolean =
+    synchronized(gatewayProxyLock) {
+      val key = gatewayProxyKey(stableId)
+      if (!commitSecureStrings(mapOf(key to null))) return@synchronized false
+      gatewayProxyRevisions[key] = (gatewayProxyRevisions[key] ?: 0L) + 1L
+      true
+    }
+
+  internal fun gatewayProxyAuthorization(endpoint: GatewayEndpoint): GatewayIngressAuthorization? =
+    synchronized(gatewayProxyLock) {
+      val credentials = loadGatewayProxyCredentials(endpoint) ?: return@synchronized null
+      val key = gatewayProxyKey(endpoint.stableId)
+      val revision = gatewayProxyRevisions[key]
+      GatewayBasicProxyAuthorization(endpoint, credentials) {
+        synchronized(gatewayProxyLock) {
+          securePrefs.contains(key) && gatewayProxyRevisions[key] == revision
+        }
+      }
+    }
+
+  private fun gatewayProxyKey(stableId: String): String = "gateway.proxy.basic.${stableId.trim()}"
 
   /**
    * Custom proxy headers are per-gateway credentials (Cloudflare Access-style service tokens).

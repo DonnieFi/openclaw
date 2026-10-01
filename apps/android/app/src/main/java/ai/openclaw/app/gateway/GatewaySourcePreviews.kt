@@ -100,7 +100,9 @@ internal class GatewaySourceFaviconLoader(
       buildList<String?> {
         // A trusted proxy can authorize HTTP itself, even when hello also issued a device token.
         baseRequest.header("Authorization")?.let(::add)
-        credentials.forEach { add("Bearer $it") }
+        if (baseRequest.header("Authorization")?.startsWith("Basic ", ignoreCase = true) != true) {
+          credentials.forEach { add("Bearer $it") }
+        }
         if (isEmpty()) add(null)
       }.distinct()
     mutex.withLock {
