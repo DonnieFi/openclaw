@@ -5577,12 +5577,13 @@ class NodeRuntime private constructor(
       if (!removalStaged) return false
       val authRetired =
         runCatching {
+          // The pending binding must be durable before the tokens that otherwise establish the lock go.
+          check(prefs.retireGatewayProxyPassword(normalized)) { "Could not remove saved proxy login" }
           val deviceId = identityStore.loadOrCreate().deviceId
           deviceAuthStore.clearToken(normalized, deviceId, "node")
           deviceAuthStore.clearToken(normalized, deviceId, "operator")
           prefs.clearGatewayCredentials(normalized)
           clearAppearancePreferenceOwner(normalized)
-          check(prefs.retireGatewayProxyPassword(normalized)) { "Could not remove saved proxy login" }
           prefs.clearGatewayCustomHeaders(normalized)
           prefs.clearGatewayTlsFingerprint(normalized)
           prefs.clearNotificationForwardingSessionKey(normalized)

@@ -2057,6 +2057,26 @@ class GatewayBootstrapAuthTest {
     }
 
   @Test
+  fun forgetKeepsPairingTokensWhenTheProxyBindingCannotBeMarkedPending() =
+    runBlocking {
+      val app = RuntimeEnvironment.getApplication()
+      val backing = ProxyCommitFailingPreferences(app.getSharedPreferences("proxy-commit-${UUID.randomUUID()}", android.content.Context.MODE_PRIVATE))
+      val prefs = SecurePrefs(app, securePrefsOverride = backing)
+      val runtime = trackRuntime(NodeRuntime(app, prefs, RecordingTranscriptCache()))
+      val deviceId = DeviceIdentityStore.withPrefs(app, prefs).loadOrCreate().deviceId
+      val endpoint = GatewayEndpoint.manual("token.example", 443, true)
+      prefs.gatewayRegistry.upsert(gatewayRegistryEntry(endpoint, null))
+      assertEquals(GatewayProxySaveResult.SAVED, prefs.saveGatewayProxyCredentials(endpoint, GatewayProxyCredentials("dummy-user", "dummy-password")))
+      assertTrue(DeviceAuthStore(prefs).saveToken(endpoint.stableId, deviceId, "operator", "dummy-operator-token"))
+      backing.failProxyCommits = true
+
+      assertFalse(runtime.forgetGateway(endpoint.stableId))
+
+      assertEquals("dummy-operator-token", DeviceAuthStore(prefs).loadToken(endpoint.stableId, deviceId, "operator"))
+      assertEquals(GatewayProxySaveResult.ACCOUNT_LOCKED, prefs.saveGatewayProxyCredentials(endpoint, GatewayProxyCredentials("dummy-other", "dummy-other-password")))
+    }
+
+  @Test
   fun switchToUndiscoveredGatewayKeepsCurrentConnectionAndActiveGateway() {
     val (_, prefs, runtime) = gatewayFixture()
     neutralizeColdStartAutoConnect(runtime)
@@ -3181,6 +3201,36 @@ class GatewayBootstrapAuthTest {
   ): T {
     @Suppress("UNCHECKED_CAST")
     return findTestField(target, name).get(target) as T
+  }
+
+  /** Fails durable commits that touch a proxy record without publishing them, like a lost disk write. */
+  private class ProxyCommitFailingPreferences(
+    private val delegate: android.content.SharedPreferences,
+  ) : android.content.SharedPreferences by delegate {
+    var failProxyCommits = false
+
+    override fun edit(): android.content.SharedPreferences.Editor {
+      val editor = delegate.edit()
+      var touchesProxy = false
+      return object : android.content.SharedPreferences.Editor by editor {
+        override fun putString(
+          key: String?,
+          value: String?,
+        ): android.content.SharedPreferences.Editor {
+          touchesProxy = touchesProxy || key.orEmpty().startsWith("gateway.proxy.basic.")
+          editor.putString(key, value)
+          return this
+        }
+
+        override fun remove(key: String?): android.content.SharedPreferences.Editor {
+          touchesProxy = touchesProxy || key.orEmpty().startsWith("gateway.proxy.basic.")
+          editor.remove(key)
+          return this
+        }
+
+        override fun commit(): Boolean = if (failProxyCommits && touchesProxy) false else editor.commit()
+      }
+    }
   }
 
   private class RecordingTranscriptCache : ChatTranscriptCache {
