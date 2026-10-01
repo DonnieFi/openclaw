@@ -91,7 +91,83 @@ configuration. These are separate from Gateway protocol authentication.
 
 ## Two screen wireframes
 
-These are conceptual text wireframes, not screenshots of implemented UI.
+These are conceptual wireframes, not screenshots of implemented UI. The drawn
+boards use synthetic destinations and credentials; colors and spacing are proposals,
+not a claim that the current Android theme renders this way.
+
+![Gateway setup, saved Gateway editing, and shared proxy login](design/proxy-login-overview.png)
+
+![Rejected proxy login, removal confirmation, and setup recovery](design/proxy-login-recovery.png)
+
+### Layout and interaction detail
+
+The boards depict two screen types with state variants, not additional navigation
+screens. Manual setup uses the same destination review and proxy row as QR review.
+Existing endpoint and Gateway credential controls remain owned by their current
+containers; the shaded Gateway-access block is a placeholder for those controls.
+
+- Destination: show the confirmed scheme, host, effective port, and mount path in a
+  wrapping, read-only block. Do not truncate away the host or route; long destinations
+  scroll with the form. Back from QR review returns to scanning without connecting.
+- Proxy row: None is the default. Selecting HTTP Basic opens Configure. Until the
+  credential draft is complete, Connect is disabled with a visible instruction.
+  Continue returns to review with Configured/Edit; only Connect admits the plan.
+  Cancel restores the prior selection. Saved settings bind Edit to the selected
+  Gateway, including inactive entries, without switching the active Gateway.
+- Username: labeled text input, no auto-capitalization or autocorrect. Password:
+  labeled secure input, masked throughout these proposals; never reveal a stored
+  secret. A new login requires both fields. Inline required-field errors appear
+  beneath their fields, and the primary action remains disabled while invalid.
+- Saved login: show Password saved as a non-secret status, not literal editable
+  password contents. Replace password opens an empty masked input in the same
+  screen. Keep is explicit; changing username requires replacement. Save is disabled
+  until a valid change exists. Continue stages new credentials; Save durably edits
+  existing credentials. Both retain the exact destination.
+- Submission: show a stable Saving or Connecting state, disable duplicate submission,
+  and keep Cancel available. Failed secure storage keeps the form visible and does
+  not connect. Proxy rejection stays inline; edited credentials require explicit
+  Continue/Save, never an automatic password retry.
+- Remove: available only for a saved login. Show an inline confirmation with Remove
+  proxy login and Keep proxy login. Disable the username/password controls while
+  confirming. Remove clears only proxy login; pairing remains saved. It does not
+  imply the protected Gateway will connect without credentials.
+- Recovery: the Gateway screen owns separate Chat/operator and Phone/node statuses.
+  Pending node approval must not replace a successful chat status. Network failure
+  offers Retry/Cancel; TLS failure offers Check address/Cancel with no trust bypass;
+  expired setup offers Scan new code/Cancel. Gateway rejection uses its own error
+  category, never the proxy-password message. The error table below owns exact
+  classification and retry limits.
+- Accessibility and small displays: use native theme components, minimum 48 dp
+  targets, persistent field labels, announced errors and connection status changes,
+  logical focus order, and a scrolling content column above the primary actions.
+  The keyboard must not cover the active field or Cancel. Large font sizes and
+  landscape/foldable layouts wrap rather than clip. Removal is identified by text,
+  not color alone. Screen readers announce saved-password status without a secret.
+
+### Optional Lobsterdex detail
+
+The rendered option replaces the decorative claw mark with a small static blue
+lobster, using the existing `blue` shell/claw colors in
+[`lobster-pet-palettes.ts`](../../ui/src/components/lobster-pet-palettes.ts).
+The drawn silhouette is a concept, not an exact port of the Control UI sprite.
+A final native asset must reuse approved artwork or receive artwork approval.
+
+Proposed Easter egg: tapping the decorative mascot five times cycles a small
+approved Lobsterdex character set for this screen visit. Keep the selection in
+memory only; no new storage, network fetch, discovery tracking, or credential-derived
+selection. The default remains the normal brand mark unless this optional detail
+is approved. Expose an accessible “Change mascot” action so the hidden gesture is
+not the only way to use it. Mascot changes must not move fields, discard input,
+start connections, or change error/status announcements. Keep it static during
+entry and errors; respect reduced motion if animation is approved later. The
+mascot never represents TLS trust, login success, or Gateway permissions.
+
+This is a separable design option, not a requirement for the proxy-login fix.
+The renders preview the alternate mascot enabled.
+
+Drawn boards show selected states; the implementation must also verify None,
+validation, saving, TLS/network/Gateway rejection, expired-code, and cancellation
+states. These artifacts provide design detail, not runtime proof.
 The proposed shared row is reused in existing setup/review/settings containers;
 that interpretation of “one existing screen” is an open product decision.
 
