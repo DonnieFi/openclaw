@@ -1275,11 +1275,7 @@ class MainViewModel private constructor(
     ensureRuntime().setTalkModeEnabled(enabled)
   }
 
-  suspend fun requestVoiceNotePermission(): Boolean = requestRecordAudioPermission()
-
-  suspend fun requestDictationPermission(): Boolean = requestRecordAudioPermission()
-
-  private suspend fun requestRecordAudioPermission(): Boolean {
+  internal suspend fun requestRecordAudioPermission(): Boolean {
     val requester = permissionRequester ?: return false
     return try {
       requester.requestIfMissing(listOf(Manifest.permission.RECORD_AUDIO))[Manifest.permission.RECORD_AUDIO] == true
