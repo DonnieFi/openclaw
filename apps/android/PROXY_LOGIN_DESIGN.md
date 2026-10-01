@@ -74,7 +74,7 @@ and [follow-up behavior](https://github.com/square/okhttp/blob/parent-5.5.0/okht
 | ID | Required outcome |
 | --- | --- |
 | R1 | One reusable Proxy authentication row: **None / HTTP Basic**, **Configure/Edit**. One reusable credentials screen serves manual, QR/setup-code, saved edit, and reconnect recovery. No arbitrary header editor. |
-| R2 | Proxy username/password are a separate credential family. Never populate protocol `auth.token`, `auth.password`, or `auth.bootstrapToken` from them. Send `Authorization: Basic …` to Caddy, not `Proxy-Authorization`/HTTP forward-proxy auth. |
+| R2 | Proxy username/password are a separate credential family. Never populate protocol `auth.token`, `auth.password`, or `auth.bootstrapToken` from them. Send `Authorization: Basic …` to Caddy, not `Proxy-Authorization`/HTTP forward-proxy auth. Caddy authenticates first, then strips Basic Authorization before forwarding upstream to the Gateway. |
 | R3 | Caddy alone produces verified identity headers. Android never manufactures identity, forwarded-user, forwarded-IP, or scope-grant headers. Gateway identity/roles/pairing continue to reject unauthorized access. |
 | R4 | Credentials are released only to the user-confirmed HTTPS/WSS destination after TLS verification. Confirmation includes hostname, effective port, and mount path; no alias, fallback host, downgrade, or redirect inherits authorization. |
 | R5 | A durable save/remove reports success or an actionable storage error. Editing proxy access never invokes pairing reset, setup replacement, or Forget. |
@@ -333,6 +333,17 @@ No live Caddy/Gateway changes are part of this design. Proxy-only ingress, ident
 header overwrite, and Gateway trusted-proxy/roles policies are deployment prerequisites,
 not settings the Android client may repair by weakening auth.
 
+**Upstream credential boundary:** Caddy must validate Basic authentication before
+proxying, then remove the client's Basic Authorization header from the upstream
+request (for example, `header_up -Authorization` in the authenticated reverse-proxy
+handler). Apply this boundary to WebSocket upgrades and every protected HTTP/media
+route; forward only the proxy-established identity required by the existing Gateway
+policy. Caddy forwards incoming headers by default; authentication alone does not
+remove this credential. See [Caddy header defaults and deletion](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy#headers).
+The issue reports that upstream Authorization removal was observed in the on-disk
+configuration; that is not proof of the headers on an actual Android request. This
+requirement does not authorize changing live configuration.
+
 ## Minimal file-level implementation plan after approval
 
 | File(s) | Planned change |
@@ -372,7 +383,7 @@ to the heavier integration/release tier, not every PR's unit suite.
 | Same transport owner | 301/302/303/307/308 to same authority, another mount/host/port, or HTTP sends no follow-up request. Test second server observes zero requests; never rely only on final client error. Media/favicon redirects and expired/retired grants follow the same rule. |
 | `gateway/GatewaySessionReconnectTest.kt`, runtime lifecycle tests | Password edit/remove/switch during queued upgrade, TLS probe, HTTP range retry, and bootstrap handoff fences old work. Latest credential applies only after drain; paired role tokens survive. Network/foreground/background wake cannot unpause terminal failures. Use fake time to prove retry cap and Cancel. |
 | `gateway/GatewayTlsTest.kt` and TLS wire fixture | Trusted CA+correct hostname succeeds; untrusted CA, expired certificate, wrong hostname, pin mismatch, HTTP downgrade, and QR-supplied unverified pin fail before authenticated HTTP reaches server. Distinguish TLS from network timeout. |
-| Gateway's existing role/bootstrap contract tests + isolated Caddy integration | Correct Basic with overwritten trusted identity permits only assigned operator methods. Missing/spoofed identity, disallowed user, or denied role remains rejected. Device/node pairing and scope upgrade still require their configured approval. Client does not request server policy changes. |
+| Gateway's existing role/bootstrap contract tests + isolated Caddy integration | Observe Basic Authorization at Caddy ingress and its absence at Gateway ingress on upgrades and HTTP/media requests. Correct Basic with overwritten trusted identity permits only assigned operator methods. Missing/spoofed identity, disallowed user, or denied role remains rejected. Device/node pairing and scope upgrade still require their configured approval. Client does not request server policy changes. |
 | Diagnostics/export owner and captured fixture output | Dummy password, username, encoded Basic header, bootstrap/Gateway tokens are absent from logs, status, diagnostic reports, saved state, QR/share/export, request URLs, and sanitized proof. Inspect outgoing content as well as direct return values. |
 | Emulator/Caddy/Gateway QR end-to-end | Generate code via the actual isolated Gateway owner; scan an actual QR image through the production scanner; confirm destination, enter dummy proxy login, observe distinct operator/node hellos, complete required approvals, send/read permitted chat, kill/relaunch, and reconnect from saved auth. Pairing records survive proxy edit/removal. Repeat wrong password→stable recovery→correct password, expiry while entering credentials, multiple Gateways, and role denial. None must still work. |
 
@@ -417,10 +428,9 @@ before/after screenshots in chat and the PR when UI implementation begins.
 9. **Document validation:** `pnpm docs:list` and `git diff --check` passed; all local
    source links resolve. The installed `oxfmt` excluded this Android Markdown path,
    so no formatter pass is claimed. Runtime tests and visual captures remain pending.
-10. **Review:** the earlier independent autoreview attempt could not reach its service;
-   automatic approval review rejected exporting repository content to that reviewer.
-   No independent autoreview pass is claimed. Do not retry that route without resolving
-   the export authorization boundary.
+10. **Review:** The retry was authorized for the public design document and completed. Its missing
+   upstream-header-stripping requirement is incorporated above; subsequent review
+   results belong in the PR evidence. No runtime proof is implied.
 
 Approve the design and the consequential decisions before implementation. This draft
 is a requirements/source-inspection deliverable, not a verified authentication fix.
