@@ -726,26 +726,10 @@ class GatewaySessionCustomHeadersTest {
       val trusted = sourceFaviconTls()
       val wrongHostname = sourceFaviconTls("127.0.0.2")
       val untrusted = sourceFaviconTls()
-      val trustDirectory =
-        java.nio.file.Files
-          .createTempDirectory("android-basic-proxy-trust-")
-      val trustFile = trustDirectory.resolve("trust.p12")
-      val trustPassword = "synthetic-trust-store"
-      val propertyNames = listOf("javax.net.ssl.trustStore", "javax.net.ssl.trustStoreType", "javax.net.ssl.trustStorePassword")
-      val previousProperties = propertyNames.associateWith(System::getProperty)
       val foreign = MockWebServer().apply { start() }
       try {
-        KeyStore.getInstance("PKCS12").apply {
-          load(null, null)
-          setCertificateEntry("synthetic-ca", trusted.certificate)
-          setCertificateEntry("synthetic-wrong-host", wrongHostname.certificate)
-          java.nio.file.Files
-            .newOutputStream(trustFile)
-            .use { store(it, trustPassword.toCharArray()) }
-        }
-        System.setProperty(propertyNames[0], trustFile.toString())
-        System.setProperty(propertyNames[1], "PKCS12")
-        System.setProperty(propertyNames[2], trustPassword)
+        gatewayPlatformTrustOverrideForTests =
+          syntheticPlatformTrust(trusted.certificate, wrongHostname.certificate)
         for (scenario in listOf("wrong-password", "same-redirect", "foreign-redirect", "gateway-role", "wrong-hostname", "untrusted-ca", "favicon-rejected")) {
           val server =
             MockWebServer().apply {
@@ -891,12 +875,8 @@ class GatewaySessionCustomHeadersTest {
           }
         }
       } finally {
-        previousProperties.forEach { (name, value) -> if (value == null) System.clearProperty(name) else System.setProperty(name, value) }
+        gatewayPlatformTrustOverrideForTests = null
         foreign.shutdown()
-        java.nio.file.Files
-          .deleteIfExists(trustFile)
-        java.nio.file.Files
-          .deleteIfExists(trustDirectory)
       }
     }
 

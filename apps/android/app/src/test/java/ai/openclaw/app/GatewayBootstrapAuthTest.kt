@@ -20,6 +20,8 @@ import ai.openclaw.app.gateway.GatewaySession
 import ai.openclaw.app.gateway.GatewayTlsParams
 import ai.openclaw.app.gateway.GatewayTlsProbeFailure
 import ai.openclaw.app.gateway.GatewayTlsProbeResult
+import ai.openclaw.app.gateway.gatewayPlatformTrustOverrideForTests
+import ai.openclaw.app.gateway.syntheticPlatformTrust
 import ai.openclaw.app.node.ConnectionManager
 import ai.openclaw.app.node.InvokeDispatcher
 import ai.openclaw.app.protocol.OpenClawCameraCommand
@@ -197,13 +199,6 @@ class GatewayBootstrapAuthTest {
   @Test
   fun proxyCredentialEditsDrainBothRolesPreservePairingAndRetireStreaming() =
     runBlocking {
-      val trustDirectory =
-        java.nio.file.Files
-          .createTempDirectory("android-runtime-proxy-trust-")
-      val trustFile = trustDirectory.resolve("trust.p12")
-      val propertyNames = listOf("javax.net.ssl.trustStore", "javax.net.ssl.trustStoreType", "javax.net.ssl.trustStorePassword")
-      val previousProperties = propertyNames.associateWith(System::getProperty)
-      val trustPassword = "synthetic-trust-store"
       val server = MockWebServer()
       try {
         val keyPair = KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }.generateKeyPair()
@@ -240,16 +235,7 @@ class GatewayBootstrapAuthTest {
           }
         val managers = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm()).apply { init(keyStore, charArrayOf()) }
         val tls = SSLContext.getInstance("TLS").apply { init(managers.keyManagers, null, null) }
-        KeyStore.getInstance("PKCS12").apply {
-          load(null, null)
-          setCertificateEntry("synthetic-ca", certificate)
-          java.nio.file.Files
-            .newOutputStream(trustFile)
-            .use { store(it, trustPassword.toCharArray()) }
-        }
-        System.setProperty(propertyNames[0], trustFile.toString())
-        System.setProperty(propertyNames[1], "PKCS12")
-        System.setProperty(propertyNames[2], trustPassword)
+        gatewayPlatformTrustOverrideForTests = syntheticPlatformTrust(certificate)
         server.useHttps(tls.socketFactory, false)
         server.start(InetAddress.getByName("127.0.0.1"), 0)
         val endpoint = GatewayEndpoint.manual("127.0.0.1", server.port, tlsEnabled = true)
@@ -380,12 +366,8 @@ class GatewayBootstrapAuthTest {
           closeFixtures()
         } finally {
           runtimes.clear()
-          previousProperties.forEach { (name, value) -> if (value == null) System.clearProperty(name) else System.setProperty(name, value) }
+          gatewayPlatformTrustOverrideForTests = null
           server.shutdown()
-          java.nio.file.Files
-            .deleteIfExists(trustFile)
-          java.nio.file.Files
-            .deleteIfExists(trustDirectory)
         }
       }
     }
