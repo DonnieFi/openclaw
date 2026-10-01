@@ -20,6 +20,7 @@ import {
   LEGACY_UPDATE_RUN_EXPIRED_REASON,
 } from "./update-run-legacy-expiry.js";
 import { isAcknowledgedAbandonedUpdateRun, type UpdateRunRecord } from "./update-run-record.js";
+import { boundedProtectedLine, renderProtectedReport } from "./update-run-report-cap.js";
 import type { UpdateRunReportHealth } from "./update-run-report-health.js";
 import {
   updateRunServiceWarning,
@@ -194,6 +195,27 @@ function bounded(text: string, limit: number): string {
   return text.length <= limit ? text : `${sliceUtf16Safe(text, 0, limit - 1)}…`;
 }
 
+const SERVICE_RESTART_COMMAND_MARKER = "After the update, run: ";
+
+function formatServiceWarning(message: string): {
+  report: string;
+  protected: string;
+  reserve: boolean;
+} {
+  // The system-service owner appends the only safe restart command after this marker.
+  const commandAt = message.lastIndexOf(SERVICE_RESTART_COMMAND_MARKER);
+  const warning = `Warning: ${message}`;
+  const restartCommand =
+    commandAt < 0 ? undefined : message.slice(commandAt + SERVICE_RESTART_COMMAND_MARKER.length);
+  const reportLine =
+    commandAt < 0 ? warning : `Warning: operator restart required: ${restartCommand}`;
+  return {
+    report: warning.length <= 509 ? warning : boundedProtectedLine(reportLine, 509),
+    protected: restartCommand ? `Restart: ${restartCommand}` : warning,
+    reserve: commandAt >= 0,
+  };
+}
+
 function recoveryHints(run: ReportInput, nextAction?: string): string[] {
   if (run.target?.installationMethod === "ocm") {
     return nextAction ? [] : run.origin.nextAction ? [run.origin.nextAction] : [];
@@ -295,6 +317,21 @@ export function renderUpdateRunReport(
       break;
   }
   headline = bounded(headline, 500);
+  const protectedHeadline = reconciled
+    ? "ℹ️ Reconciled."
+    : run.status === "succeeded"
+      ? "✅ Updated."
+      : run.status === "failed"
+        ? run.reason === LEGACY_UPDATE_RUN_EXPIRED_REASON
+          ? "ℹ️ Update abandoned."
+          : "⚠️ Failed."
+        : run.status === "skipped"
+          ? run.reason === "still-starting" || run.reason === "gateway-readiness-unverified"
+            ? "ℹ️ Installed; readiness unverified."
+            : "ℹ️ Update skipped."
+          : run.status === "rolled-back"
+            ? "↩️ Rolled back."
+            : headline;
   const lines: string[] = [];
   if (currentHealth && !run.origin.nextAction && !opts.nextAction) {
     lines.push(formatUpdateRunCurrentHealth(currentHealth));
@@ -380,15 +417,47 @@ export function renderUpdateRunReport(
     );
   }
   const warningStart = lines.length;
+  const serviceWarning = updateRunServiceWarning(run.steps);
+  const serviceWarningFormat = serviceWarning ? formatServiceWarning(serviceWarning) : undefined;
   for (const message of updateRunWarningMessages(run.steps, 3)) {
-    lines.push(`Warning: ${bounded(message, 500)}`);
+    lines.push(
+      message === serviceWarning && serviceWarningFormat
+        ? serviceWarningFormat.report
+        : `Warning: ${bounded(message, 500)}`,
+    );
   }
   const warningEnd = lines.length;
   const facts = run.verification;
   const observation = run.steps.findLast((step) => step.step === "gateway recovery verification");
   const recovery = observation && formatUpdateRunRecovery(facts, observation);
-  if (recovery) {
-    lines.push(`Recorded recovery: ${recovery}.`);
+  const recoveryLine = recovery ? `Recorded recovery: ${recovery}.` : undefined;
+  const recoveryCode = observation?.failureFacts?.[0]?.code;
+  const recoveryVersion =
+    facts.recovery?.serviceRestartSafe && facts.recovery.service === "healthy"
+      ? facts.recovery.version
+      : facts.versionMatch && facts.readyz && facts.settled
+        ? facts.runningVersion
+        : undefined;
+  const recoveryServing = observation?.exitCode === 0 && recoveryVersion && !recoveryCode;
+  const restartUnsafe = facts.recovery?.serviceRestartSafe === false;
+  const protectedRecoveryState = recoveryCode
+    ? recoveryCode === "gateway-probe-failed"
+      ? `probe failed${restartUnsafe ? "; restart unsafe" : ""}`
+      : `not serving${restartUnsafe ? "; restart unsafe" : ""}`
+    : recoveryServing
+      ? restartUnsafe
+        ? "serving; restart unsafe"
+        : "serving verified"
+      : facts.recovery?.packageRollbackVerified
+        ? restartUnsafe
+          ? "rollback done; restart unsafe"
+          : "rollback done; pending"
+        : restartUnsafe
+          ? "pending; restart unsafe"
+          : "readiness pending";
+  const protectedRecoveryLine = recoveryLine ? `Recovery: ${protectedRecoveryState}.` : undefined;
+  if (recoveryLine) {
+    lines.push(recoveryLine);
   }
   const verification = [
     facts.booted ? "gateway booted" : undefined,
@@ -408,8 +477,49 @@ export function renderUpdateRunReport(
       ? `${facts.pluginErrors.length} plugin activation error(s)`
       : undefined,
   ].filter(Boolean);
-  if (verification.length) {
-    lines.push(`Recorded verification: ${verification.join("; ")}.`);
+  const verificationLine = verification.length
+    ? `Recorded verification: ${verification.join("; ")}.`
+    : undefined;
+  const identity = resolveUpdateRunIdentity(facts, run.after);
+  const protectedVerificationState =
+    facts.serviceRunning === false
+      ? facts.pluginErrors?.length
+        ? "stopped; plugin errors"
+        : "stopped"
+      : facts.readyz === false
+        ? "HTTP not ready"
+        : facts.channelsReady === false
+          ? "channels not ready"
+          : facts.pluginErrors?.length
+            ? "plugin errors"
+            : identity.kind === "mismatch"
+              ? `${identity.field} mismatch`
+              : identity.kind === "unavailable"
+                ? "identity unavailable"
+                : facts.readyz === true
+                  ? facts.channelsReady === true
+                    ? "serving; channels ready"
+                    : "serving"
+                  : facts.serviceRunning === true
+                    ? facts.channelsReady === true
+                      ? "running; channels ready"
+                      : "service running"
+                    : facts.versionMatch === true
+                      ? facts.channelsReady === true
+                        ? "version; channels ready"
+                        : "version verified"
+                      : facts.booted && facts.channelsReady === true
+                        ? "booted; channels ready"
+                        : facts.booted
+                          ? "booted"
+                          : facts.channelsReady === true
+                            ? "channels ready"
+                            : "checks recorded";
+  const protectedVerificationLine = verificationLine
+    ? `Verification: ${protectedVerificationState}.`
+    : undefined;
+  if (verificationLine) {
+    lines.push(verificationLine);
   }
   for (const attempt of run.repair.slice(-3)) {
     lines.push(
@@ -429,13 +539,17 @@ export function renderUpdateRunReport(
       ? UPDATE_INSTALL_SKIP_GUIDANCE[run.reason]
       : undefined;
   const savedAction = opts.nextAction ?? run.origin.nextAction ?? skipGuidance;
-  const nextAction =
+  const currentHealthQualification =
     savedAction && currentHealth
       ? `${formatUpdateRunCurrentHealth(currentHealth)} ${
           currentHealth.kind === "responding"
             ? "This observation supersedes saved claims that the Gateway is stopped; other recovery constraints still apply. The recorded update outcome is unchanged."
             : "Check current Gateway status before acting on this saved advice."
-        }\nHistorical recovery advice: “${savedAction}”`
+        }`
+      : undefined;
+  const nextAction =
+    savedAction && currentHealthQualification
+      ? `${currentHealthQualification}\nHistorical recovery advice: “${savedAction}”`
       : savedAction;
   const lastRepairReason = run.repair.at(-1)?.reason;
   const repairStopReason =
@@ -490,11 +604,27 @@ export function renderUpdateRunReport(
     };
   }
   lines.push(...hints);
-  const suffix = next ? `\n${bounded(next, 1100)}` : "";
+  const overflowsQualifiedAction =
+    next === nextAction && savedAction && currentHealthQualification && next.length > 1100;
+  const suffixAction = overflowsQualifiedAction
+    ? `Historical recovery advice: ${savedAction}`
+    : next;
+  const overflowHealth =
+    overflowsQualifiedAction && currentHealthQualification ? currentHealthQualification : undefined;
+  const protectedOverflowHealth = overflowHealth
+    ? currentHealth?.kind === "responding"
+      ? "Health: responding; stop advice stale."
+      : "Health: unknown; verify saved advice."
+    : undefined;
+  const suffix = suffixAction ? `\n${bounded(suffixAction, 1100)}` : "";
   const budget = 1500 - suffix.length;
   // Advisory warnings yield the chat budget before the recovery and verification facts
   // after them. Trailing warnings go first; the operator's restart command leads and never yields.
-  const minWarnings = updateRunServiceWarning(run.steps) ? 1 : 0;
+  const protectedServiceWarningLine = serviceWarningFormat?.protected;
+  const reservedServiceWarningLine = serviceWarningFormat?.reserve
+    ? protectedServiceWarningLine
+    : undefined;
+  const minWarnings = serviceWarning ? 1 : 0;
   const renderBody = (keptWarnings: number) => {
     const omitted = warningEnd - warningStart - keptWarnings;
     return [
@@ -506,6 +636,7 @@ export function renderUpdateRunReport(
           ]
         : []),
       ...lines.slice(warningEnd),
+      ...(overflowHealth ? [overflowHealth] : []),
     ]
       .filter((line) => line !== next)
       .join("\n");
@@ -516,7 +647,20 @@ export function renderUpdateRunReport(
     keptWarnings -= 1;
     body = renderBody(keptWarnings);
   }
-  return { headline, lines, markdown: `${bounded(body, budget)}${suffix}` };
+  if (body.length > budget) {
+    body = renderProtectedReport(
+      [
+        protectedHeadline,
+        protectedServiceWarningLine,
+        protectedRecoveryLine,
+        protectedVerificationLine,
+        protectedOverflowHealth,
+      ].filter((line): line is string => Boolean(line)),
+      budget,
+      reservedServiceWarningLine,
+    );
+  }
+  return { headline, lines, markdown: `${body}${suffix}` };
 }
 
 /** Old CLI finalization paths still return runner results; all wording stays in the report. */
