@@ -5582,7 +5582,7 @@ class NodeRuntime private constructor(
           deviceAuthStore.clearToken(normalized, deviceId, "operator")
           prefs.clearGatewayCredentials(normalized)
           clearAppearancePreferenceOwner(normalized)
-          check(prefs.clearGatewayProxyCredentials(normalized)) { "Could not remove saved proxy login" }
+          check(prefs.retireGatewayProxyPassword(normalized)) { "Could not remove saved proxy login" }
           prefs.clearGatewayCustomHeaders(normalized)
           prefs.clearGatewayTlsFingerprint(normalized)
           prefs.clearNotificationForwardingSessionKey(normalized)
@@ -5598,6 +5598,8 @@ class NodeRuntime private constructor(
             clientDatabases.commitGatewayRemoval(normalized, requireCacheRemoval = true)
             externalTranscriptCache?.clearGateway(normalized)
           }
+          // The proxy account binding outlives a partial forget so leftover chat data stays bound to it.
+          check(prefs.clearGatewayProxyCredentials(normalized)) { "Could not remove proxy account binding" }
         }.onFailure { err ->
           Log.e("OpenClawRuntime", "Failed to purge forgotten gateway chat data", err)
           setStandaloneGatewayStatus("Failed: couldn't clear offline gateway data. Retry forget.")

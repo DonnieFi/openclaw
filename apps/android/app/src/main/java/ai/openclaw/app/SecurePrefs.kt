@@ -581,12 +581,9 @@ class SecurePrefs(
           StoredGatewayProxyCredentials(gatewayProxyDestination(endpoint).toString(), credentials.username, credentials.password)
         } else {
           // Remove keeps the account binding so switching accounts still requires Forget Gateway.
-          gatewayProxyRecord(endpoint.stableId)?.let { StoredGatewayProxyCredentials(it.destination, it.username) }
+          gatewayProxyAccountBinding(endpoint.stableId)
         }
-      val key = gatewayProxyKey(endpoint.stableId)
-      if (!commitSecureStrings(mapOf(key to record?.let { json.encodeToString(it) }))) return@synchronized GatewayProxySaveResult.FAILED
-      gatewayProxyRevisions[key] = (gatewayProxyRevisions[key] ?: 0L) + 1L
-      GatewayProxySaveResult.SAVED
+      if (commitGatewayProxyRecord(endpoint.stableId, record)) GatewayProxySaveResult.SAVED else GatewayProxySaveResult.FAILED
     }
 
   private fun gatewayProxyRecord(stableId: String): StoredGatewayProxyCredentials? =
@@ -594,13 +591,22 @@ class SecurePrefs(
       runCatching { json.decodeFromString<StoredGatewayProxyCredentials>(raw) }.getOrNull()
     }
 
-  internal fun clearGatewayProxyCredentials(stableId: String): Boolean =
-    synchronized(gatewayProxyLock) {
-      val key = gatewayProxyKey(stableId)
-      if (!commitSecureStrings(mapOf(key to null))) return@synchronized false
-      gatewayProxyRevisions[key] = (gatewayProxyRevisions[key] ?: 0L) + 1L
-      true
-    }
+  private fun gatewayProxyAccountBinding(stableId: String): StoredGatewayProxyCredentials? = gatewayProxyRecord(stableId)?.let { StoredGatewayProxyCredentials(it.destination, it.username) }
+
+  private fun commitGatewayProxyRecord(
+    stableId: String,
+    record: StoredGatewayProxyCredentials?,
+  ): Boolean {
+    val key = gatewayProxyKey(stableId)
+    if (!commitSecureStrings(mapOf(key to record?.let { json.encodeToString(it) }))) return false
+    gatewayProxyRevisions[key] = (gatewayProxyRevisions[key] ?: 0L) + 1L
+    return true
+  }
+
+  /** Forget retires the password with Gateway auth but keeps the binding until local Gateway data is gone. */
+  internal fun retireGatewayProxyPassword(stableId: String): Boolean = synchronized(gatewayProxyLock) { commitGatewayProxyRecord(stableId, gatewayProxyAccountBinding(stableId)) }
+
+  internal fun clearGatewayProxyCredentials(stableId: String): Boolean = synchronized(gatewayProxyLock) { commitGatewayProxyRecord(stableId, null) }
 
   internal fun gatewayProxyAuthorization(endpoint: GatewayEndpoint): GatewayIngressAuthorization? =
     synchronized(gatewayProxyLock) {

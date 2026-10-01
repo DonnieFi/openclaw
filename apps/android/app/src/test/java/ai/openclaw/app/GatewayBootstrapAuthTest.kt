@@ -2000,6 +2000,31 @@ class GatewayBootstrapAuthTest {
     }
 
   @Test
+  fun partialForgetKeepsProxyAccountBoundUntilChatDataIsGone() =
+    runBlocking {
+      val app = RuntimeEnvironment.getApplication()
+      val prefs = testPrefs(app)
+      val transcriptCache = RecordingTranscriptCache().apply { failClear = true }
+      val runtime = trackRuntime(NodeRuntime(app, prefs, transcriptCache))
+      val endpoint = GatewayEndpoint.manual("gateway.example", 443, true)
+      prefs.gatewayRegistry.upsert(gatewayRegistryEntry(endpoint, null))
+      prefs.gatewayRegistry.markConnected(endpoint.stableId, 1_700_000_000_000L)
+      assertEquals(GatewayProxySaveResult.SAVED, prefs.saveGatewayProxyCredentials(endpoint, GatewayProxyCredentials("dummy-user", "dummy-password")))
+
+      assertFalse(runtime.forgetGateway(endpoint.stableId))
+
+      assertNull(prefs.loadGatewayProxyCredentials(endpoint))
+      assertEquals("dummy-user", prefs.gatewayProxyPrincipal(endpoint.stableId)?.username)
+      assertEquals(GatewayProxySaveResult.ACCOUNT_LOCKED, prefs.saveGatewayProxyCredentials(endpoint, GatewayProxyCredentials("dummy-other", "dummy-other-password")))
+
+      transcriptCache.failClear = false
+      assertTrue(runtime.forgetGateway(endpoint.stableId))
+
+      assertNull(prefs.gatewayProxyPrincipal(endpoint.stableId))
+      assertEquals(listOf(endpoint.stableId), transcriptCache.clearedGatewayIds)
+    }
+
+  @Test
   fun switchToUndiscoveredGatewayKeepsCurrentConnectionAndActiveGateway() {
     val (_, prefs, runtime) = gatewayFixture()
     neutralizeColdStartAutoConnect(runtime)
@@ -3128,6 +3153,7 @@ class GatewayBootstrapAuthTest {
 
   private class RecordingTranscriptCache : ChatTranscriptCache {
     val clearedGatewayIds = mutableListOf<String>()
+    var failClear = false
 
     override suspend fun loadLastDefaultAgentId(gatewayId: String): String? = null
 
@@ -3169,6 +3195,7 @@ class GatewayBootstrapAuthTest {
     ) = Unit
 
     override suspend fun clearGateway(gatewayId: String) {
+      check(!failClear) { "synthetic transcript clear failure" }
       clearedGatewayIds += gatewayId
     }
   }
