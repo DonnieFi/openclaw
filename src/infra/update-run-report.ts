@@ -317,6 +317,8 @@ export function renderUpdateRunReport(
       break;
   }
   headline = bounded(headline, 500);
+  // Saved pending reports are recognized by the running headline prefix. Compaction must retain
+  // that lifecycle discriminator so terminal recovery can replace the pending projection.
   const protectedHeadline = reconciled
     ? "ℹ️ Reconciled."
     : run.status === "succeeded"
