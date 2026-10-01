@@ -1247,6 +1247,7 @@ class GatewaySession(
         hostname = hostname,
         headers = mediaTransportHeaders(),
         credentials = controlUiReadCredentials,
+        usesBasicProxyGrant = hasBasicProxyAuthorization,
         withEnqueue = withEnqueue,
       )
 

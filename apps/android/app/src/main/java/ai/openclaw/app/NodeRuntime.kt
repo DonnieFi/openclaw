@@ -3549,8 +3549,9 @@ class NodeRuntime private constructor(
               disconnectSecondaryGatewayConnection(stableId)
               return@synchronized
             }
+            // A drained predecessor never supplies callbacks for this admission.
             val session =
-              secondaryOperatorSessions[stableId]?.session ?: run {
+              run {
                 lateinit var created: GatewaySession
                 created =
                   GatewaySession(
@@ -3558,21 +3559,35 @@ class NodeRuntime private constructor(
                     identityStore = identityStore,
                     deviceAuthStore = deviceAuthStore,
                     onConnected = {
-                      synchronized(gatewayLifecycleIntentLock) {
-                        val current = secondaryOperatorSessions[stableId]
-                        if (current?.session === created && current.endpoint != null) {
-                          prefs.gatewayRegistry.markConnected(stableId, System.currentTimeMillis())
+                      val publication = secondaryOperatorSessions[stableId]
+                      if (publication?.session === created && publication.endpoint != null) {
+                        // Session callbacks hold session locks; dispatch before acquiring the runtime owner.
+                        scope.launch {
+                          synchronized(gatewayLifecycleIntentLock) {
+                            if (secondaryOperatorSessions[stableId] === publication && publication.session === created &&
+                              stableId in currentBackgroundGatewayStableIds() &&
+                              resolveGatewaySwitchEndpoint(stableId) == publication.endpoint
+                            ) {
+                              prefs.gatewayRegistry.markConnected(stableId, System.currentTimeMillis())
+                            }
+                          }
                         }
                       }
                     },
                     onDisconnected = {},
                     onConnectFailure = { error, paused ->
-                      synchronized(gatewayLifecycleIntentLock) {
-                        val current = secondaryOperatorSessions[stableId]
-                        if (current?.session === created && current.endpoint != null && paused &&
-                          (error.code.startsWith("PROXY_") || prefs.hasGatewayProxyCredentials(stableId))
-                        ) {
-                          secondaryOperatorSessions[stableId] = current.copy(proxyReconnectPaused = true)
+                      val publication = secondaryOperatorSessions[stableId]
+                      if (publication?.session === created && publication.endpoint != null && paused) {
+                        scope.launch {
+                          synchronized(gatewayLifecycleIntentLock) {
+                            if (secondaryOperatorSessions[stableId] === publication && publication.session === created &&
+                              stableId in currentBackgroundGatewayStableIds() &&
+                              resolveGatewaySwitchEndpoint(stableId) == publication.endpoint &&
+                              (error.code.startsWith("PROXY_") || prefs.hasGatewayProxyCredentials(stableId))
+                            ) {
+                              secondaryOperatorSessions[stableId] = publication.copy(proxyReconnectPaused = true)
+                            }
+                          }
                         }
                       }
                     },

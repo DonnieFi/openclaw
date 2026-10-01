@@ -1,7 +1,10 @@
 package ai.openclaw.app
 
+import ai.openclaw.app.gateway.DeviceAuthStore
 import ai.openclaw.app.gateway.GatewayEndpoint
 import ai.openclaw.app.gateway.GatewayProxyCredentials
+import ai.openclaw.app.gateway.GatewayRegistryEntry
+import ai.openclaw.app.gateway.GatewayRegistryEntryKind
 import android.content.Context
 import android.content.SharedPreferences
 import kotlinx.coroutines.runBlocking
@@ -42,6 +45,84 @@ class SecurePrefsCommitTest {
 
     assertEquals("app-token", prefs.getString("access-a"))
     assertNull(prefs.getString("access-b"))
+  }
+
+  @Test
+  fun proxyChangesPreserveExistingInstallRecordsAcrossPreferenceReopen() {
+    val (original, backing) = fixture()
+    val app = RuntimeEnvironment.getApplication()
+    val endpoint = GatewayEndpoint.manual("gateway.example", 443, true, "/openclaw")
+    val other = GatewayEndpoint.manual("other.example", 443, true, "/openclaw")
+    val legacyKey = "gateway.credentials.${endpoint.stableId}"
+    // Persisted pre-proxy format deliberately has no bootstrapExpiresAtMs field.
+    val legacyCredentials = """{"token":"dummy-existing-token","bootstrapToken":"dummy-existing-setup","password":"dummy-existing-password"}"""
+    assertTrue(original.commitSecureStrings(mapOf(legacyKey to legacyCredentials)))
+    val registry = original.gatewayRegistry
+    for ((target, name) in listOf(endpoint to "Home", other to "Work")) {
+      registry.upsert(
+        GatewayRegistryEntry(
+          stableId = target.stableId,
+          kind = GatewayRegistryEntryKind.MANUAL,
+          name = name,
+          host = target.host,
+          port = target.port,
+          tls = true,
+          contextPath = target.contextPath,
+        ),
+      )
+    }
+    assertTrue(registry.rename(endpoint.stableId, "My existing Gateway"))
+    registry.setActive(endpoint.stableId)
+    registry.setConnectionEnabled(other.stableId, true)
+    val expectedEntries = registry.entries.value
+    val expectedConnections = registry.connectedStableIds.value
+    val roles = DeviceAuthStore(original)
+    for (role in listOf("operator", "node")) {
+      assertTrue(
+        roles.saveToken(
+          endpoint.stableId,
+          "dummy-device",
+          role,
+          "dummy-existing-$role",
+          if (role == "operator") listOf("operator.read") else emptyList(),
+        ),
+      )
+    }
+    val expectedOperator = roles.loadEntry(endpoint.stableId, "dummy-device", "operator")
+    val expectedNode = roles.loadEntry(endpoint.stableId, "dummy-device", "node")
+    original.saveGatewayTlsFingerprint(endpoint.stableId, "dummy-existing-fingerprint")
+    val legacyHeaders = mapOf("X-Deployment-Route" to "dummy-existing-route")
+    original.saveGatewayCustomHeaders(endpoint.stableId, legacyHeaders)
+    original.setDisplayName("Existing phone")
+    original.setCameraEnabled(false)
+    original.setOnboardingCompleted(true)
+    assertTrue(original.saveGatewayProxyCredentials(other, GatewayProxyCredentials("dummy-other-user", "dummy-other-password")))
+
+    var prefs = SecurePrefs(app, securePrefsOverride = backing)
+    assertNull(prefs.loadGatewayProxyCredentials(endpoint))
+    for (password in listOf("dummy-first-password", "dummy-rotated-password", null)) {
+      val login = password?.let { GatewayProxyCredentials("dummy-user", it) }
+      assertTrue(prefs.saveGatewayProxyCredentials(endpoint, login))
+      prefs = SecurePrefs(app, securePrefsOverride = backing)
+
+      assertEquals(password, prefs.loadGatewayProxyCredentials(endpoint)?.password)
+      assertEquals("dummy-other-password", prefs.loadGatewayProxyCredentials(other)?.password)
+      assertEquals(legacyCredentials, prefs.getString(legacyKey))
+      assertEquals(
+        GatewayCredentials(token = "dummy-existing-token", bootstrapToken = "dummy-existing-setup", password = "dummy-existing-password"),
+        prefs.loadGatewayCredentials(endpoint.stableId),
+      )
+      assertEquals(expectedOperator, DeviceAuthStore(prefs).loadEntry(endpoint.stableId, "dummy-device", "operator"))
+      assertEquals(expectedNode, DeviceAuthStore(prefs).loadEntry(endpoint.stableId, "dummy-device", "node"))
+      assertEquals(expectedEntries, prefs.gatewayRegistry.entries.value)
+      assertEquals(endpoint.stableId, prefs.gatewayRegistry.activeStableId.value)
+      assertEquals(expectedConnections, prefs.gatewayRegistry.connectedStableIds.value)
+      assertEquals("dummy-existing-fingerprint", prefs.loadGatewayTlsFingerprint(endpoint.stableId))
+      assertEquals(legacyHeaders, prefs.loadGatewayCustomHeaders(endpoint.stableId))
+      assertEquals("Existing phone", prefs.displayName.value)
+      assertFalse(prefs.cameraEnabled.value)
+      assertTrue(prefs.onboardingCompleted.value)
+    }
   }
 
   @Test

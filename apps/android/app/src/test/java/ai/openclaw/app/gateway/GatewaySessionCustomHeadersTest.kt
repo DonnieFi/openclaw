@@ -126,7 +126,7 @@ class GatewaySessionCustomHeadersTest {
     }
 
   @Test
-  fun sourceFaviconsPreserveBasicProxyAuthorizationWithoutGatewayBearerFallback() =
+  fun sourceFaviconsPreserveLegacyBasicHeadersAndGatewayBearerFallback() =
     runBlocking {
       for (proxyAcceptsRead in listOf(true, false)) {
         assertSourceFavicons(contextPath = "/socket", basePath = "/ui", proxyAcceptsRead = proxyAcceptsRead)
@@ -146,7 +146,7 @@ class GatewaySessionCustomHeadersTest {
     val imageBytes = byteArrayOf(1, 2, 3, 4)
     val tls = if (proxyAcceptsRead != null) sourceFaviconTls() else null
     val proxyAuthorization = "Basic c3ludGhldGljOnByb3h5"
-    val expectedAuthorization = if (tls != null) listOf(proxyAuthorization) else listOf("Bearer issued-device-token", "Bearer shared-token")
+    val expectedAuthorization = if (proxyAcceptsRead == true) listOf(proxyAuthorization) else listOfNotNull(proxyAuthorization.takeIf { tls != null }) + listOf("Bearer issued-device-token", "Bearer shared-token")
     val trap = MockWebServer().apply { start() }
     val server =
       MockWebServer().apply {
@@ -250,11 +250,6 @@ class GatewaySessionCustomHeadersTest {
       ) = session.loadSourceFavicon(endpoint.stableId, current, host) { it() }
       assertNull(load("disabled.example", config.copy(automaticallyFetchFavicons = false)))
       assertTrue(iconRequests.isEmpty())
-      if (proxyAcceptsRead == false) {
-        assertNull(load("example.com"))
-        assertEquals(listOf(proxyAuthorization), iconRequests.map { it.getHeader("Authorization") })
-        return@coroutineScope
-      }
       assertArrayEquals(imageBytes, load("example.com")?.bytes)
       assertEquals(expectedAuthorization, iconRequests.map { it.getHeader("Authorization") })
       assertTrue(iconRequests.all { it.path == "$expectedBasePath/__openclaw__/link-favicon/example.com" })
@@ -751,7 +746,7 @@ class GatewaySessionCustomHeadersTest {
         System.setProperty(propertyNames[0], trustFile.toString())
         System.setProperty(propertyNames[1], "PKCS12")
         System.setProperty(propertyNames[2], trustPassword)
-        for (scenario in listOf("wrong-password", "same-redirect", "foreign-redirect", "gateway-role", "wrong-hostname", "untrusted-ca")) {
+        for (scenario in listOf("wrong-password", "same-redirect", "foreign-redirect", "gateway-role", "wrong-hostname", "untrusted-ca", "favicon-rejected")) {
           val server =
             MockWebServer().apply {
               useHttps(
@@ -766,6 +761,7 @@ class GatewaySessionCustomHeadersTest {
             }
           val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
           val failure = CompletableDeferred<Pair<GatewaySession.ErrorShape, Boolean>>()
+          val connected = CompletableDeferred<Unit>()
           val host = "127.0.0.1"
           val endpoint = GatewayEndpoint.manual(host, server.port, tlsEnabled = true)
           val grant = GatewayBasicProxyAuthorization(endpoint, GatewayProxyCredentials("synthetic", "proxy"), isCurrent = { true })
@@ -774,7 +770,13 @@ class GatewaySessionCustomHeadersTest {
               scope = scope,
               identityStore = testDeviceIdentityStore(RuntimeEnvironment.getApplication()),
               deviceAuthStore = NoopDeviceAuthStore(),
-              onConnected = { throw AssertionError("A rejected connection must not become ready") },
+              onConnected = {
+                if (scenario == "favicon-rejected") {
+                  connected.complete(Unit)
+                } else {
+                  throw AssertionError("A rejected connection must not become ready")
+                }
+              },
               onDisconnected = {},
               onEvent = { _, _ -> },
               onConnectFailure = { error, paused -> failure.complete(error to paused) },
@@ -795,7 +797,7 @@ class GatewaySessionCustomHeadersTest {
                   MockResponse().setResponseCode(302).setHeader("Location", foreign.url("/must-not-leak"))
                 }
 
-                "gateway-role" -> {
+                "gateway-role", "favicon-rejected" -> {
                   MockResponse().withWebSocketUpgrade(
                     object : WebSocketListener() {
                       override fun onOpen(
@@ -819,7 +821,11 @@ class GatewaySessionCustomHeadersTest {
                             .jsonPrimitive.content,
                         )
                         val id = frame.getValue("id").jsonPrimitive.content
-                        webSocket.send("""{"type":"res","id":"$id","ok":false,"error":{"code":"INVALID_REQUEST","message":"synthetic-secret","details":{"code":"AUTH_SCOPE_MISMATCH"}}}""")
+                        if (scenario == "favicon-rejected") {
+                          webSocket.send("""{"type":"res","id":"$id","ok":true,"payload":{"auth":{"deviceToken":"issued-device-token","role":"node","scopes":[]}}}""")
+                        } else {
+                          webSocket.send("""{"type":"res","id":"$id","ok":false,"error":{"code":"INVALID_REQUEST","message":"synthetic-secret","details":{"code":"AUTH_SCOPE_MISMATCH"}}}""")
+                        }
                       }
                     },
                   )
@@ -846,6 +852,22 @@ class GatewaySessionCustomHeadersTest {
                 ),
               tls = GatewayTlsParams(true, null, false, endpoint.stableId, requireSystemTrust = true),
             )
+            if (scenario == "favicon-rejected") {
+              withTimeout(TEST_TIMEOUT_MS) { connected.await() }
+              server.enqueue(MockResponse().setResponseCode(401).setHeader("WWW-Authenticate", "Basic realm=\"gateway\""))
+              val config =
+                requireNotNull(
+                  resolveGatewaySourcePreviewConfig(
+                    Json.parseToJsonElement("{}").jsonObject,
+                    server.url("/").toString(),
+                    1L,
+                  ),
+                )
+              assertNull(session.loadSourceFavicon(endpoint.stableId, config, "example.com") { it() })
+              assertEquals(2, server.requestCount)
+              repeat(2) { assertEquals("Basic c3ludGhldGljOnByb3h5", server.takeRequest().getHeader("Authorization")) }
+              continue
+            }
             val observed = withTimeout(TEST_TIMEOUT_MS) { failure.await() }
             assertTrue("$scenario must pause: ${observed.first.code} ${observed.first.message}", observed.second)
             assertTrue(!observed.first.message.contains("synthetic-secret"))
