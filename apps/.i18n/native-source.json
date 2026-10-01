@@ -1727,6 +1727,7 @@
     {"id":"native.android.17bccc3d62e2b25b","source":"Timeout ${it}s","surface":"android","sites":[{"kind":"ui-call","path":"apps/android/app/src/main/java/ai/openclaw/app/CronJobDetail.kt"}]},
     {"id":"native.android.0f0af7167e0e601e","source":"Timezone","surface":"android","sites":[{"kind":"ui-call","path":"apps/android/app/src/main/java/ai/openclaw/app/ui/CronJobManagementPanel.kt"}]},
     {"id":"native.android.b431110d33124fbb","source":"To chat","surface":"android","sites":[{"kind":"ui-call","path":"apps/android/app/src/main/java/ai/openclaw/app/ui/chat/SessionDiffSheet.kt"}]},
+    {"id":"native.android.3e77a71b8bb93680","source":"To use a different proxy account, forget this Gateway and add it again.","surface":"android","sites":[{"kind":"ui-call","path":"apps/android/app/src/main/java/ai/openclaw/app/ui/GatewayProxyAuthentication.kt"}]},
     {"id":"native.android.e5bd27eaef4e0526","source":"Toggle thread layout","surface":"android","sites":[{"kind":"ui-call","path":"apps/android/app/src/main/java/ai/openclaw/app/ui/SessionsScreen.kt"}]},
     {"id":"native.android.db6e7dc515787042","source":"Token","surface":"android","sites":[{"kind":"ui-call","path":"apps/android/app/src/main/java/ai/openclaw/app/ui/OnboardingFlow.kt"},{"kind":"ui-call","path":"apps/android/app/src/main/java/ai/openclaw/app/ui/SettingsScreens.kt"}]},
     {"id":"native.android.aefc42b77ff1a612","source":"Token (optional)","surface":"android","sites":[{"kind":"ui-call","path":"apps/android/app/src/main/java/ai/openclaw/app/ui/GatewayAdditionDialog.kt"}]},

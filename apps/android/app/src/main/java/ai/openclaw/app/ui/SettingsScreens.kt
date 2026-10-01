@@ -33,6 +33,7 @@ import ai.openclaw.app.chat.ChatPendingToolCall
 import ai.openclaw.app.currentAppLanguage
 import ai.openclaw.app.currentSystemLanguageTag
 import ai.openclaw.app.gateway.GatewayEndpoint
+import ai.openclaw.app.gateway.GatewayProxySaveResult
 import ai.openclaw.app.gatewayExecApprovalTextForDisplay
 import ai.openclaw.app.gatewayTalkSetupDescription
 import ai.openclaw.app.gatewayTalkSetupStatusText
@@ -1612,7 +1613,7 @@ private fun GatewaySettingsScreen(
   var pendingForgetStableId by remember { mutableStateOf<String?>(null) }
   var pendingProxyStableId by remember { mutableStateOf<String?>(null) }
   var proxySaving by remember { mutableStateOf(false) }
-  var proxySaveError by remember { mutableStateOf(false) }
+  var proxySaveFailure by remember { mutableStateOf<GatewayProxySaveResult?>(null) }
   var pendingRenameStableId by rememberSaveable { mutableStateOf<String?>(null) }
   val renameScope = rememberCoroutineScope()
   val transport =
@@ -1636,23 +1637,30 @@ private fun GatewaySettingsScreen(
 
     fun saveProxyLogin(credentials: ai.openclaw.app.gateway.GatewayProxyCredentials?) {
       proxySaving = true
-      proxySaveError = false
+      proxySaveFailure = null
       renameScope.launch {
-        val saved = viewModel.saveGatewayProxyCredentials(endpoint, credentials)
+        val result = viewModel.saveGatewayProxyCredentials(endpoint, credentials)
         proxySaving = false
-        if (saved) pendingProxyStableId = null else proxySaveError = true
+        if (result == GatewayProxySaveResult.SAVED) pendingProxyStableId = null else proxySaveFailure = result
       }
     }
+    val principal = viewModel.gatewayProxyPrincipal(endpoint.stableId)
     GatewayProxyCredentialDialog(
       endpoint = endpoint,
-      username = viewModel.gatewayProxyUsername(endpoint).orEmpty(),
+      username = principal?.username.orEmpty(),
       configured = viewModel.hasGatewayProxyCredentials(endpoint.stableId),
       onCancel = { pendingProxyStableId = null },
       onSave = ::saveProxyLogin,
       onRemove = { saveProxyLogin(null) },
       saveLabel = nativeString("Save"),
       saving = proxySaving,
-      error = if (proxySaveError) nativeString("Could not save proxy login. Try again.") else null,
+      error =
+        when (proxySaveFailure) {
+          GatewayProxySaveResult.ACCOUNT_LOCKED -> gatewayProxyAccountLockedMessage()
+          GatewayProxySaveResult.FAILED -> nativeString("Could not save proxy login. Try again.")
+          GatewayProxySaveResult.SAVED, null -> null
+        },
+      usernameLocked = principal?.locked == true,
     )
   }
 
@@ -1675,7 +1683,7 @@ private fun GatewaySettingsScreen(
       text = {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
           Text(gatewayProxyDestination(endpoint), style = ClawTheme.type.body)
-          GatewayProxyAuthentication(endpoint, viewModel.gatewayProxyUsername(endpoint), settingsProxyAction, { settingsProxyAction = it }, viewModel.hasGatewayProxyCredentials(endpoint.stableId))
+          GatewayProxyAuthentication(endpoint, viewModel.gatewayProxyPrincipal(endpoint.stableId), settingsProxyAction, { settingsProxyAction = it }, viewModel.hasGatewayProxyCredentials(endpoint.stableId))
         }
       },
       actions = {
@@ -1942,7 +1950,7 @@ private fun GatewaySettingsScreen(
           )
           FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             TextButton(onClick = {
-              proxySaveError = false
+              proxySaveFailure = null
               pendingProxyStableId = entry.stableId
             }) { Text(nativeString("Edit")) }
             TextButton(onClick = { pendingRenameStableId = entry.stableId }) { Text(nativeString("Rename")) }

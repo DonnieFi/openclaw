@@ -28,6 +28,8 @@ import ai.openclaw.app.chat.resolveChatComposerOwner
 import ai.openclaw.app.gateway.GatewayEndpoint
 import ai.openclaw.app.gateway.GatewayMediaKind
 import ai.openclaw.app.gateway.GatewayProxyCredentials
+import ai.openclaw.app.gateway.GatewayProxyPrincipal
+import ai.openclaw.app.gateway.GatewayProxySaveResult
 import ai.openclaw.app.gateway.GatewayRegistryEntry
 import ai.openclaw.app.gateway.GatewayRegistryEntryKind
 import ai.openclaw.app.gateway.GatewayUpdateAvailableSummary
@@ -45,6 +47,7 @@ import ai.openclaw.app.ui.chat.chatComposerTextDraftsFromSnapshot
 import ai.openclaw.app.ui.chat.matchesSession
 import ai.openclaw.app.ui.chat.shouldMigrateComposerDraft
 import ai.openclaw.app.ui.chat.toOutgoingAttachment
+import ai.openclaw.app.ui.gatewayProxyAccountLockedMessage
 import ai.openclaw.app.voice.AndroidAudioInputSession
 import ai.openclaw.app.voice.AudioInputDeviceOption
 import ai.openclaw.app.voice.TalkFailureNotice
@@ -832,12 +835,12 @@ class MainViewModel private constructor(
 
   internal fun hasGatewayProxyCredentials(stableId: String): Boolean = prefs.hasGatewayProxyCredentials(stableId)
 
-  internal fun gatewayProxyUsername(endpoint: GatewayEndpoint): String? = runCatching { prefs.loadGatewayProxyCredentials(endpoint)?.username }.getOrNull()
+  internal fun gatewayProxyPrincipal(stableId: String): GatewayProxyPrincipal? = prefs.gatewayProxyPrincipal(stableId)
 
   internal suspend fun saveGatewayProxyCredentials(
     endpoint: GatewayEndpoint,
     credentials: GatewayProxyCredentials?,
-  ): Boolean =
+  ): GatewayProxySaveResult =
     withContext(Dispatchers.Default) {
       val sequence = gatewayConfigOperationSeq.incrementAndGet()
       gatewayConfigOperationMutex.withLock {
@@ -872,13 +875,20 @@ class MainViewModel private constructor(
           tlsEnabled = config.tls,
           contextPath = config.contextPath,
         )
+      val proxyCredentials = (plan.proxyAuthAction as? GatewayProxyAuthAction.Save)?.credentials
+      // Checked before setup-auth replacement can clear anything; the durable write rechecks.
+      if (prefs.gatewayProxyPrincipal(endpoint.stableId)?.admits(proxyCredentials) == false) {
+        withContext(Dispatchers.Main) {
+          Toast.makeText(nodeApp, gatewayProxyAccountLockedMessage(), Toast.LENGTH_LONG).show()
+        }
+        return@launchGatewayConnectionOperation
+      }
       val targetAlreadyPaired =
         prefs.gatewayRegistry.entries.value
           .any { it.stableId == endpoint.stableId }
       if (addition != null && targetAlreadyPaired) {
-        val proxyCredentials = (plan.proxyAuthAction as? GatewayProxyAuthAction.Save)?.credentials
         if (plan.proxyAuthAction != GatewayProxyAuthAction.Keep &&
-          !runtime.updateGatewayProxyCredentials(endpoint, proxyCredentials, operation)
+          runtime.updateGatewayProxyCredentials(endpoint, proxyCredentials, operation) != GatewayProxySaveResult.SAVED
         ) {
           return@launchGatewayConnectionOperation
         }
@@ -910,10 +920,8 @@ class MainViewModel private constructor(
         replacesProxyAuth = plan.proxyAuthAction != GatewayProxyAuthAction.Keep,
         clearComposer = { clearChatComposerGateway(endpoint.stableId) },
       ) {
-        when (val proxy = plan.proxyAuthAction) {
-          GatewayProxyAuthAction.Keep -> Unit
-          GatewayProxyAuthAction.Remove -> check(prefs.saveGatewayProxyCredentials(endpoint, null))
-          is GatewayProxyAuthAction.Save -> check(prefs.saveGatewayProxyCredentials(endpoint, proxy.credentials))
+        if (plan.proxyAuthAction != GatewayProxyAuthAction.Keep) {
+          check(prefs.saveGatewayProxyCredentials(endpoint, proxyCredentials) == GatewayProxySaveResult.SAVED)
         }
         prefs.setManualEnabled(true)
         prefs.setManualHost(config.host)

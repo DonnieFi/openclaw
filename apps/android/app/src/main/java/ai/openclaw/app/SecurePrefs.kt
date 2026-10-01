@@ -8,6 +8,8 @@ import ai.openclaw.app.gateway.GatewayCustomHeaders
 import ai.openclaw.app.gateway.GatewayEndpoint
 import ai.openclaw.app.gateway.GatewayIngressAuthorization
 import ai.openclaw.app.gateway.GatewayProxyCredentials
+import ai.openclaw.app.gateway.GatewayProxyPrincipal
+import ai.openclaw.app.gateway.GatewayProxySaveResult
 import ai.openclaw.app.gateway.GatewayRegistryStore
 import ai.openclaw.app.gateway.GatewayStoreMigration
 import ai.openclaw.app.gateway.StoredGatewayProxyCredentials
@@ -538,37 +540,58 @@ class SecurePrefs(
   private val gatewayProxyLock = Any()
   private val gatewayProxyRevisions = mutableMapOf<String, Long>()
 
-  fun hasGatewayProxyCredentials(stableId: String): Boolean = synchronized(gatewayProxyLock) { securePrefs.contains(gatewayProxyKey(stableId)) }
+  fun hasGatewayProxyCredentials(stableId: String): Boolean =
+    synchronized(gatewayProxyLock) {
+      val record = gatewayProxyRecord(stableId)
+      // An unreadable record still counts so connecting surfaces its re-entry error.
+      securePrefs.contains(gatewayProxyKey(stableId)) && (record == null || record.password != null)
+    }
 
   fun loadGatewayProxyCredentials(endpoint: GatewayEndpoint): GatewayProxyCredentials? =
     synchronized(gatewayProxyLock) {
-      val raw = securePrefs.getString(gatewayProxyKey(endpoint.stableId), null) ?: return@synchronized null
-      val record =
-        runCatching { json.decodeFromString<StoredGatewayProxyCredentials>(raw) }.getOrElse {
-          throw IllegalStateException("Saved proxy login is unavailable. Re-enter proxy login.")
-        }
+      if (!securePrefs.contains(gatewayProxyKey(endpoint.stableId))) return@synchronized null
+      val record = gatewayProxyRecord(endpoint.stableId) ?: throw IllegalStateException("Saved proxy login is unavailable. Re-enter proxy login.")
+      val password = record.password ?: return@synchronized null
       check(record.version == 1 && record.destination == gatewayProxyDestination(endpoint).toString()) {
         "Saved proxy login does not match this secure Gateway destination. Reconfigure proxy login."
       }
-      GatewayProxyCredentials(record.username, record.password)
+      GatewayProxyCredentials(record.username, password)
     }
 
-  fun saveGatewayProxyCredentials(
+  internal fun gatewayProxyPrincipal(stableId: String): GatewayProxyPrincipal? =
+    synchronized(gatewayProxyLock) {
+      val record = gatewayProxyRecord(stableId) ?: return@synchronized null
+      // A recorded connection precedes any pairing token or Gateway-scoped chat data, and
+      // Forget Gateway removes it together with the registry entry.
+      val established = gatewayRegistry.entries.value.any { it.stableId == stableId.trim() && it.lastConnectedAtMs > 0L }
+      GatewayProxyPrincipal(record.username, locked = established)
+    }
+
+  internal fun saveGatewayProxyCredentials(
     endpoint: GatewayEndpoint,
     credentials: GatewayProxyCredentials?,
-  ): Boolean =
+  ): GatewayProxySaveResult =
     synchronized(gatewayProxyLock) {
-      val value =
-        credentials?.let {
+      if (gatewayProxyPrincipal(endpoint.stableId)?.admits(credentials) == false) return@synchronized GatewayProxySaveResult.ACCOUNT_LOCKED
+      val record =
+        if (credentials != null) {
           check(loadGatewayCustomHeaders(endpoint.stableId).keys.none { name -> name.equals("Authorization", ignoreCase = true) }) {
             "Proxy login conflicts with an existing Authorization header."
           }
-          json.encodeToString(StoredGatewayProxyCredentials(gatewayProxyDestination(endpoint).toString(), it.username, it.password))
+          StoredGatewayProxyCredentials(gatewayProxyDestination(endpoint).toString(), credentials.username, credentials.password)
+        } else {
+          // Remove keeps the account binding so switching accounts still requires Forget Gateway.
+          gatewayProxyRecord(endpoint.stableId)?.let { StoredGatewayProxyCredentials(it.destination, it.username) }
         }
       val key = gatewayProxyKey(endpoint.stableId)
-      if (!commitSecureStrings(mapOf(key to value))) return@synchronized false
+      if (!commitSecureStrings(mapOf(key to record?.let { json.encodeToString(it) }))) return@synchronized GatewayProxySaveResult.FAILED
       gatewayProxyRevisions[key] = (gatewayProxyRevisions[key] ?: 0L) + 1L
-      true
+      GatewayProxySaveResult.SAVED
+    }
+
+  private fun gatewayProxyRecord(stableId: String): StoredGatewayProxyCredentials? =
+    securePrefs.getString(gatewayProxyKey(stableId), null)?.let { raw ->
+      runCatching { json.decodeFromString<StoredGatewayProxyCredentials>(raw) }.getOrNull()
     }
 
   internal fun clearGatewayProxyCredentials(stableId: String): Boolean =

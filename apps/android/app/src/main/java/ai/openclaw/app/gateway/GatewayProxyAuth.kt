@@ -21,15 +21,26 @@ class GatewayProxyCredentials(
 
 private fun isProxyControlCharacter(value: Char): Boolean = value.code < 0x20 || value.code == 0x7f
 
+/** A record without a password is a removed login that still binds the Gateway's proxy account. */
 @Serializable
 internal class StoredGatewayProxyCredentials(
   val destination: String,
   val username: String,
-  val password: String,
+  val password: String? = null,
   val version: Int = 1,
 ) {
   override fun toString(): String = "StoredGatewayProxyCredentials([redacted])"
 }
+
+/** Proxy account a saved Gateway is bound to; once [locked], only Forget Gateway can switch accounts. */
+internal class GatewayProxyPrincipal(
+  val username: String,
+  val locked: Boolean,
+) {
+  fun admits(credentials: GatewayProxyCredentials?): Boolean = !locked || credentials == null || credentials.username == username
+}
+
+internal enum class GatewayProxySaveResult { SAVED, ACCOUNT_LOCKED, FAILED }
 
 /** Canonical HTTPS authority and exact mount; stable IDs alone do not encode TLS. */
 internal fun gatewayProxyDestination(endpoint: GatewayEndpoint): HttpUrl {

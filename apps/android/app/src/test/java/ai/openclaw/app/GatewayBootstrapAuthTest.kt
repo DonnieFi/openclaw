@@ -1,6 +1,8 @@
 package ai.openclaw.app
 
+import ai.openclaw.app.chat.AndroidClientDatabases
 import ai.openclaw.app.chat.ChatMessage
+import ai.openclaw.app.chat.ChatMessageContent
 import ai.openclaw.app.chat.ChatSessionEntry
 import ai.openclaw.app.chat.ChatTranscriptCache
 import ai.openclaw.app.gateway.DeviceAuthPayload
@@ -14,6 +16,7 @@ import ai.openclaw.app.gateway.GatewayHelloSummary
 import ai.openclaw.app.gateway.GatewayLoadedMedia
 import ai.openclaw.app.gateway.GatewayMediaKind
 import ai.openclaw.app.gateway.GatewayProxyCredentials
+import ai.openclaw.app.gateway.GatewayProxySaveResult
 import ai.openclaw.app.gateway.GatewayRegistryEntry
 import ai.openclaw.app.gateway.GatewayRegistryEntryKind
 import ai.openclaw.app.gateway.GatewaySession
@@ -314,7 +317,7 @@ class GatewayBootstrapAuthTest {
             .digest(certificate.encoded)
             .joinToString("") { "%02x".format(it) }
         prefs.saveGatewayTlsFingerprint(endpoint.stableId, fingerprint)
-        assertTrue(prefs.saveGatewayProxyCredentials(endpoint, GatewayProxyCredentials("synthetic", "first")))
+        assertEquals(GatewayProxySaveResult.SAVED, prefs.saveGatewayProxyCredentials(endpoint, GatewayProxyCredentials("synthetic", "first")))
         assertTrue(runtime.connectSwitchingGateway(endpoint, auth(token = "gateway-shared-token")))
         withTimeout(8_000) { initialReady.await() }
         withTimeout(8_000) { runtime.gatewayConnectionDisplay.first { it.statusText == "Connected" } }
@@ -330,13 +333,17 @@ class GatewayBootstrapAuthTest {
         assertEquals("native-operator-token", tokens.loadToken(endpoint.stableId, identity.deviceId, "operator"))
         assertEquals("native-node-token", tokens.loadToken(endpoint.stableId, identity.deviceId, "node"))
         acceptedHeader.set(replacementHeader)
-        assertTrue(runtime.updateGatewayProxyCredentials(endpoint, GatewayProxyCredentials("synthetic", "second")))
+        assertEquals(GatewayProxySaveResult.SAVED, runtime.updateGatewayProxyCredentials(endpoint, GatewayProxyCredentials("synthetic", "second")))
         withTimeout(8_000) { replacementReady.await() }
         withTimeout(8_000) { runtime.gatewayConnectionDisplay.first { it.statusText == "Connected" } }
         assertFalse(oldOperator.isCurrent())
         assertFalse(oldNode.isCurrent())
         assertEquals("native-operator-token", tokens.loadToken(endpoint.stableId, identity.deviceId, "operator"))
         assertEquals("native-node-token", tokens.loadToken(endpoint.stableId, identity.deviceId, "node"))
+        assertEquals(GatewayProxySaveResult.ACCOUNT_LOCKED, runtime.updateGatewayProxyCredentials(endpoint, GatewayProxyCredentials("synthetic-other", "second")))
+        assertEquals("synthetic", prefs.loadGatewayProxyCredentials(endpoint)?.username)
+        assertEquals("second", prefs.loadGatewayProxyCredentials(endpoint)?.password)
+        assertEquals("native-operator-token", tokens.loadToken(endpoint.stableId, identity.deviceId, "operator"))
         val staleRequest =
           Request
             .Builder()
@@ -352,15 +359,30 @@ class GatewayBootstrapAuthTest {
           }.exceptionOrNull() is IOException,
         )
         assertEquals(0, mediaRequests.get())
-        assertTrue(runtime.updateGatewayProxyCredentials(endpoint, GatewayProxyCredentials("synthetic", "denied")))
+        assertEquals(GatewayProxySaveResult.SAVED, runtime.updateGatewayProxyCredentials(endpoint, GatewayProxyCredentials("synthetic", "denied")))
         withTimeout(8_000) { deniedBoth.await() }
         withTimeout(8_000) { runtime.gatewayConnectionProblem.first { it?.code == "PROXY_AUTH_REQUIRED" && it.pauseReconnect } }
-        assertTrue(runtime.updateGatewayProxyCredentials(endpoint, null))
+        assertEquals(GatewayProxySaveResult.SAVED, runtime.updateGatewayProxyCredentials(endpoint, null))
         withTimeout(8_000) { removedBoth.await() }
         assertFalse(prefs.hasGatewayProxyCredentials(endpoint.stableId))
         assertEquals(fingerprint, prefs.loadGatewayTlsFingerprint(endpoint.stableId))
         assertEquals("native-operator-token", tokens.loadToken(endpoint.stableId, identity.deviceId, "operator"))
         assertEquals("native-node-token", tokens.loadToken(endpoint.stableId, identity.deviceId, "node"))
+        assertEquals(GatewayProxySaveResult.ACCOUNT_LOCKED, runtime.updateGatewayProxyCredentials(endpoint, GatewayProxyCredentials("synthetic-other", "second")))
+        assertFalse(prefs.hasGatewayProxyCredentials(endpoint.stableId))
+        assertEquals(GatewayProxySaveResult.SAVED, runtime.updateGatewayProxyCredentials(endpoint, GatewayProxyCredentials("synthetic", "second")))
+
+        val chatCache = readField<AndroidClientDatabases>(runtime, "clientDatabases").transcriptCache()
+        val cachedMessage = ChatMessage(id = "proxy-account-message", role = "user", content = listOf(ChatMessageContent(type = "text", text = "before forget")), timestampMs = 1)
+        chatCache.saveTranscript(endpoint.stableId, "main", "proxy-account-session", listOf(cachedMessage))
+        assertEquals(listOf("before forget"), chatCache.loadTranscript(endpoint.stableId, "main", "proxy-account-session").map { it.content.single().text })
+        assertTrue(runtime.forgetGateway(endpoint.stableId))
+        assertEquals(emptyList<String?>(), chatCache.loadTranscript(endpoint.stableId, "main", "proxy-account-session").map { it.content.single().text })
+        assertNull(tokens.loadToken(endpoint.stableId, identity.deviceId, "operator"))
+        assertNull(tokens.loadToken(endpoint.stableId, identity.deviceId, "node"))
+        assertNull(prefs.gatewayProxyPrincipal(endpoint.stableId))
+        assertEquals(GatewayProxySaveResult.SAVED, prefs.saveGatewayProxyCredentials(endpoint, GatewayProxyCredentials("synthetic-other", "other")))
+        assertEquals("synthetic-other", prefs.loadGatewayProxyCredentials(endpoint)?.username)
       } finally {
         try {
           closeFixtures()

@@ -680,7 +680,7 @@ fun OnboardingFlow(
         text = {
           Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(gatewayProxyDestination(endpoint), style = ClawTheme.type.body)
-            GatewayProxyAuthentication(endpoint, viewModel.gatewayProxyUsername(endpoint), proxyAction, { proxyAction = it }, viewModel.hasGatewayProxyCredentials(endpoint.stableId))
+            GatewayProxyAuthentication(endpoint, viewModel.gatewayProxyPrincipal(endpoint.stableId), proxyAction, { proxyAction = it }, viewModel.hasGatewayProxyCredentials(endpoint.stableId))
           }
         },
         actions = {

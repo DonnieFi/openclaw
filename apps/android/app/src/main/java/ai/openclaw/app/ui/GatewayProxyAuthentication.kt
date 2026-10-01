@@ -2,6 +2,7 @@ package ai.openclaw.app.ui
 
 import ai.openclaw.app.gateway.GatewayEndpoint
 import ai.openclaw.app.gateway.GatewayProxyCredentials
+import ai.openclaw.app.gateway.GatewayProxyPrincipal
 import ai.openclaw.app.gateway.formatGatewayAuthority
 import ai.openclaw.app.i18n.nativeString
 import ai.openclaw.app.ui.design.ClawPrimaryButton
@@ -32,20 +33,20 @@ import androidx.compose.ui.unit.dp
 
 internal fun gatewayProxyDestination(endpoint: GatewayEndpoint): String = "${if (endpoint.tlsEnabled) "https" else "http"}://${formatGatewayAuthority(endpoint.host, endpoint.port)}${endpoint.contextPath}"
 
+internal fun gatewayProxyAccountLockedMessage(): String = nativeString("To use a different proxy account, forget this Gateway and add it again.")
+
 /** One staged form shared by onboarding, addition, and saved Gateway editing. */
 @Composable
 internal fun GatewayProxyAuthentication(
   endpoint: GatewayEndpoint,
-  savedUsername: String?,
+  principal: GatewayProxyPrincipal?,
   action: GatewayProxyAuthAction,
   onAction: (GatewayProxyAuthAction) -> Unit,
-  savedConfigured: Boolean = savedUsername != null,
+  savedConfigured: Boolean,
   saveLabel: String = nativeString("Continue"),
 ) {
   var editing by remember(endpoint) { mutableStateOf(false) }
-  val username =
-    (action as? GatewayProxyAuthAction.Save)?.credentials?.username
-      ?: savedUsername.takeUnless { action == GatewayProxyAuthAction.Remove }
+  val username = (action as? GatewayProxyAuthAction.Save)?.credentials?.username ?: principal?.username
   val configured = action is GatewayProxyAuthAction.Save || (action == GatewayProxyAuthAction.Keep && savedConfigured)
   Text(nativeString("Proxy authentication"), style = ClawTheme.type.section)
   Text(nativeString("Separate from your Gateway token, password, and pairing."), style = ClawTheme.type.caption)
@@ -91,6 +92,7 @@ internal fun GatewayProxyAuthentication(
       username = username.orEmpty(),
       configured = configured,
       saveLabel = saveLabel,
+      usernameLocked = principal?.locked == true,
       onCancel = {
         editing = false
         basicSelected = configured
@@ -118,6 +120,7 @@ internal fun GatewayProxyCredentialDialog(
   saveLabel: String = nativeString("Continue"),
   saving: Boolean = false,
   error: String? = null,
+  usernameLocked: Boolean = false,
 ) {
   // Draft secrets deliberately never enter saved instance state or read back stored passwords.
   var usernameInput by remember(endpoint) { mutableStateOf(username) }
@@ -137,7 +140,8 @@ internal fun GatewayProxyCredentialDialog(
         ProxyLobsterMascot()
         Text(gatewayProxyDestination(endpoint), style = ClawTheme.type.body, modifier = Modifier.testTag("proxy-destination"))
         Text(nativeString("These credentials authenticate to the HTTPS proxy. Gateway permissions and pairing still apply."), style = ClawTheme.type.caption)
-        ClawTextField(value = usernameInput, onValueChange = { usernameInput = it }, label = nativeString("Username"), placeholder = "", modifier = Modifier.testTag("proxy-username"), enabled = !saving, maxLines = 1, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, autoCorrectEnabled = false))
+        ClawTextField(value = usernameInput, onValueChange = { usernameInput = it }, label = nativeString("Username"), placeholder = "", modifier = Modifier.testTag("proxy-username"), enabled = !saving && !usernameLocked, maxLines = 1, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, autoCorrectEnabled = false))
+        if (usernameLocked) Text(gatewayProxyAccountLockedMessage(), style = ClawTheme.type.caption)
         ClawTextField(value = passwordInput, onValueChange = { passwordInput = it }, label = if (configured) nativeString("Replacement password") else nativeString("Password"), placeholder = "", secret = true, modifier = Modifier.testTag("proxy-password"), enabled = !saving, maxLines = 1)
         if (!destinationSupported) {
           Text(nativeString("HTTP Basic requires a verified HTTPS connection."), style = ClawTheme.type.caption, color = ClawTheme.colors.warning)

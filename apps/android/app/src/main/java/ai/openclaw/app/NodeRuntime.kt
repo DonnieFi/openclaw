@@ -32,6 +32,7 @@ import ai.openclaw.app.gateway.GatewayEndpoint
 import ai.openclaw.app.gateway.GatewayEvent
 import ai.openclaw.app.gateway.GatewayMethod
 import ai.openclaw.app.gateway.GatewayProxyCredentials
+import ai.openclaw.app.gateway.GatewayProxySaveResult
 import ai.openclaw.app.gateway.GatewayRegistryEntry
 import ai.openclaw.app.gateway.GatewayRegistryEntryKind
 import ai.openclaw.app.gateway.GatewayRequestDefinitiveFailure
@@ -5498,26 +5499,28 @@ class NodeRuntime private constructor(
   }
 
   /** Replaces proxy login after the old physical sockets and accepted token writes drain. */
-  suspend fun updateGatewayProxyCredentials(
+  internal suspend fun updateGatewayProxyCredentials(
     endpoint: GatewayEndpoint,
     credentials: GatewayProxyCredentials?,
     isCurrent: () -> Boolean = { true },
-  ): Boolean {
+  ): GatewayProxySaveResult {
     val stableId = endpoint.stableId
+    // Refuse an account switch before retiring any live connection; the durable write rechecks.
+    if (prefs.gatewayProxyPrincipal(stableId)?.admits(credentials) == false) return GatewayProxySaveResult.ACCOUNT_LOCKED
     val intent =
       synchronized(gatewayLifecycleIntentLock) {
-        if (!isCurrent() || !matchesGatewayProxyEditDestination(endpoint)) return false
+        if (!isCurrent() || !matchesGatewayProxyEditDestination(endpoint)) return GatewayProxySaveResult.FAILED
         gatewayLifecycleIntent(advanceGatewayLifecycleIntent(retiringGatewayId = stableId), isCurrent)
       }
     return gatewaySwitchMutex.withLock {
-      if (!intent() || !matchesGatewayProxyEditDestination(endpoint)) return@withLock false
+      if (!intent() || !matchesGatewayProxyEditDestination(endpoint)) return@withLock GatewayProxySaveResult.FAILED
       val active = connectedEndpoint?.stableId == stableId || connectingEndpoint?.stableId == stableId
       disconnectSecondaryGatewayConnection(stableId)?.disconnectAndJoin()
       if (active) drainPrimaryGatewaySessions()
       synchronized(gatewayLifecycleIntentLock) {
-        if (!intent() || !matchesGatewayProxyEditDestination(endpoint)) return@synchronized false
-        val saved = runCatching { prefs.saveGatewayProxyCredentials(endpoint, credentials) }.getOrDefault(false)
-        if (saved) resumeSecondaryProxyConnectionLocked(stableId)
+        if (!intent() || !matchesGatewayProxyEditDestination(endpoint)) return@synchronized GatewayProxySaveResult.FAILED
+        val saved = runCatching { prefs.saveGatewayProxyCredentials(endpoint, credentials) }.getOrDefault(GatewayProxySaveResult.FAILED)
+        if (saved == GatewayProxySaveResult.SAVED) resumeSecondaryProxyConnectionLocked(stableId)
         if (active) {
           // Even failed durable writes must resume the old record, never a staged password.
           connectWithAuth(endpoint, resolveGatewayConnectAuth(endpoint)) { beginConnectAttempt(endpoint) }

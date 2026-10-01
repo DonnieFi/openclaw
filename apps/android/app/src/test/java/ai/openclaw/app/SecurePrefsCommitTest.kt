@@ -3,6 +3,7 @@ package ai.openclaw.app
 import ai.openclaw.app.gateway.DeviceAuthStore
 import ai.openclaw.app.gateway.GatewayEndpoint
 import ai.openclaw.app.gateway.GatewayProxyCredentials
+import ai.openclaw.app.gateway.GatewayProxySaveResult
 import ai.openclaw.app.gateway.GatewayRegistryEntry
 import ai.openclaw.app.gateway.GatewayRegistryEntryKind
 import android.content.Context
@@ -96,13 +97,13 @@ class SecurePrefsCommitTest {
     original.setDisplayName("Existing phone")
     original.setCameraEnabled(false)
     original.setOnboardingCompleted(true)
-    assertTrue(original.saveGatewayProxyCredentials(other, GatewayProxyCredentials("dummy-other-user", "dummy-other-password")))
+    assertEquals(GatewayProxySaveResult.SAVED, original.saveGatewayProxyCredentials(other, GatewayProxyCredentials("dummy-other-user", "dummy-other-password")))
 
     var prefs = SecurePrefs(app, securePrefsOverride = backing)
     assertNull(prefs.loadGatewayProxyCredentials(endpoint))
     for (password in listOf("dummy-first-password", "dummy-rotated-password", null)) {
       val login = password?.let { GatewayProxyCredentials("dummy-user", it) }
-      assertTrue(prefs.saveGatewayProxyCredentials(endpoint, login))
+      assertEquals(GatewayProxySaveResult.SAVED, prefs.saveGatewayProxyCredentials(endpoint, login))
       prefs = SecurePrefs(app, securePrefsOverride = backing)
 
       assertEquals(password, prefs.loadGatewayProxyCredentials(endpoint)?.password)
@@ -132,24 +133,24 @@ class SecurePrefsCommitTest {
       val endpoint = GatewayEndpoint.manual("gateway.example", 443, true, "/openclaw")
       val other = GatewayEndpoint.manual("other.example", 443, true, "/openclaw")
       prefs.saveGatewayCredentials(endpoint.stableId, token = "dummy-device-token", bootstrapToken = "dummy-setup")
-      assertTrue(prefs.saveGatewayProxyCredentials(endpoint, GatewayProxyCredentials("dummy-user", "dummy-password")))
-      assertTrue(prefs.saveGatewayProxyCredentials(other, GatewayProxyCredentials("other-dummy-user", "other-dummy-password")))
+      assertEquals(GatewayProxySaveResult.SAVED, prefs.saveGatewayProxyCredentials(endpoint, GatewayProxyCredentials("dummy-user", "dummy-password")))
+      assertEquals(GatewayProxySaveResult.SAVED, prefs.saveGatewayProxyCredentials(other, GatewayProxyCredentials("other-dummy-user", "other-dummy-password")))
       val oldGrant = requireNotNull(prefs.gatewayProxyAuthorization(endpoint))
       val request = Request.Builder().url("https://gateway.example/openclaw").build()
       val authorized = oldGrant.authorizeUpgrade(request)
       assertTrue(authorized.header("Authorization")!!.startsWith("Basic "))
       backing.failNextCommit = true
-      assertFalse(prefs.saveGatewayProxyCredentials(endpoint, GatewayProxyCredentials("dummy-user", "replacement-dummy")))
+      assertEquals(GatewayProxySaveResult.FAILED, prefs.saveGatewayProxyCredentials(endpoint, GatewayProxyCredentials("dummy-user", "replacement-dummy")))
       oldGrant.requireCurrent(authorized)
       assertEquals("dummy-password", prefs.loadGatewayProxyCredentials(endpoint)?.password)
-      assertTrue(prefs.saveGatewayProxyCredentials(endpoint, GatewayProxyCredentials("dummy-user", "replacement-dummy")))
+      assertEquals(GatewayProxySaveResult.SAVED, prefs.saveGatewayProxyCredentials(endpoint, GatewayProxyCredentials("dummy-user", "replacement-dummy")))
       assertThrows(java.io.IOException::class.java) { oldGrant.requireCurrent(authorized) }
       val grant = requireNotNull(prefs.gatewayProxyAuthorization(endpoint))
       for (url in listOf("https://other.example/openclaw", "http://gateway.example/openclaw", "https://gateway.example/another", "https://gateway.example/openclaw-other")) {
         assertThrows(java.io.IOException::class.java) { grant.requireCurrent(Request.Builder().url(url).build()) }
       }
       assertThrows(IllegalArgumentException::class.java) { prefs.loadGatewayProxyCredentials(endpoint.copy(tlsEnabled = false)) }
-      assertTrue(prefs.saveGatewayProxyCredentials(endpoint, null))
+      assertEquals(GatewayProxySaveResult.SAVED, prefs.saveGatewayProxyCredentials(endpoint, null))
       assertThrows(java.io.IOException::class.java) { grant.requireCurrent(request) }
       assertNull(prefs.loadGatewayProxyCredentials(endpoint))
       assertEquals("other-dummy-password", prefs.loadGatewayProxyCredentials(other)?.password)
@@ -157,6 +158,38 @@ class SecurePrefsCommitTest {
       assertEquals("dummy-setup", prefs.loadGatewayCredentials(endpoint.stableId).bootstrapToken)
       assertEquals("GatewayProxyCredentials([redacted])", GatewayProxyCredentials("dummy-user", "dummy-password").toString())
     }
+
+  @Test
+  fun connectedGatewayKeepsItsProxyAccountAcrossRotationAndRemove() {
+    val (prefs, _) = fixture()
+    val endpoint = GatewayEndpoint.manual("gateway.example", 443, true, "/openclaw")
+    prefs.gatewayRegistry.upsert(
+      GatewayRegistryEntry(endpoint.stableId, GatewayRegistryEntryKind.MANUAL, "Home", endpoint.host, endpoint.port, contextPath = endpoint.contextPath),
+    )
+    val tokens = DeviceAuthStore(prefs)
+
+    assertEquals(GatewayProxySaveResult.SAVED, prefs.saveGatewayProxyCredentials(endpoint, GatewayProxyCredentials("dummy-typo", "dummy-password")))
+    assertEquals(GatewayProxySaveResult.SAVED, prefs.saveGatewayProxyCredentials(endpoint, GatewayProxyCredentials("dummy-user", "dummy-password")))
+    assertEquals("dummy-user", prefs.gatewayProxyPrincipal(endpoint.stableId)?.username)
+    assertEquals(false, prefs.gatewayProxyPrincipal(endpoint.stableId)?.locked)
+
+    prefs.gatewayRegistry.markConnected(endpoint.stableId, 1_700_000_000_000L)
+    assertTrue(tokens.saveToken(endpoint.stableId, "dummy-device", "operator", "dummy-operator-token"))
+    assertEquals(true, prefs.gatewayProxyPrincipal(endpoint.stableId)?.locked)
+    assertEquals(GatewayProxySaveResult.SAVED, prefs.saveGatewayProxyCredentials(endpoint, GatewayProxyCredentials("dummy-user", "dummy-rotated")))
+    assertEquals(GatewayProxySaveResult.ACCOUNT_LOCKED, prefs.saveGatewayProxyCredentials(endpoint, GatewayProxyCredentials("dummy-other", "dummy-other-password")))
+    assertEquals("dummy-user", prefs.loadGatewayProxyCredentials(endpoint)?.username)
+    assertEquals("dummy-rotated", prefs.loadGatewayProxyCredentials(endpoint)?.password)
+
+    assertEquals(GatewayProxySaveResult.SAVED, prefs.saveGatewayProxyCredentials(endpoint, null))
+    assertFalse(prefs.hasGatewayProxyCredentials(endpoint.stableId))
+    assertNull(prefs.gatewayProxyAuthorization(endpoint))
+    assertEquals(GatewayProxySaveResult.ACCOUNT_LOCKED, prefs.saveGatewayProxyCredentials(endpoint, GatewayProxyCredentials("dummy-other", "dummy-other-password")))
+    assertFalse(prefs.hasGatewayProxyCredentials(endpoint.stableId))
+    assertEquals(GatewayProxySaveResult.SAVED, prefs.saveGatewayProxyCredentials(endpoint, GatewayProxyCredentials("dummy-user", "dummy-restored")))
+    assertEquals("dummy-restored", prefs.loadGatewayProxyCredentials(endpoint)?.password)
+    assertEquals("dummy-operator-token", tokens.loadToken(endpoint.stableId, "dummy-device", "operator"))
+  }
 
   private fun fixture(): Pair<SecurePrefs, CommitControlledPreferences> {
     val app = RuntimeEnvironment.getApplication()

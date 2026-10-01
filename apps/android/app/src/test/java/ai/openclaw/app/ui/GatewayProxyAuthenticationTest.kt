@@ -2,6 +2,7 @@ package ai.openclaw.app.ui
 
 import ai.openclaw.app.gateway.GatewayEndpoint
 import ai.openclaw.app.gateway.GatewayProxyCredentials
+import ai.openclaw.app.gateway.GatewayProxyPrincipal
 import ai.openclaw.app.ui.design.ClawDesignTheme
 import android.graphics.Bitmap
 import androidx.compose.foundation.layout.Column
@@ -84,7 +85,7 @@ class GatewayProxyAuthenticationTest {
           text = {
             Column {
               Text(gatewayProxyDestination(endpoint))
-              GatewayProxyAuthentication(endpoint, "dummy-user", action.value, { action.value = it }, savedConfigured = true, saveLabel = "Save")
+              GatewayProxyAuthentication(endpoint, GatewayProxyPrincipal("dummy-user", locked = false), action.value, { action.value = it }, savedConfigured = true, saveLabel = "Save")
             }
           },
           actions = {},
@@ -126,6 +127,26 @@ class GatewayProxyAuthenticationTest {
             .compress(Bitmap.CompressFormat.PNG, 100, it),
         )
       }
+    }
+  }
+
+  @Test
+  fun lockedAccountAllowsPasswordRotationOnlyAndExplainsForget() {
+    val action = mutableStateOf<GatewayProxyAuthAction>(GatewayProxyAuthAction.Keep)
+    composeRule.setContent {
+      ClawDesignTheme {
+        GatewayProxyAuthentication(endpoint, GatewayProxyPrincipal("dummy-user", locked = true), action.value, { action.value = it }, savedConfigured = true, saveLabel = "Save")
+      }
+    }
+    composeRule.onNodeWithText("Edit").performClick()
+    composeRule.onNodeWithTag("proxy-username").assertIsNotEnabled()
+    composeRule.onNodeWithText("To use a different proxy account, forget this Gateway and add it again.").assertExists()
+    composeRule.onNodeWithTag("proxy-password").performTextReplacement("rotated")
+    composeRule.onNodeWithTag("proxy-save").performClick()
+    composeRule.runOnIdle {
+      val staged = action.value as GatewayProxyAuthAction.Save
+      assertEquals("dummy-user", staged.credentials.username)
+      assertEquals("rotated", staged.credentials.password)
     }
   }
 

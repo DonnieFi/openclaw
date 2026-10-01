@@ -296,7 +296,7 @@ internal fun GatewayAdditionDialog(
             val config = current.config
             val endpoint = GatewayEndpoint.manual(config.host, config.port, config.tls, config.contextPath)
             var proxyAction by remember(config) { mutableStateOf<GatewayProxyAuthAction>(GatewayProxyAuthAction.Keep) }
-            GatewayProxyAuthentication(endpoint, viewModel.gatewayProxyUsername(endpoint), proxyAction, { proxyAction = it }, viewModel.hasGatewayProxyCredentials(endpoint.stableId))
+            GatewayProxyAuthentication(endpoint, viewModel.gatewayProxyPrincipal(endpoint.stableId), proxyAction, { proxyAction = it }, viewModel.hasGatewayProxyCredentials(endpoint.stableId))
             Text(nativeString("Connect to this gateway?"), style = ClawTheme.type.section)
             Text((if (config.tls) "wss://" else "ws://") + formatGatewayAuthority(config.host, config.port) + config.contextPath, modifier = Modifier.testTag("gateway-add-preview"))
             Text(nativeString("Your current connection stays unchanged until you choose Connect."), style = ClawTheme.type.body)
