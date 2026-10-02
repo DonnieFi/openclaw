@@ -48,6 +48,34 @@ export function renderDetails(
   return body.length <= limit ? body : renderProtected(protectedLines, limit, reservedLine);
 }
 
+export function renderRuntimeDetails(input: {
+  headline: string;
+  compactHeadline: string;
+  actionLine?: string;
+  details: string[];
+  reasonLine: string;
+  safetyLines: string[];
+  omitReason: boolean;
+  reservedLine?: string;
+}): string {
+  const fullLead = [input.headline, ...(input.actionLine ? [input.actionLine] : []), ""].join("\n");
+  const compact = input.details.join("\n").length > 1500 - fullLead.length - 1;
+  const lead = [
+    compact ? input.compactHeadline : input.headline,
+    ...(input.actionLine ? [input.actionLine] : []),
+    "",
+  ].join("\n");
+  const protectedLines = input.safetyLines.length
+    ? [...(input.omitReason ? [] : [input.reasonLine]), ...input.safetyLines]
+    : ["Details:", input.reasonLine];
+  return `${lead}\n${renderDetails(
+    input.details,
+    1500 - lead.length - 1,
+    protectedLines,
+    input.reservedLine,
+  )}`;
+}
+
 function protectedLabelLength(text: string): number {
   const separator = text.indexOf(":");
   if (separator < 0) {

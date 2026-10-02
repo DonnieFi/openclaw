@@ -218,6 +218,54 @@ describe("capped update run report", () => {
     expect(report.markdown.length).toBeLessThanOrEqual(1500);
   });
 
+  it("keeps fresh health explicit beside maximum runtime recovery inputs", () => {
+    const unit = `openclaw-${"x".repeat(255 - "openclaw-.service".length)}.service`;
+    const restartCommand = `sudo systemctl restart ${unit}`;
+    const advicePrefix = "Managed gateway remains stopped. Keep it stopped. ";
+    const tail = "TAIL-MUST-SURVIVE";
+    const advice = `${advicePrefix}${"A".repeat(1024 - advicePrefix.length - tail.length)}${tail}`;
+    const report = renderUpdateRunReport(
+      run({
+        status: "failed",
+        reason: "node-runtime-preflight",
+        origin: { nextAction: advice },
+        steps: [
+          {
+            step: "diagnostic:database snapshot",
+            status: "completed",
+            detail: `Snapshot diagnostic: ${"D".repeat(1_800)}`,
+          },
+          {
+            step: "warning:managed-service-reconciliation",
+            status: "completed",
+            detail: `System-scope Gateway service ${unit} requires an operator restart. After the update, run: ${restartCommand}`,
+          },
+          { step: "gateway recovery verification", status: "completed", exitCode: 0 },
+        ],
+        verification: {
+          serviceRunning: true,
+          runningVersion: "2026.9.7",
+          versionMatch: true,
+          readyz: true,
+          settled: true,
+          recovery: { serviceRestartSafe: false, reason: "runtime-verification-failed" },
+        },
+      }),
+      { currentHealth: { kind: "responding", version: "2026.9.7" } },
+    );
+    const lines = report.markdown.split("\n");
+
+    expect(lines.some((line) => line.startsWith("Restart:") && line.includes(restartCommand))).toBe(
+      true,
+    );
+    expect(lines).toContain("Recovery: serving; restart unsafe.");
+    expect(lines).toContain("Verification: serving.");
+    expect(lines).toContain("Health: responding; stop advice stale.");
+    expect(report.markdown).toContain("… run openclaw update status");
+    expect(report.markdown).toContain(tail);
+    expect(report.markdown.length).toBeLessThanOrEqual(1500);
+  });
+
   it("bounds a colonless success headline without dropping the outcome or verification", () => {
     const nextAction = "N".repeat(1024);
     const report = renderUpdateRunReport(

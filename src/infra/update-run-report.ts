@@ -566,6 +566,13 @@ export function renderUpdateRunReport(
   const reservedServiceWarningLine = warningFormat?.reserve
     ? protectedServiceWarningLine
     : undefined;
+  const runtimeSafetyLines = [
+    protectedServiceWarningLine,
+    protectedRecoveryLine,
+    protectedVerificationLine,
+    currentHealthLine,
+    protectedOverflowHealth,
+  ].filter((line): line is string => Boolean(line));
   const minWarnings = serviceWarning ? 1 : 0;
   if (runtimeCheckFailed) {
     // Keep the owner's selected action ahead of the diagnostic dump, including
@@ -576,27 +583,23 @@ export function renderUpdateRunReport(
       ...lines,
       ...hints.filter((line) => line !== next),
     ];
-    const lead = [headline, ...(suffixAction ? [cap.bounded(suffixAction, 1100)] : []), ""].join(
-      "\n",
-    );
-    const detailsBudget = 1500 - lead.length - 1;
+    const actionLine = suffixAction ? cap.bounded(suffixAction, 1100) : undefined;
+    const detailsLines = overflowHealth ? [...details, overflowHealth] : details;
+    // Fresh responding health outranks the details label and reason. Keeping both beside
+    // maximum recovery inputs can hide live health and make stale stop advice look current.
     return {
       headline,
       lines: [...(next ? [next, ""] : []), ...details],
-      markdown: `${lead}\n${cap.renderDetails(
-        overflowHealth ? [...details, overflowHealth] : details,
-        detailsBudget,
-        [
-          "Details:",
-          `Reason code: ${reason}`,
-          protectedServiceWarningLine,
-          protectedRecoveryLine,
-          protectedVerificationLine,
-          currentHealthLine,
-          protectedOverflowHealth,
-        ].filter((line): line is string => Boolean(line)),
-        reservedServiceWarningLine,
-      )}`,
+      markdown: cap.renderRuntimeDetails({
+        headline,
+        compactHeadline: protectedHeadline,
+        actionLine,
+        details: detailsLines,
+        reasonLine: `Reason code: ${reason}`,
+        safetyLines: runtimeSafetyLines,
+        omitReason: Boolean(protectedOverflowHealth && currentHealth?.kind === "responding"),
+        reservedLine: reservedServiceWarningLine,
+      }),
     };
   }
   lines.push(...hints);
