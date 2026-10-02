@@ -103,6 +103,34 @@ describe("capped update run report", () => {
     expect(report.markdown.length).toBeLessThanOrEqual(1500);
   });
 
+  it("keeps the failure explanation and reason under moderate runtime report pressure", () => {
+    const prefix = "Managed gateway remains stopped. Keep it stopped. ";
+    const advice = `${prefix}${"A".repeat(900 - prefix.length)}`;
+    const diagnosticPrefix = "Snapshot diagnostic: ";
+    const report = renderUpdateRunReport(
+      run({
+        status: "failed",
+        reason: "node-runtime-preflight",
+        origin: { nextAction: advice },
+        steps: [
+          {
+            step: "diagnostic:database snapshot",
+            status: "completed",
+            detail: `${diagnosticPrefix}${"D".repeat(1024 - diagnosticPrefix.length)}`,
+          },
+        ],
+      }),
+      { currentHealth: { kind: "responding", version: "2026.9.7" } },
+    );
+
+    expect(report.markdown).toContain(
+      "⚠️ OpenClaw could not complete the update. A required system check failed.",
+    );
+    expect(report.markdown).toContain("Reason code: node-runtime-preflight");
+    expect(report.markdown).toContain("Health: responding; stop advice stale.");
+    expect(report.markdown.length).toBeLessThanOrEqual(1500);
+  });
+
   it("qualifies long saved stop advice during a runtime-check failure", () => {
     const prefix = "Managed gateway remains stopped. Keep it stopped. ";
     const advice = `${prefix}${"A".repeat(1024 - prefix.length)}`;

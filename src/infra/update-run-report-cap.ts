@@ -38,16 +38,6 @@ export function compactHeadline(
             : headline;
 }
 
-export function renderDetails(
-  details: string[],
-  limit: number,
-  protectedLines: string[],
-  reservedLine?: string,
-): string {
-  const body = details.join("\n");
-  return body.length <= limit ? body : renderProtected(protectedLines, limit, reservedLine);
-}
-
 export function renderRuntimeDetails(input: {
   headline: string;
   compactHeadline: string;
@@ -58,22 +48,35 @@ export function renderRuntimeDetails(input: {
   omitReason: boolean;
   reservedLine?: string;
 }): string {
+  const details = input.details.join("\n");
   const fullLead = [input.headline, ...(input.actionLine ? [input.actionLine] : []), ""].join("\n");
-  const compact = input.details.join("\n").length > 1500 - fullLead.length - 1;
-  const lead = [
-    compact ? input.compactHeadline : input.headline,
+  const fullBudget = 1500 - fullLead.length - 1;
+  if (details.length <= fullBudget) {
+    return `${fullLead}\n${details}`;
+  }
+  const protectedLines = input.safetyLines.length
+    ? [input.reasonLine, ...input.safetyLines]
+    : ["Details:", input.reasonLine];
+  const protectedBody = [
+    protectedLines[0],
+    REPORT_DETAILS_OMITTED_COMPACT,
+    ...protectedLines.slice(1),
+  ].join("\n");
+  if (protectedBody.length <= fullBudget) {
+    return `${fullLead}\n${protectedBody}`;
+  }
+  const compactLead = [
+    input.compactHeadline,
     ...(input.actionLine ? [input.actionLine] : []),
     "",
   ].join("\n");
-  const protectedLines = input.safetyLines.length
-    ? [...(input.omitReason ? [] : [input.reasonLine]), ...input.safetyLines]
-    : ["Details:", input.reasonLine];
-  return `${lead}\n${renderDetails(
-    input.details,
-    1500 - lead.length - 1,
-    protectedLines,
-    input.reservedLine,
-  )}`;
+  const compactBudget = 1500 - compactLead.length - 1;
+  if (protectedBody.length <= compactBudget) {
+    return `${compactLead}\n${protectedBody}`;
+  }
+  const pressuredLines =
+    input.omitReason && input.safetyLines.length ? input.safetyLines : protectedLines;
+  return `${compactLead}\n${renderProtected(pressuredLines, compactBudget, input.reservedLine)}`;
 }
 
 function protectedLabelLength(text: string): number {
