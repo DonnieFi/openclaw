@@ -161,7 +161,9 @@ describe("capped update run report", () => {
       { nextAction: "N".repeat(1024) },
     );
 
-    expect(report.lines).toContain("Recovery: recovery probe failed (gateway-probe-failed).");
+    expect(report.lines).toContain(
+      "Recorded recovery: recovery probe failed (gateway-probe-failed).",
+    );
     expect(report.markdown).toContain("Recovery: probe failed.");
     expect(report.markdown).not.toContain("Recovery: serving verified.");
   });
@@ -183,7 +185,9 @@ describe("capped update run report", () => {
       { nextAction: "N".repeat(1024) },
     );
 
-    expect(report.lines).toContain("Verification: service stopped; 1 plugin activation error(s).");
+    expect(report.lines).toContain(
+      "Recorded verification: service stopped; 1 plugin activation error(s).",
+    );
     expect(report.markdown).toContain("Verification: stopped; plugin errors.");
   });
 
@@ -205,7 +209,7 @@ describe("capped update run report", () => {
     );
 
     expect(report.lines).toContain(
-      "Recovery: Gateway readiness is pending; recovery probe completed without verified readiness.",
+      "Recorded recovery: Gateway readiness is pending; recovery probe completed without verified readiness.",
     );
     expect(report.markdown).toContain("Recovery: readiness pending.");
     expect(report.markdown).not.toContain("Recovery: not serving.");

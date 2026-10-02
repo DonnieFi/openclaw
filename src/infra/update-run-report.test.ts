@@ -577,8 +577,8 @@ describe("update run report", () => {
       "Warning",
       "Warning",
       "Warning",
-      "Recovery",
-      "Verification",
+      "Recorded recovery",
+      "Recorded verification",
       "The gateway is serving 2026.9.7 and passed recovery verification, but restarting it is not verified safe (runtime-verification-failed).",
     ]);
     expect(markdownLines[2]).toMatch(/^Warning: Warning A: advisory detail/u);
@@ -587,9 +587,9 @@ describe("update run report", () => {
       "Warning: 1 more warning omitted; run openclaw update status for the full report.",
     );
     expect(markdownLines[5]).toBe(
-      "Recovery: verified serving 2026.9.7; restart remains unsafe (runtime-verification-failed).",
+      "Recorded recovery: verified serving 2026.9.7; restart remains unsafe (runtime-verification-failed).",
     );
-    expect(markdownLines[6]).toBe("Verification: version verified; HTTP ready.");
+    expect(markdownLines[6]).toBe("Recorded verification: version verified; HTTP ready.");
     expect(report.markdown.length).toBeLessThanOrEqual(1500);
     expect(report.lines.filter((line) => line.startsWith("Warning:"))).toHaveLength(3);
   });

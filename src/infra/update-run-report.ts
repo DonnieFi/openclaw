@@ -1,4 +1,3 @@
-import { sliceUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { UPDATE_RUN_PHASES } from "../../packages/gateway-protocol/src/update-run-vocabulary.js";
 import {
   formatUpdateActivationTimeoutGuidance,
@@ -20,7 +19,7 @@ import {
   LEGACY_UPDATE_RUN_EXPIRED_REASON,
 } from "./update-run-legacy-expiry.js";
 import { isAcknowledgedAbandonedUpdateRun, type UpdateRunRecord } from "./update-run-record.js";
-import { boundedProtectedLine, renderProtectedReport } from "./update-run-report-cap.js";
+import { bounded, formatServiceWarning, renderProtected } from "./update-run-report-cap.js";
 import type { UpdateRunReportHealth } from "./update-run-report-health.js";
 import {
   updateRunServiceWarning,
@@ -189,31 +188,6 @@ export function renderUpdateRunNotice(
     ? bounded(run.verification.runningVersion, 120)
     : to;
   return `🔁 Back${running ? ` on v${running}` : ""}, verifying…`;
-}
-
-function bounded(text: string, limit: number): string {
-  return text.length <= limit ? text : `${sliceUtf16Safe(text, 0, limit - 1)}…`;
-}
-
-const SERVICE_RESTART_COMMAND_MARKER = "After the update, run: ";
-
-function formatServiceWarning(message: string): {
-  report: string;
-  protected: string;
-  reserve: boolean;
-} {
-  // The system-service owner appends the only safe restart command after this marker.
-  const commandAt = message.lastIndexOf(SERVICE_RESTART_COMMAND_MARKER);
-  const warning = `Warning: ${message}`;
-  const restartCommand =
-    commandAt < 0 ? undefined : message.slice(commandAt + SERVICE_RESTART_COMMAND_MARKER.length);
-  const reportLine =
-    commandAt < 0 ? warning : `Warning: operator restart required: ${restartCommand}`;
-  return {
-    report: warning.length <= 509 ? warning : boundedProtectedLine(reportLine, 509),
-    protected: restartCommand ? `Restart: ${restartCommand}` : warning,
-    reserve: commandAt >= 0,
-  };
 }
 
 function recoveryHints(run: ReportInput, nextAction?: string): string[] {
@@ -654,7 +628,7 @@ export function renderUpdateRunReport(
     body = renderBody(keptWarnings);
   }
   if (body.length > budget) {
-    body = renderProtectedReport(
+    body = renderProtected(
       [
         protectedHeadline,
         protectedServiceWarningLine,

@@ -1,8 +1,9 @@
 import { sliceUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 
 const REPORT_DETAILS_OMITTED_COMPACT = "… run openclaw update status";
+const SERVICE_RESTART_COMMAND_MARKER = "After the update, run: ";
 
-function bounded(text: string, limit: number): string {
+export function bounded(text: string, limit: number): string {
   return text.length <= limit ? text : `${sliceUtf16Safe(text, 0, limit - 1)}…`;
 }
 
@@ -31,15 +32,30 @@ function boundedEdges(text: string, limit: number, protectedPrefix: number): str
   return `${sliceUtf16Safe(text, 0, limit - tail - 1)}…${sliceUtf16Safe(text, -tail)}`;
 }
 
-export function boundedProtectedLine(text: string, limit: number): string {
+function boundedProtectedLine(text: string, limit: number): string {
   return boundedEdges(text, limit, protectedLabelLength(text));
 }
 
-export function renderProtectedReport(
-  lines: string[],
-  limit: number,
-  reservedLine?: string,
-): string {
+export function formatServiceWarning(message: string): {
+  report: string;
+  protected: string;
+  reserve: boolean;
+} {
+  // The system-service owner appends the only safe restart command after this marker.
+  const commandAt = message.lastIndexOf(SERVICE_RESTART_COMMAND_MARKER);
+  const warning = `Warning: ${message}`;
+  const restartCommand =
+    commandAt < 0 ? undefined : message.slice(commandAt + SERVICE_RESTART_COMMAND_MARKER.length);
+  const reportLine =
+    commandAt < 0 ? warning : `Warning: operator restart required: ${restartCommand}`;
+  return {
+    report: warning.length <= 509 ? warning : boundedProtectedLine(reportLine, 509),
+    protected: restartCommand ? `Restart: ${restartCommand}` : warning,
+    reserve: commandAt >= 0,
+  };
+}
+
+export function renderProtected(lines: string[], limit: number, reservedLine?: string): string {
   const required = lines.filter(Boolean);
   const contentBudget = limit - REPORT_DETAILS_OMITTED_COMPACT.length - required.length;
   if (required.length === 0 || contentBudget < required.length) {
