@@ -70,6 +70,111 @@ describe("capped update run report", () => {
     expect(warningLine?.length).toBeGreaterThan(300);
   });
 
+  it("preserves runtime-check safety facts when diagnostics exceed the details budget", () => {
+    const nextAction = "N".repeat(1024);
+    const report = renderUpdateRunReport(
+      run({
+        status: "failed",
+        reason: "node-runtime-preflight",
+        steps: [
+          {
+            step: "diagnostic:database snapshot",
+            status: "completed",
+            detail: `Snapshot diagnostic: ${"D".repeat(1_200)}`,
+          },
+          { step: "gateway recovery verification", status: "completed", exitCode: 0 },
+        ],
+        verification: {
+          serviceRunning: true,
+          runningVersion: "2026.9.7",
+          versionMatch: true,
+          readyz: true,
+          settled: true,
+          recovery: { serviceRestartSafe: false, reason: "runtime-verification-failed" },
+        },
+      }),
+      { nextAction },
+    );
+
+    expect(report.markdown.split("\n")[1]).toBe(nextAction);
+    expect(report.markdown).toContain("Recovery: serving; restart unsafe.");
+    expect(report.markdown).toContain("Verification: serving.");
+    expect(report.markdown).toContain("… run openclaw update status");
+    expect(report.markdown.length).toBeLessThanOrEqual(1500);
+  });
+
+  it("qualifies long saved stop advice during a runtime-check failure", () => {
+    const prefix = "Managed gateway remains stopped. Keep it stopped. ";
+    const advice = `${prefix}${"A".repeat(1024 - prefix.length)}`;
+    const report = renderUpdateRunReport(
+      run({
+        status: "failed",
+        reason: "node-runtime-preflight",
+        origin: { nextAction: advice },
+      }),
+      { currentHealth: { kind: "responding", version: "2026.9.2" } },
+    );
+
+    expect(report.markdown).toContain("Historical recovery advice:");
+    expect(report.markdown).toContain("Current health: Gateway answered");
+    expect(report.markdown).toContain("supersedes saved claims that the Gateway is stopped");
+    expect(report.lines.join("\n").match(/Current health: Gateway answered/gu)).toHaveLength(1);
+    expect(report.markdown.length).toBeLessThanOrEqual(1500);
+  });
+
+  it("keeps compact health qualification and the advice tail with overflowing runtime diagnostics", () => {
+    const prefix = "Managed gateway remains stopped. Keep it stopped. ";
+    const tail = "TAIL-MUST-SURVIVE";
+    const advice = `${prefix}${"A".repeat(1024 - prefix.length - tail.length)}${tail}`;
+    const report = renderUpdateRunReport(
+      run({
+        status: "failed",
+        reason: "node-runtime-preflight",
+        origin: { nextAction: advice },
+        steps: [
+          {
+            step: "diagnostic:database snapshot",
+            status: "completed",
+            detail: `Snapshot diagnostic: ${"D".repeat(1_800)}`,
+          },
+        ],
+      }),
+      { currentHealth: { kind: "responding", version: "2026.9.2" } },
+    );
+
+    expect(report.markdown).toContain("Health: responding; stop advice stale.");
+    expect(report.markdown).toContain("… run openclaw update status");
+    expect(report.markdown).toContain(tail);
+    expect(report.markdown.length).toBeLessThanOrEqual(1500);
+  });
+
+  it("preserves a fresh current-health observation without saved advice", () => {
+    const report = renderUpdateRunReport(
+      run({
+        status: "failed",
+        reason: "runtime-verification-failed",
+        steps: [
+          {
+            step: "diagnostic:database snapshot",
+            status: "completed",
+            detail: `Snapshot diagnostic: ${"D".repeat(1_800)}`,
+          },
+        ],
+        verification: { serviceRunning: true, readyz: true },
+      }),
+      { currentHealth: { kind: "responding", version: "2026.9.2" } },
+    );
+
+    expect(report.lines).toContain(
+      "Current health: Gateway answered on the recorded port (2026.9.2).",
+    );
+    expect(report.markdown).toContain(
+      "Current health: Gateway answered on the recorded port (2026.9.2).",
+    );
+    expect(report.markdown).toContain("… run openclaw update status");
+    expect(report.markdown.length).toBeLessThanOrEqual(1500);
+  });
+
   it("preserves every protected fact beside a maximum systemd restart command", () => {
     const unit = `openclaw-${"x".repeat(255 - "openclaw-.service".length)}.service`;
     const restartCommand = `sudo systemctl restart ${unit}`;

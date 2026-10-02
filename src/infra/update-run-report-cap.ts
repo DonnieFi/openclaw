@@ -1,10 +1,51 @@
 import { sliceUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
+import { LEGACY_UPDATE_RUN_EXPIRED_REASON } from "./update-run-legacy-expiry.js";
+import type { UpdateRunRecord } from "./update-run-record.js";
+import type { UpdateRunReportHealth } from "./update-run-report-health.js";
 
 const REPORT_DETAILS_OMITTED_COMPACT = "… run openclaw update status";
 const SERVICE_RESTART_COMMAND_MARKER = "After the update, run: ";
 
 export function bounded(text: string, limit: number): string {
   return text.length <= limit ? text : `${sliceUtf16Safe(text, 0, limit - 1)}…`;
+}
+
+export function formatUpdateRunCurrentHealth(health: UpdateRunReportHealth): string {
+  return health.kind === "responding"
+    ? `Current health: Gateway answered on the recorded port (${bounded(health.version, 120)}).`
+    : "Current health unavailable; saved verification describes the update attempt only.";
+}
+
+export function compactHeadline(
+  run: Pick<UpdateRunRecord, "status" | "reason">,
+  headline: string,
+  reconciled: boolean,
+): string {
+  return reconciled
+    ? "ℹ️ Reconciled."
+    : run.status === "succeeded"
+      ? "✅ Updated."
+      : run.status === "failed"
+        ? run.reason === LEGACY_UPDATE_RUN_EXPIRED_REASON
+          ? "ℹ️ Update abandoned."
+          : "⚠️ Failed."
+        : run.status === "skipped"
+          ? run.reason === "still-starting" || run.reason === "gateway-readiness-unverified"
+            ? "ℹ️ Installed; readiness unverified."
+            : "ℹ️ Update skipped."
+          : run.status === "rolled-back"
+            ? "↩️ Rolled back."
+            : headline;
+}
+
+export function renderDetails(
+  details: string[],
+  limit: number,
+  protectedLines: string[],
+  reservedLine?: string,
+): string {
+  const body = details.join("\n");
+  return body.length <= limit ? body : renderProtected(protectedLines, limit, reservedLine);
 }
 
 function protectedLabelLength(text: string): number {

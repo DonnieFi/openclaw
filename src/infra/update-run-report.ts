@@ -19,7 +19,7 @@ import {
   LEGACY_UPDATE_RUN_EXPIRED_REASON,
 } from "./update-run-legacy-expiry.js";
 import { isAcknowledgedAbandonedUpdateRun, type UpdateRunRecord } from "./update-run-record.js";
-import { bounded, formatServiceWarning, renderProtected } from "./update-run-report-cap.js";
+import * as cap from "./update-run-report-cap.js";
 import type { UpdateRunReportHealth } from "./update-run-report-health.js";
 import {
   updateRunServiceWarning,
@@ -28,6 +28,8 @@ import {
 } from "./update-run-step.js";
 import type { UpdateRunResult } from "./update-runner-types.js";
 import { formatUpdateSnapshotCapacity } from "./update-snapshot-capacity.js";
+
+export { formatUpdateRunCurrentHealth } from "./update-run-report-cap.js";
 
 export type UpdateRunReport = { headline: string; lines: string[]; markdown: string };
 
@@ -108,12 +110,6 @@ export function formatUpdateRunIdentity(
   }[identity.kind];
 }
 
-export function formatUpdateRunCurrentHealth(health: UpdateRunReportHealth): string {
-  return health.kind === "responding"
-    ? `Current health: Gateway answered on the recorded port (${bounded(health.version, 120)}).`
-    : "Current health unavailable; saved verification describes the update attempt only.";
-}
-
 /** Public-report callers redact identifiers before using this shared formatter. */
 export function formatUpdateRunRecovery(
   verification: UpdateRunRecord["verification"],
@@ -129,7 +125,7 @@ export function formatUpdateRunRecovery(
     if (!recovery.serviceRestartSafe) {
       return `${restored ? "package rollback verified; service restart not verified" : "not verified"} (${reason})`;
     }
-    const version = bounded(recovery.version, 120);
+    const version = cap.bounded(recovery.version, 120);
     if (recovery.service === "healthy") {
       return `${restored ? "package rollback verified; " : ""}Gateway serving ${version}; health verified`;
     }
@@ -150,7 +146,7 @@ export function formatUpdateRunRecovery(
   if (observation.exitCode === 0 && version && !observation.failureFacts?.length) {
     const constraint =
       recovery?.serviceRestartSafe === false ? `; restart remains unsafe (${reason})` : "";
-    return `${recovery?.packageRollbackVerified ? "package rollback verified; " : ""}verified serving ${bounded(version, 120)}${constraint}`;
+    return `${recovery?.packageRollbackVerified ? "package rollback verified; " : ""}verified serving ${cap.bounded(version, 120)}${constraint}`;
   }
   const code = observation.failureFacts?.[0]?.code;
   if (!code) {
@@ -175,9 +171,9 @@ export function renderUpdateRunNotice(
   if (run.status !== "running" || run.phase !== noticePhase) {
     return null;
   }
-  const from = run.before.version ? bounded(run.before.version, 120) : undefined;
+  const from = run.before.version ? cap.bounded(run.before.version, 120) : undefined;
   const target = run.after.version ?? run.target.version;
-  const to = target ? bounded(target, 120) : undefined;
+  const to = target ? cap.bounded(target, 120) : undefined;
   if (kind === "ack") {
     return `⬆️ Updating OpenClaw ${from ?? "the current version"} → ${to ?? "the latest release"}. The gateway stays available while the update is validated; you'll get a message here when it finishes.`;
   }
@@ -185,7 +181,7 @@ export function renderUpdateRunNotice(
     return `⏳ Restarting the gateway now${from && to ? ` (v${from} → v${to})` : ""}…`;
   }
   const running = run.verification.runningVersion
-    ? bounded(run.verification.runningVersion, 120)
+    ? cap.bounded(run.verification.runningVersion, 120)
     : to;
   return `🔁 Back${running ? ` on v${running}` : ""}, verifying…`;
 }
@@ -242,7 +238,7 @@ export function renderUpdateRunReport(
   // Git updates can change commits without changing the package version.
   const before = run.before.sha?.slice(0, 8) ?? run.before.version;
   const after = run.after.sha?.slice(0, 8) ?? run.after.version;
-  const reason = bounded(
+  const reason = cap.bounded(
     run.reason?.trim() ||
       (run.status === "failed" &&
         run.steps.find((step) => step.status === "failed" && step.step !== "requested")?.step) ||
@@ -290,44 +286,31 @@ export function renderUpdateRunReport(
       headline = `${IN_PROGRESS_REPORT_PREFIX}${run.target?.installationMethod === "ocm" ? "managed by OCM" : run.phase}.`;
       break;
   }
-  headline = bounded(headline, 500);
+  headline = cap.bounded(headline, 500);
   // Saved pending reports are recognized by the running headline prefix. Compaction must retain
   // that lifecycle discriminator so terminal recovery can replace the pending projection.
-  const protectedHeadline = reconciled
-    ? "ℹ️ Reconciled."
-    : run.status === "succeeded"
-      ? "✅ Updated."
-      : run.status === "failed"
-        ? run.reason === LEGACY_UPDATE_RUN_EXPIRED_REASON
-          ? "ℹ️ Update abandoned."
-          : "⚠️ Failed."
-        : run.status === "skipped"
-          ? run.reason === "still-starting" || run.reason === "gateway-readiness-unverified"
-            ? "ℹ️ Installed; readiness unverified."
-            : "ℹ️ Update skipped."
-          : run.status === "rolled-back"
-            ? "↩️ Rolled back."
-            : headline;
-  const lines: string[] = [];
-  if (currentHealth && !run.origin.nextAction && !opts.nextAction) {
-    lines.push(formatUpdateRunCurrentHealth(currentHealth));
-  }
+  const protectedHeadline = cap.compactHeadline(run, headline, reconciled);
+  const currentHealthLine =
+    currentHealth && !run.origin.nextAction && !opts.nextAction
+      ? cap.formatUpdateRunCurrentHealth(currentHealth)
+      : undefined;
+  const lines: string[] = currentHealthLine ? [currentHealthLine] : [];
   if (opts.mode && opts.mode !== "unknown") {
     lines.push(`Update mode: ${opts.mode}`);
   }
   const admission = run.origin.admission;
   if (admission) {
     const candidateVersion = admission.candidateVersion
-      ? ` (${bounded(admission.candidateVersion, 120)})`
+      ? ` (${cap.bounded(admission.candidateVersion, 120)})`
       : "";
     lines.push(`Admission: ${admission.owner}${candidateVersion}.`);
     if (admission.checks?.length) {
       lines.push(
-        `Admission checks: ${admission.checks.map((check) => `${bounded(check.name, 120)}: ${check.status}`).join(", ")}.`,
+        `Admission checks: ${admission.checks.map((check) => `${cap.bounded(check.name, 120)}: ${check.status}`).join(", ")}.`,
       );
     }
     if (admission.fallbackReason) {
-      lines.push(`Admission fallback: ${bounded(admission.fallbackReason, 500)}`);
+      lines.push(`Admission fallback: ${cap.bounded(admission.fallbackReason, 500)}`);
     }
   }
   for (const step of run.steps) {
@@ -379,7 +362,7 @@ export function renderUpdateRunReport(
     run.steps.filter((item) => item.status === "failed"),
   )) {
     const failure = `Failed: ${step.step}${step.detail ? ` — ${step.detail}` : ""}`;
-    lines.push(bounded(failure, 300));
+    lines.push(cap.bounded(failure, 300));
     lines.push(
       ...(step.failureFacts ?? []).slice(0, 5).map((fact) =>
         formatUpdateFailureFact({
@@ -394,12 +377,12 @@ export function renderUpdateRunReport(
   }
   const warningStart = lines.length;
   const serviceWarning = updateRunServiceWarning(run.steps);
-  const serviceWarningFormat = serviceWarning ? formatServiceWarning(serviceWarning) : undefined;
+  const warningFormat = serviceWarning ? cap.formatServiceWarning(serviceWarning) : undefined;
   for (const message of updateRunWarningMessages(run.steps, 3)) {
     lines.push(
-      message === serviceWarning && serviceWarningFormat
-        ? serviceWarningFormat.report
-        : `Warning: ${bounded(message, 500)}`,
+      message === serviceWarning && warningFormat
+        ? warningFormat.report
+        : `Warning: ${cap.bounded(message, 500)}`,
     );
   }
   const warningEnd = lines.length;
@@ -440,7 +423,7 @@ export function renderUpdateRunReport(
     facts.serviceRunning === undefined
       ? undefined
       : facts.serviceRunning
-        ? `service running${facts.runningVersion ? ` (${bounded(facts.runningVersion, 120)})` : ""}`
+        ? `service running${facts.runningVersion ? ` (${cap.bounded(facts.runningVersion, 120)})` : ""}`
         : "service stopped",
     formatUpdateRunIdentity(facts, run.after),
     facts.channelsReady === undefined
@@ -499,7 +482,7 @@ export function renderUpdateRunReport(
   }
   for (const attempt of run.repair.slice(-3)) {
     lines.push(
-      bounded(
+      cap.bounded(
         `Repair ${attempt.attempt}: ${attempt.status}${attempt.summary || attempt.reason ? ` — ${attempt.summary ?? attempt.reason}` : ""}`,
         300,
       ),
@@ -517,7 +500,7 @@ export function renderUpdateRunReport(
   const savedAction = opts.nextAction ?? run.origin.nextAction ?? skipGuidance;
   const currentHealthQualification =
     savedAction && currentHealth
-      ? `${formatUpdateRunCurrentHealth(currentHealth)} ${
+      ? `${cap.formatUpdateRunCurrentHealth(currentHealth)} ${
           currentHealth.kind === "responding"
             ? "This observation supersedes saved claims that the Gateway is stopped; other recovery constraints still apply. The recorded update outcome is unchanged."
             : "Check current Gateway status before acting on this saved advice."
@@ -563,23 +546,6 @@ export function renderUpdateRunReport(
             ),
           ];
   const next = hints.at(-1);
-  if (runtimeCheckFailed) {
-    // Keep the owner's selected action ahead of the diagnostic dump, including
-    // historical-advice qualifications. Neither this layout nor truncation selects recovery.
-    const details = [
-      "Details:",
-      `Reason code: ${reason}`,
-      ...lines,
-      ...hints.filter((line) => line !== next),
-    ];
-    const lead = [headline, ...(next ? [bounded(next, 1100)] : []), ""].join("\n");
-    return {
-      headline,
-      lines: [...(next ? [next, ""] : []), ...details],
-      markdown: `${lead}\n${bounded(details.join("\n"), 1500 - lead.length - 1)}`,
-    };
-  }
-  lines.push(...hints);
   const overflowsQualifiedAction =
     next !== undefined &&
     next === nextAction &&
@@ -596,15 +562,48 @@ export function renderUpdateRunReport(
       ? "Health: responding; stop advice stale."
       : "Health: unknown; verify saved advice."
     : undefined;
-  const suffix = suffixAction ? `\n${bounded(suffixAction, 1100)}` : "";
-  const budget = 1500 - suffix.length;
-  // Advisory warnings yield the chat budget before the recovery and verification facts
-  // after them. Trailing warnings go first; the operator's restart command leads and never yields.
-  const protectedServiceWarningLine = serviceWarningFormat?.protected;
-  const reservedServiceWarningLine = serviceWarningFormat?.reserve
+  const protectedServiceWarningLine = warningFormat?.protected;
+  const reservedServiceWarningLine = warningFormat?.reserve
     ? protectedServiceWarningLine
     : undefined;
   const minWarnings = serviceWarning ? 1 : 0;
+  if (runtimeCheckFailed) {
+    // Keep the owner's selected action ahead of the diagnostic dump, including
+    // historical-advice qualifications. Neither this layout nor truncation selects recovery.
+    const details = [
+      "Details:",
+      `Reason code: ${reason}`,
+      ...lines,
+      ...hints.filter((line) => line !== next),
+    ];
+    const lead = [headline, ...(suffixAction ? [cap.bounded(suffixAction, 1100)] : []), ""].join(
+      "\n",
+    );
+    const detailsBudget = 1500 - lead.length - 1;
+    return {
+      headline,
+      lines: [...(next ? [next, ""] : []), ...details],
+      markdown: `${lead}\n${cap.renderDetails(
+        overflowHealth ? [...details, overflowHealth] : details,
+        detailsBudget,
+        [
+          "Details:",
+          `Reason code: ${reason}`,
+          protectedServiceWarningLine,
+          protectedRecoveryLine,
+          protectedVerificationLine,
+          currentHealthLine,
+          protectedOverflowHealth,
+        ].filter((line): line is string => Boolean(line)),
+        reservedServiceWarningLine,
+      )}`,
+    };
+  }
+  lines.push(...hints);
+  const suffix = suffixAction ? `\n${cap.bounded(suffixAction, 1100)}` : "";
+  const budget = 1500 - suffix.length;
+  // Advisory warnings yield the chat budget before the recovery and verification facts
+  // after them. Trailing warnings go first; the operator's restart command leads and never yields.
   const renderBody = (keptWarnings: number) => {
     const omitted = warningEnd - warningStart - keptWarnings;
     return [
@@ -628,12 +627,13 @@ export function renderUpdateRunReport(
     body = renderBody(keptWarnings);
   }
   if (body.length > budget) {
-    body = renderProtected(
+    body = cap.renderProtected(
       [
         protectedHeadline,
         protectedServiceWarningLine,
         protectedRecoveryLine,
         protectedVerificationLine,
+        currentHealthLine,
         protectedOverflowHealth,
       ].filter((line): line is string => Boolean(line)),
       budget,
