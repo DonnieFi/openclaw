@@ -3,6 +3,7 @@ import { resolveConfigPath, resolveStateDir } from "../../config/paths.js";
 import { resolvePathViaExistingAncestorSync } from "../../infra/boundary-path.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { canResolveRegistryVersionForPackageTarget } from "../../infra/update-global.js";
+import { formatBestEffortOriginalCaptureWarning } from "../../infra/update-original-capture-warning.js";
 import { readUpdateRunDriver } from "../../infra/update-run-driver.js";
 import { updateRunStepsFromResultStep } from "../../infra/update-run-step.js";
 import { DEFAULT_UPDATE_STEP_TIMEOUT_MS } from "../../infra/update-run-timeouts.js";
@@ -228,7 +229,7 @@ export async function initializeAndRunUpdate(
                   if (hasCommandProcessCleanupError(error)) {
                     throw error;
                   }
-                  warn(`Original state capture is unavailable: ${formatErrorMessage(error)}`);
+                  warn(formatBestEffortOriginalCaptureWarning(formatErrorMessage(error)));
                 }
                 assertCurrent();
                 if (resolveDebugProxySettings(env).enabled) {
