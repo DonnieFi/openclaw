@@ -141,11 +141,15 @@ export async function captureUpdateDatabases(params: {
     maintenance !== null &&
     unavailable === undefined &&
     backup.databases.every((entry) => typeof backup.sourceGenerations[entry.path] === "string");
-  // Verified success retires these copies with the package backup. A warning
-  // recorded on the snapshot step is reprinted after that cleanup, so it must
-  // not promise that the copies are still available.
-  const snapshotLifetime =
-    "Verified successful activation removes these snapshots; they are retained with the update's recovery artifacts only when activation does not succeed.";
+  // The snapshot step is reprinted after activation. Package retirement deletes
+  // these copies only when cleanup finishes; a recoverable cleanup warning
+  // leaves them. Git copies live under .artifacts and runtime cleanup does
+  // not remove them, so one removal promise is wrong for both.
+  const gitArtifactSnapshots =
+    execution.updateInstallKind === "git" && !execution.switchToGit;
+  const snapshotLifetime = gitArtifactSnapshots
+    ? `These snapshots remain at ${backup.directory}. Git activation retains them; Git runtime cleanup does not remove them.`
+    : "Package activation retires these snapshots after the update is verified, unless snapshot cleanup reports that it could not finish. They are retained when activation does not succeed.";
   if (!restorable) {
     backup.warnings.push(
       `Automatic database restoration is disabled because ${unavailable ? `the Gateway could not be confirmed stopped during capture: ${unavailable}` : "a source database changed or its write generation could not be captured"}. ${snapshotLifetime}`,

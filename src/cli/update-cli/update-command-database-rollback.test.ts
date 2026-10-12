@@ -849,11 +849,14 @@ it.each([
           expect(captured?.warnings).toEqual([
             expect.stringContaining("Automatic database restoration is disabled"),
           ]);
-          // Successful activation deletes this directory. The recorded step is
-          // what the success report reprints, so it cannot promise the copies remain.
-          expect(capturedText).toContain("Verified successful activation removes these snapshots");
+          // Package success reprints this step after retirement. It must not
+          // promise the copies remain, and it must not promise cleanup finished.
+          expect(capturedText).toContain(
+            "Package activation retires these snapshots after the update is verified, unless snapshot cleanup reports that it could not finish.",
+          );
           expect(capturedText).not.toContain("Snapshots remain available");
           expect(capturedText).not.toContain("later writes must be preserved");
+          expect(capturedText).not.toContain("Git activation retains them");
           expect(execution.result.steps.some((step) => step.name === "database rollback")).toBe(
             false,
           );
@@ -861,6 +864,15 @@ it.each([
           return;
         }
         expect({ shared: readDatabase(shared), agent: readDatabase(agent) }).toEqual(before);
+        if (gitInstall) {
+          const gitCaptured = execution.result.steps.find(
+            (step) => step.name === "database snapshot",
+          );
+          const gitText = (gitCaptured?.diagnostics ?? []).join("\n");
+          expect(gitText).toContain("Git activation retains them");
+          expect(gitText).toContain("Git runtime cleanup does not remove them");
+          expect(gitText).not.toContain("Package activation retires these snapshots");
+        }
         expect(execution.databaseBackup?.databases).toHaveLength(2);
         expect(execution.databaseBackup?.missingPaths).toContain(missing);
         expect(execution.result.steps.map((step) => step.name)).toEqual(
