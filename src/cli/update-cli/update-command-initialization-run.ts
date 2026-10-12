@@ -3,7 +3,6 @@ import { resolveConfigPath, resolveStateDir } from "../../config/paths.js";
 import { resolvePathViaExistingAncestorSync } from "../../infra/boundary-path.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { canResolveRegistryVersionForPackageTarget } from "../../infra/update-global.js";
-import { formatBestEffortOriginalCaptureWarning } from "../../infra/update-original-capture-warning.js";
 import { readUpdateRunDriver } from "../../infra/update-run-driver.js";
 import { updateRunStepsFromResultStep } from "../../infra/update-run-step.js";
 import { DEFAULT_UPDATE_STEP_TIMEOUT_MS } from "../../infra/update-run-timeouts.js";
@@ -229,7 +228,11 @@ export async function initializeAndRunUpdate(
                   if (hasCommandProcessCleanupError(error)) {
                     throw error;
                   }
-                  warn(formatBestEffortOriginalCaptureWarning(formatErrorMessage(error)));
+                  // Capture is best effort. Lead with continuation guidance because the
+                  // warning is length-bounded and the nested cause can be long.
+                  warn(
+                    `Original state capture is unavailable; the update continues without it. A running Gateway or another active writer changing state during capture is expected to cause this. Database rollback uses the pre-migration snapshots taken after the Gateway stops. A completed update does not need to be restarted because of this warning. Cause: ${formatErrorMessage(error)}`,
+                  );
                 }
                 assertCurrent();
                 if (resolveDebugProxySettings(env).enabled) {

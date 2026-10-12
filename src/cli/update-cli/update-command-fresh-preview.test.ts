@@ -13,6 +13,7 @@ import * as packageMetadata from "../../infra/update-check-package-target.js";
 import * as updateCheck from "../../infra/update-check.js";
 import * as devUpdateTarget from "../../infra/update-dev-target.js";
 import { createManagedHandoffLeaseStore } from "../../infra/update-managed-service-handoff-lease.js";
+import * as recoveryBaseline from "../../infra/update-recovery-baseline-capture.js";
 import { getUpdateRun } from "../../infra/update-run-ledger.js";
 import * as history from "../../infra/update-run-reader.js";
 import type { UpdateRecoveryFence } from "../../infra/update-run-recovery.js";
@@ -781,43 +782,27 @@ it("continues a completed update when original-state capture fails", async () =>
         agent: OPENCLAW_AGENT_SCHEMA_VERSION,
       },
     });
-    const baseline = await import("../../infra/update-recovery-baseline-capture.js");
-    vi.spyOn(baseline, "captureUpdateRecoveryBaseline").mockRejectedValue(
-      new Error(
-        "State schema inspection failed (exit): generation changed. Check access to the reported source, free space, and storage performance, then retry the update.",
-      ),
-    );
-    const visible: string[] = [];
-    vi.mocked(defaultRuntime.error).mockImplementation((message) => {
-      visible.push(String(message));
-    });
-
-    const failure = await updateCommand({ yes: true, json: true, restart: false }).catch(
-      (error: unknown) => error,
+    const cause = "SQLite file generation changed while reading: /fixture/state/openclaw.sqlite";
+    vi.spyOn(recoveryBaseline, "captureUpdateRecoveryBaseline").mockRejectedValue(
+      new Error("Original update capture failed; evidence retained at /fixture/capture", {
+        cause: new Error(cause),
+      }),
     );
 
-    expect(failure, JSON.stringify(vi.mocked(defaultRuntime.writeJson).mock.calls)).toBeUndefined();
-    const warning = visible.join("\n");
-    expect(warning).toContain("generation changed");
-    expect(warning).toContain("The update continues without this capture");
-    expect(warning).toContain(
-      "A completed update does not need to be restarted because of this warning.",
-    );
-    expect(warning).not.toContain("retry the update");
+    await expect(updateCommand({ yes: true, json: true, restart: false })).resolves.toBeUndefined();
+
     const [finished] = history.listUpdateRuns();
-    assert(finished);
-    expect(finished).toMatchObject({
-      phase: "finished",
-      status: "skipped",
-      reason: "already-current",
-    });
-    const recorded = finished.steps.find((step) =>
-      step.step.startsWith("warning:original-state-capture:"),
+    expect(finished).toMatchObject({ status: "skipped", reason: "already-current" });
+    const warning = finished?.steps.find(
+      (step) => step.step === "warning:original-state-capture:1",
+    )?.detail;
+    assert(warning);
+    expect(warning).toMatch(
+      /^Original state capture is unavailable; the update continues without it\. A running Gateway or another active writer changing state during capture is expected to cause this\. Database rollback uses the pre-migration snapshots taken after the Gateway stops\. A completed update does not need to be restarted because of this warning\. Cause: Original update capture failed; evidence retained at /,
     );
-    expect(recorded).toMatchObject({ status: "completed" });
-    expect(recorded?.detail).toContain("The update continues without this capture");
-    expect(recorded?.detail).toContain("does not need to be restarted");
-    expect(recorded?.detail).not.toContain("retry the update");
+    expect(warning).toContain(cause);
+    expect(warning).not.toContain("retry");
+    expect(defaultRuntime.error).toHaveBeenCalledWith(`Warning: ${warning}`);
   } finally {
     await closeOpenClawStateDatabaseAsync();
   }
