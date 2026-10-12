@@ -147,5 +147,20 @@ export function applyUpdateDoctorLintReport(
   if (warnings.length) {
     step.warnings = warnings;
   }
+  // A green check means the inspection ran. Budget deferral exits 0 with no
+  // checks, and the progress mark follows step.advisory.
+  if (
+    code === 0 &&
+    report?.ok === true &&
+    report.checksRun === 0 &&
+    step.advisory === undefined &&
+    step.doctorLintFindings.some((finding) => finding.errorCode === "update-inspection-deferred")
+  ) {
+    step.advisory = {
+      kind: "recoverable-maintenance",
+      message:
+        "Doctor lint inspection did not run. This advisory check was skipped because the validation window had no remaining allowance. Activation continues. Run `openclaw doctor --fix` after activation to complete it.",
+    };
+  }
   return report;
 }
