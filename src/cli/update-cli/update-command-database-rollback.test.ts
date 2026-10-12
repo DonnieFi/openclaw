@@ -24,10 +24,7 @@ import {
   getUpdateRun,
   recordUpdateRunVerification,
 } from "../../infra/update-run-ledger.js";
-import {
-  renderUpdateRunReport,
-  updateRunReportInputFromResult,
-} from "../../infra/update-run-report.js";
+import { renderUpdateRunReport } from "../../infra/update-run-report.js";
 import { runFixtureGit as git } from "../../infra/update-runner-git-candidate.test-support.js";
 import { updateGitCheckout } from "../../infra/update-runner-git.js";
 import type { UpdateRunResult } from "../../infra/update-runner-types.js";
@@ -35,6 +32,11 @@ import { CommandProcessCleanupError } from "../../process/exec-result.js";
 import { runCommandWithTimeout } from "../../process/exec.js";
 import { closeOpenClawStateDatabaseAsync } from "../../state/openclaw-state-db.js";
 import { acquireTestPortBlock, type TestPortClaim } from "../../test-utils/port-claims.js";
+import {
+  leaveExitedWriterWalFamily,
+  readDatabase,
+  snapshotLifetimeText,
+} from "./update-command-database-rollback.test-support.js";
 import { updateExecutorNativeEntrypoints } from "./update-command-executor-native-runtime.test-support.js";
 import type { PreManagedServiceStop } from "./update-command-service-context-types.js";
 
@@ -170,24 +172,9 @@ async function startService() {
   }
 }
 
-function readDatabase(file: string) {
-  const db = new DatabaseSync(file, { readOnly: true });
-  try {
-    return {
-      version: db.prepare("PRAGMA user_version").get()?.user_version,
-      rows: db.prepare("SELECT rowid, value FROM payload ORDER BY rowid").all(),
-      columns: db
-        .prepare("PRAGMA table_info(payload)")
-        .all()
-        .map((column) => column.name),
-    };
-  } finally {
-    db.close();
-  }
-}
-
 it.each([
   "package",
+  "exited-writer",
   "git",
   "git-edited",
   "verification",
@@ -214,6 +201,7 @@ it.each([
     const migratedVersions = scenario === "schema-neutral-write" ? [15, 21] : [18, 23];
     const initialFailure =
       scenario === "package" ||
+      scenario === "exited-writer" ||
       gitInstall ||
       scenario === "verification" ||
       scenario === "serving" ||
@@ -547,6 +535,9 @@ it.each([
           ...swapFixture.params,
           beforeActivate: params.beforeActivate,
           onTransaction: async (transaction) => {
+            if (scenario === "exited-writer") {
+              await leaveExitedWriterWalFamily(agent, path.join(base, "exited-writer"));
+            }
             await params.onTransaction?.(transaction);
             retainedSnapshotDirectory = `${transaction.backupRoot}.databases`;
             if (scenario === "intervening") {
@@ -716,6 +707,12 @@ it.each([
           assert(databaseBackup, "Git update must capture pre-migration databases");
           retainedSnapshotDirectory = databaseBackup.directory;
         }
+        if (scenario === "exited-writer") {
+          // Capture under maintenance custody must not rebuild the source WAL index.
+          const captured = execution.result.steps.find((step) => step.name === "database snapshot");
+          expect(captured?.warnings ?? []).toEqual([]);
+          expect(databaseBackup?.sourceGenerations[agent]).toEqual(expect.any(String));
+        }
         if (restores && initialFailure) {
           expect(databaseBackup?.migration).toMatchObject({
             name: "openclaw doctor",
@@ -743,6 +740,7 @@ it.each([
           outsideWrite
             ? "state-migrated-no-rollback"
             : scenario === "package" ||
+                scenario === "exited-writer" ||
                 gitInstall ||
                 scenario === "serving" ||
                 scenario === "config-refused"
@@ -856,29 +854,22 @@ it.each([
           }
           expect(execution.databaseBackup).toBeUndefined();
           const captured = execution.result.steps.find((step) => step.name === "database snapshot");
-          const capturedText = [
-            ...(captured?.warnings ?? []),
-            ...(captured?.diagnostics ?? []),
-          ].join("\n");
           expect(captured?.warnings).toEqual([
             expect.stringContaining("Automatic database restoration is disabled"),
           ]);
           // Package success reprints this step after retirement. It must not
           // promise the copies remain, and it must not promise cleanup finished.
-          expect(capturedText).toContain(
-            "Package activation retires these snapshots after the update is verified, unless snapshot cleanup reports that it could not finish.",
+          const lifetime = snapshotLifetimeText(execution.result);
+          for (const text of [lifetime.step, lifetime.report]) {
+            expect(text).toContain(
+              "Package activation retires these snapshots after the update is verified, unless snapshot cleanup reports that it could not finish.",
+            );
+          }
+          expect(lifetime.step).not.toMatch(
+            /Snapshots remain available|later writes must be preserved|Git activation retains them/,
           );
-          expect(capturedText).not.toContain("Snapshots remain available");
-          expect(capturedText).not.toContain("later writes must be preserved");
-          expect(capturedText).not.toContain("Git activation retains them");
-          const packageReport = renderUpdateRunReport(
-            updateRunReportInputFromResult(execution.result),
-          ).lines.join("\n");
-          expect(packageReport).toContain("Automatic database restoration is disabled");
-          expect(packageReport).toContain(
-            "Package activation retires these snapshots after the update is verified, unless snapshot cleanup reports that it could not finish.",
-          );
-          expect(packageReport).toContain("They are retained when activation does not succeed.");
+          expect(lifetime.report).toContain("Automatic database restoration is disabled");
+          expect(lifetime.report).toContain("They are retained when activation does not succeed.");
           expect((await fs.stat(retainedSnapshotDirectory)).isDirectory()).toBe(true);
           expect(execution.result.steps.some((step) => step.name === "database rollback")).toBe(
             false,
@@ -888,18 +879,13 @@ it.each([
         }
         expect({ shared: readDatabase(shared), agent: readDatabase(agent) }).toEqual(before);
         if (gitInstall) {
-          const gitCaptured = execution.result.steps.find(
-            (step) => step.name === "database snapshot",
-          );
-          const gitText = (gitCaptured?.diagnostics ?? []).join("\n");
-          expect(gitText).toContain("Git activation retains them");
-          expect(gitText).toContain("Git runtime cleanup does not remove them");
-          expect(gitText).not.toContain("Package activation retires these snapshots");
-          const gitReport = renderUpdateRunReport(
-            updateRunReportInputFromResult(execution.result),
-          ).lines.join("\n");
-          expect(gitReport).toContain("Git activation retains them");
-          expect(gitReport).toContain("Git runtime cleanup does not remove them");
+          const lifetime = snapshotLifetimeText(execution.result);
+          for (const text of [lifetime.step, lifetime.report]) {
+            expect(text).toMatch(
+              /Git activation retains them.*Git runtime cleanup does not remove them/s,
+            );
+          }
+          expect(lifetime.step).not.toContain("Package activation retires these snapshots");
           expect((await fs.stat(retainedSnapshotDirectory)).isDirectory()).toBe(true);
         }
         expect(execution.databaseBackup?.databases).toHaveLength(2);
