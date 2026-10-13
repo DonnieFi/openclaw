@@ -155,6 +155,8 @@ describe("diagnostic support redaction", () => {
       "SQLite source did not stabilize",
       " after 3 read-only inspection attempts: /private/x.sqlite",
     ],
+    ["SQLite WAL commit header is unavailable or changing", ": /private/example/a.sqlite"],
+    ["SQLite WAL commit publication could not be verified", ": /private/example/a.sqlite"],
   ])("keeps the fixed concurrent-write cause %s without its path", (cause, suffix) => {
     expect(
       redactPublicSupportDiagnosticLine(`Warning: private-host.example\n${cause}${suffix}`, {
