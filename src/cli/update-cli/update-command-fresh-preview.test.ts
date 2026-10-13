@@ -752,6 +752,77 @@ it("requires confirmation for an inspected older artifact without a TTY", async 
 
 registerOriginalCaptureTests({ fixture, dirs });
 
+it("continues a completed update when original-state capture fails", async () => {
+  try {
+    vi.stubEnv("OPENCLAW_DISABLE_BUNDLED_PLUGINS", "1");
+    vi.stubEnv("OPENCLAW_SERVICE_REPAIR_POLICY", "external");
+    vi.stubEnv("OPENCLAW_UPDATE_IN_PROGRESS", undefined);
+    fs.mkdirSync(path.dirname(process.env.OPENCLAW_CONFIG_PATH!), { recursive: true });
+    fs.writeFileSync(
+      process.env.OPENCLAW_CONFIG_PATH!,
+      JSON.stringify({ plugins: { enabled: false }, gateway: { mode: "local" } }),
+    );
+    openOpenClawStateDatabase();
+    allowPackageRuntime();
+    fs.writeFileSync(
+      path.join(fixture.root, "package.json"),
+      JSON.stringify({ name: "openclaw", version: VERSION }),
+    );
+    vi.mocked(shared.resolveTargetVersion).mockResolvedValue({ version: VERSION });
+    vi.mocked(updateCheck.resolveNpmChannelTag).mockResolvedValue({
+      tag: "latest",
+      version: VERSION,
+    });
+    vi.mocked(packageMetadata.fetchNpmPackageTargetStatus).mockResolvedValue({
+      ...targetMetadata,
+      version: VERSION,
+      schemaVersions: {
+        state: OPENCLAW_STATE_SCHEMA_VERSION,
+        agent: OPENCLAW_AGENT_SCHEMA_VERSION,
+      },
+    });
+    const baseline = await import("../../infra/update-recovery-baseline-capture.js");
+    vi.spyOn(baseline, "captureUpdateRecoveryBaseline").mockRejectedValue(
+      new Error(
+        "State schema inspection failed (exit): generation changed. Check access to the reported source, free space, and storage performance, then retry the update.",
+      ),
+    );
+    const visible: string[] = [];
+    vi.mocked(defaultRuntime.error).mockImplementation((message) => {
+      visible.push(String(message));
+    });
+
+    const failure = await updateCommand({ yes: true, json: true, restart: false }).catch(
+      (error: unknown) => error,
+    );
+
+    expect(failure, JSON.stringify(vi.mocked(defaultRuntime.writeJson).mock.calls)).toBeUndefined();
+    const warning = visible.join("\n");
+    expect(warning).toContain("generation changed");
+    expect(warning).toContain("The update continues without this capture");
+    expect(warning).toContain(
+      "A completed update does not need to be restarted because of this warning.",
+    );
+    expect(warning).not.toContain("retry the update");
+    const [finished] = history.listUpdateRuns();
+    assert(finished);
+    expect(finished).toMatchObject({
+      phase: "finished",
+      status: "skipped",
+      reason: "already-current",
+    });
+    const recorded = finished.steps.find((step) =>
+      step.step.startsWith("warning:original-state-capture:"),
+    );
+    expect(recorded).toMatchObject({ status: "completed" });
+    expect(recorded?.detail).toContain("The update continues without this capture");
+    expect(recorded?.detail).toContain("does not need to be restarted");
+    expect(recorded?.detail).not.toContain("retry the update");
+  } finally {
+    await closeOpenClawStateDatabaseAsync();
+  }
+});
+
 it("Doctor sees an already-current update's completed history after original-state capture", async () => {
   try {
     vi.stubEnv("OPENCLAW_DISABLE_BUNDLED_PLUGINS", "1");
