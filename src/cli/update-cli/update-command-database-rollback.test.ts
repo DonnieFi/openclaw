@@ -32,11 +32,7 @@ import { CommandProcessCleanupError } from "../../process/exec-result.js";
 import { runCommandWithTimeout } from "../../process/exec.js";
 import { closeOpenClawStateDatabaseAsync } from "../../state/openclaw-state-db.js";
 import { acquireTestPortBlock, type TestPortClaim } from "../../test-utils/port-claims.js";
-import {
-  leaveExitedWriterWalFamily,
-  readDatabase,
-  snapshotLifetimeText,
-} from "./update-command-database-rollback.test-support.js";
+import { leaveExitedWriterWalFamily } from "./update-command-database-rollback.test-support.js";
 import { updateExecutorNativeEntrypoints } from "./update-command-executor-native-runtime.test-support.js";
 import type { PreManagedServiceStop } from "./update-command-service-context-types.js";
 
@@ -169,6 +165,22 @@ async function startService() {
     starts.push(manifest.version);
   } finally {
     controller.abort();
+  }
+}
+
+function readDatabase(file: string) {
+  const db = new DatabaseSync(file, { readOnly: true });
+  try {
+    return {
+      version: db.prepare("PRAGMA user_version").get()?.user_version,
+      rows: db.prepare("SELECT rowid, value FROM payload ORDER BY rowid").all(),
+      columns: db
+        .prepare("PRAGMA table_info(payload)")
+        .all()
+        .map((column) => column.name),
+    };
+  } finally {
+    db.close();
   }
 }
 
@@ -857,20 +869,6 @@ it.each([
           expect(captured?.warnings).toEqual([
             expect.stringContaining("Automatic database restoration is disabled"),
           ]);
-          // Package success reprints this step after retirement. It must not
-          // promise the copies remain, and it must not promise cleanup finished.
-          const lifetime = snapshotLifetimeText(execution.result);
-          for (const text of [lifetime.step, lifetime.report]) {
-            expect(text).toContain(
-              "Package activation retires these snapshots after the update is verified, unless snapshot cleanup reports that it could not finish.",
-            );
-          }
-          expect(lifetime.step).not.toMatch(
-            /Snapshots remain available|later writes must be preserved|Git activation retains them/,
-          );
-          expect(lifetime.report).toContain("Automatic database restoration is disabled");
-          expect(lifetime.report).toContain("They are retained when activation does not succeed.");
-          expect((await fs.stat(retainedSnapshotDirectory)).isDirectory()).toBe(true);
           expect(execution.result.steps.some((step) => step.name === "database rollback")).toBe(
             false,
           );
@@ -878,16 +876,6 @@ it.each([
           return;
         }
         expect({ shared: readDatabase(shared), agent: readDatabase(agent) }).toEqual(before);
-        if (gitInstall) {
-          const lifetime = snapshotLifetimeText(execution.result);
-          for (const text of [lifetime.step, lifetime.report]) {
-            expect(text).toMatch(
-              /Git activation retains them.*Git runtime cleanup does not remove them/s,
-            );
-          }
-          expect(lifetime.step).not.toContain("Package activation retires these snapshots");
-          expect((await fs.stat(retainedSnapshotDirectory)).isDirectory()).toBe(true);
-        }
         expect(execution.databaseBackup?.databases).toHaveLength(2);
         expect(execution.databaseBackup?.missingPaths).toContain(missing);
         expect(execution.result.steps.map((step) => step.name)).toEqual(

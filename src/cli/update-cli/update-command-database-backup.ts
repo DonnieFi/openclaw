@@ -145,18 +145,10 @@ export async function captureUpdateDatabases(params: {
     maintenance !== null &&
     unavailable === undefined &&
     backup.databases.every((entry) => typeof backup.sourceGenerations[entry.path] === "string");
-  // The snapshot step is reprinted after activation. Package retirement deletes
-  // these copies only when cleanup finishes; a recoverable cleanup warning
-  // leaves them. Git copies live under .artifacts and runtime cleanup does
-  // not remove them, so one removal promise is wrong for both.
-  const gitArtifactSnapshots =
-    execution.updateInstallKind === "git" && !execution.switchToGit;
-  const snapshotLifetime = gitArtifactSnapshots
-    ? `These snapshots remain at ${backup.directory}. Git activation retains them; Git runtime cleanup does not remove them.`
-    : "Package activation retires these snapshots after the update is verified, unless snapshot cleanup reports that it could not finish. They are retained when activation does not succeed.";
   if (!restorable) {
+    transaction.databaseBackupRoot = undefined;
     backup.warnings.push(
-      `Automatic database restoration is disabled because ${unavailable ? `the Gateway could not be confirmed stopped during capture: ${unavailable}` : "a source database changed or its write generation could not be captured"}. ${snapshotLifetime}`,
+      `Automatic database restoration is disabled because ${unavailable ? `the Gateway could not be confirmed stopped during capture: ${unavailable}` : "a source database changed or its write generation could not be captured"}. Snapshots remain available at ${backup.directory} even after successful activation; later writes must be preserved.`,
     );
   }
   const step: UpdateStepResult = {
@@ -166,7 +158,7 @@ export async function captureUpdateDatabases(params: {
     durationMs: Date.now() - startedAt,
     exitCode: 0,
     diagnostics: [
-      `Databases snapshotted at ${backup.directory}. ${snapshotLifetime}`,
+      `Databases snapshotted at ${backup.directory}. ${restorable ? "Verified successful activation removes these snapshots; otherwise retain them with the update's recovery artifacts." : "These snapshots require manual recovery and remain available after successful activation."}`,
       ...backup.databases.map(
         (entry) =>
           `${entry.path} -> ${entry.snapshotPath}; schema ${entry.userVersion}; ${entry.sizeBytes} bytes; SHA-256 ${entry.sha256}`,

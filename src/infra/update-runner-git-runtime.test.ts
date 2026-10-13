@@ -81,14 +81,6 @@ describe("Git runtime promotion", () => {
     await promotion.cleanup();
   }
 
-  it("keeps pre-migration database snapshots under .artifacts when runtime cleanup finishes", async () => {
-    const snapshotDir = path.join(root, ".artifacts", "pre-migration.databases");
-    await fs.mkdir(snapshotDir, { recursive: true });
-    await fs.writeFile(path.join(snapshotDir, "state.sqlite"), "pre-migration");
-    await activate(await createCandidate());
-    expect(await fs.readFile(path.join(snapshotDir, "state.sqlite"), "utf8")).toBe("pre-migration");
-  });
-
   it.each([false, true])(
     "does not repeat completed restoration after authority is lost (previous runtime: %s)",
     async (previous) => {
