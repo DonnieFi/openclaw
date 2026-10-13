@@ -48,8 +48,6 @@ export function evaluateWorkflowExpression(
     actor?: string;
     githubEvent?: Record<string, unknown>;
     maintainerCommands?: string;
-    // Runner routing keys off contributor trust, so pull-request cases default
-    // to CONTRIBUTOR: same-repo PRs always come from someone with write access.
     authorAssociation?: string;
     cancelled?: boolean;
     dispatchId?: string;
@@ -66,6 +64,7 @@ export function evaluateWorkflowExpression(
       | "schedule";
     failed?: boolean;
     env?: Record<string, string>;
+    secrets?: Record<string, string>;
     frozenTarget?: boolean;
     fileHashes?: Record<string, string>;
     headRepository?: string;
@@ -82,8 +81,8 @@ export function evaluateWorkflowExpression(
     >;
     jobResults?: Record<string, string>;
     preflightResult?: string;
-    failFastOutputs?: Record<string, string>;
-    failFastResult?: string;
+    failureReportOutputs?: Record<string, string>;
+    failureReportResult?: string;
     pullRequestNumber?: number;
     ref?: string;
     resolveTargetOutputs?: Record<string, string>;
@@ -211,6 +210,7 @@ export function evaluateWorkflowExpression(
       windows_ci_replay: context.windowsCiReplay ?? "",
     },
     env: context.env ?? {},
+    secrets: context.secrets ?? {},
     matrix: context.matrix ?? {},
     runner: { environment: context.runnerEnvironment ?? "" },
     steps: {
@@ -231,12 +231,19 @@ export function evaluateWorkflowExpression(
           hosted_runner_profile_contract: String(context.hostedRunnerProfileContract ?? true),
           run_check: String(context.runCheck ?? true),
           runner_profile: context.runnerProfile ?? context.runnerBackend ?? "blacksmith",
+          // Preflight defaults the Node planner backend to the logical profile.
+          node_runner_backend: context.runnerProfile ?? context.runnerBackend ?? "blacksmith",
           ...context.preflightOutputs,
         },
       },
-      "pr-fail-fast": {
-        result: context.failFastResult ?? "success",
-        outputs: { failure_job_id: "", failure_run_attempt: "", ...context.failFastOutputs },
+      "pr-failure-report": {
+        result: context.failureReportResult ?? "success",
+        outputs: {
+          failure_job_id: "",
+          summary_json: "",
+          failures_json: "",
+          ...context.failureReportOutputs,
+        },
       },
     },
     vars: {
