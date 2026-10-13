@@ -23,7 +23,10 @@ import {
   getUpdateRun,
   recordUpdateRunVerification,
 } from "../../infra/update-run-ledger.js";
-import { renderUpdateRunReport } from "../../infra/update-run-report.js";
+import {
+  renderUpdateRunReport,
+  updateRunReportInputFromResult,
+} from "../../infra/update-run-report.js";
 import { runFixtureGit as git } from "../../infra/update-runner-git-candidate.test-support.js";
 import { updateGitCheckout } from "../../infra/update-runner-git.js";
 import type { UpdateRunResult } from "../../infra/update-runner-types.js";
@@ -843,9 +846,10 @@ it.each([
           }
           expect(execution.databaseBackup).toBeUndefined();
           const captured = execution.result.steps.find((step) => step.name === "database snapshot");
-          const capturedText = [...(captured?.warnings ?? []), ...(captured?.diagnostics ?? [])].join(
-            "\n",
-          );
+          const capturedText = [
+            ...(captured?.warnings ?? []),
+            ...(captured?.diagnostics ?? []),
+          ].join("\n");
           expect(captured?.warnings).toEqual([
             expect.stringContaining("Automatic database restoration is disabled"),
           ]);
@@ -857,6 +861,15 @@ it.each([
           expect(capturedText).not.toContain("Snapshots remain available");
           expect(capturedText).not.toContain("later writes must be preserved");
           expect(capturedText).not.toContain("Git activation retains them");
+          const packageReport = renderUpdateRunReport(
+            updateRunReportInputFromResult(execution.result),
+          ).lines.join("\n");
+          expect(packageReport).toContain("Automatic database restoration is disabled");
+          expect(packageReport).toContain(
+            "Package activation retires these snapshots after the update is verified, unless snapshot cleanup reports that it could not finish.",
+          );
+          expect(packageReport).toContain("They are retained when activation does not succeed.");
+          expect((await fs.stat(retainedSnapshotDirectory)).isDirectory()).toBe(true);
           expect(execution.result.steps.some((step) => step.name === "database rollback")).toBe(
             false,
           );
@@ -872,6 +885,12 @@ it.each([
           expect(gitText).toContain("Git activation retains them");
           expect(gitText).toContain("Git runtime cleanup does not remove them");
           expect(gitText).not.toContain("Package activation retires these snapshots");
+          const gitReport = renderUpdateRunReport(
+            updateRunReportInputFromResult(execution.result),
+          ).lines.join("\n");
+          expect(gitReport).toContain("Git activation retains them");
+          expect(gitReport).toContain("Git runtime cleanup does not remove them");
+          expect((await fs.stat(retainedSnapshotDirectory)).isDirectory()).toBe(true);
         }
         expect(execution.databaseBackup?.databases).toHaveLength(2);
         expect(execution.databaseBackup?.missingPaths).toContain(missing);
