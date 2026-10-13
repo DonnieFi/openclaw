@@ -147,20 +147,18 @@ export function applyUpdateDoctorLintReport(
   if (warnings.length) {
     step.warnings = warnings;
   }
-  // A green check means the inspection ran. Budget deferral exits 0 with no
-  // checks, and the progress mark follows step.advisory.
-  if (
-    code === 0 &&
-    report?.ok === true &&
-    report.checksRun === 0 &&
-    step.advisory === undefined &&
-    step.doctorLintFindings.some((finding) => finding.errorCode === "update-inspection-deferred")
-  ) {
-    step.advisory = {
-      kind: "recoverable-maintenance",
-      message:
-        "Doctor lint inspection did not run. This advisory check was skipped because the validation window had no remaining allowance. Activation continues. Run `openclaw doctor --fix` after activation to complete it.",
-    };
+  const deferredInspections = (report?.warnings ?? []).filter(
+    (warning) => warning.errorCode === "update-inspection-deferred",
+  ).length;
+  // A passing report that still deferred inspections is incomplete, not a clean
+  // pass. This includes a partial run. Failed exits keep their failure.
+  if (code === 0 && report?.ok === true && deferredInspections > 0 && step.advisory === undefined) {
+    const message = `Doctor deferred ${deferredInspections} inspection${deferredInspections === 1 ? "" : "s"} until after activation (${report.checksRun} ran). Run \`openclaw doctor --fix\` after the update.`;
+    step.advisory = { kind: "recoverable-maintenance", message };
+    // Progress prints advisory.message. The final report repeats step warnings.
+    if (!step.warnings?.includes(message)) {
+      step.warnings = [...(step.warnings ?? []), message];
+    }
   }
   return report;
 }
