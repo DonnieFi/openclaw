@@ -203,7 +203,7 @@ function createMockCompactionSession() {
   async function completeCompaction() {
     const result = await sessionCompactImpl();
     session.messages.splice(1);
-    const tokensAfter = session.messages.reduce<number>(
+    const tokensAfter: number = session.messages.reduce<number>(
       (tokens, message) => tokens + estimateTokensMock(message),
       0,
     );
