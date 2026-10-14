@@ -1,140 +1,99 @@
-import { mkdtemp, realpath, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { createDeferred } from "../../../test/helpers/promise.js";
-import { upsertSessionEntryCore } from "../../config/sessions/session-accessor.js";
-import {
-  createPluginRegistryFixture,
-  registerVirtualTestPlugin,
-} from "../../plugin-sdk/test-helpers/contracts-testkit.js";
-import type { PluginHookHandlerMap } from "../../plugins/hook-types.js";
-import { createHookRunner } from "../../plugins/hooks.js";
-import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
+import { afterEach, beforeAll, beforeEach, expect, it } from "vitest";
+import { agentSessionAutomaticCompaction } from "../sessions/agent-session-compaction.js";
+import { useCompactHooksSessionFixture } from "./compact.hooks.fixture.test-support.js";
 import {
   createAgentSessionMock,
   hookRunner,
   loadCompactHooksHarness,
-  resetCompactHooksHarnessMocks,
   sessionCompactImpl,
   sessionMessages,
+  triggerInternalHookMock,
 } from "./compact.hooks.harness.js";
 
-const sessionId = "noop-hook-session";
-const sessionKey = `agent:main:${sessionId}`;
-let workspaceDir: string;
-let compactDirect: typeof import("./compact.js").compactEmbeddedAgentSessionDirect;
-let attachAccounting: typeof import("./run/compaction-accounting-bridge.js").attachCompactionAccountingRecorder;
-type AfterCompactionEvent = Parameters<PluginHookHandlerMap["after_compaction"]>[0];
-type AfterCompactionContext = Parameters<PluginHookHandlerMap["after_compaction"]>[1];
+const sessionKey = "agent:main:noop-hooks";
+const fixture = useCompactHooksSessionFixture(sessionKey);
+let compact: Awaited<
+  ReturnType<typeof loadCompactHooksHarness>
+>["compactEmbeddedAgentSessionDirect"];
+let configRuntime: typeof import("../../config/runtime-snapshot.js");
+let storePath: string;
+let prepared: Awaited<ReturnType<typeof fixture.prepareSession>>;
 
 beforeAll(async () => {
-  workspaceDir = await realpath(await mkdtemp(join(tmpdir(), "openclaw-noop-compaction-hook-")));
-  const loaded = await loadCompactHooksHarness();
-  compactDirect = loaded.compactEmbeddedAgentSessionDirect;
-  ({ attachCompactionAccountingRecorder: attachAccounting } =
-    await import("./run/compaction-accounting-bridge.js"));
+  compact = (await loadCompactHooksHarness()).compactEmbeddedAgentSessionDirect;
+  configRuntime = await import("../../config/runtime-snapshot.js");
+  storePath = await fixture.prepare();
 });
-
 beforeEach(async () => {
-  resetCompactHooksHarnessMocks(workspaceDir);
-  await upsertSessionEntryCore(
-    {
-      agentId: "main",
-      sessionKey,
-      storePath: join(workspaceDir, "sessions.json"),
-    },
-    { sessionId, updatedAt: 1 },
-  );
+  configRuntime.setRuntimeConfigSnapshot({});
+  prepared = await fixture.prepareSession();
+  hookRunner.hasHooks.mockReturnValue(true);
 });
 
-afterEach(() => {
-  closeOpenClawAgentDatabasesForTest();
-});
+afterEach(() => configRuntime.clearRuntimeConfigSnapshot());
 
-afterAll(async () => {
-  await rm(workspaceDir, { force: true, recursive: true });
-});
-
-describe("native no-op compaction hooks", () => {
-  it("settles one registered after_compaction observer without changing history or accounting", async () => {
-    const observed = createDeferred<{
-      event: AfterCompactionEvent;
-      context: AfterCompactionContext;
-    }>();
-    const afterEvents: AfterCompactionEvent[] = [];
-    const { config, registry } = createPluginRegistryFixture();
-    registerVirtualTestPlugin({
-      registry,
-      config,
-      id: "noop-compaction-observer",
-      name: "No-op compaction observer",
-      register(api) {
-        api.on("after_compaction", (event, context) => {
-          afterEvents.push(event);
-          observed.resolve({ event, context });
+it.each(["heartbeat", "retention"] as const)(
+  "settles a successful %s skip once without changing history or accounting",
+  async (kind) => {
+    if (kind === "heartbeat") {
+      sessionMessages.splice(0, sessionMessages.length, {
+        role: "user",
+        content: "HEARTBEAT_OK",
+        timestamp: 1,
+      });
+    } else {
+      const createSession = createAgentSessionMock.getMockImplementation();
+      if (!createSession) {
+        throw new Error("Compaction session fixture is not initialized");
+      }
+      createAgentSessionMock.mockImplementationOnce(async (...args) => {
+        const result = await createSession(...args);
+        result.session[agentSessionAutomaticCompaction].mockResolvedValueOnce({
+          status: "skipped",
+          reason: "Nothing to compact (session too small)",
         });
-      },
-    });
-    const registeredRunner = createHookRunner(registry.registry);
-    hookRunner.hasHooks.mockImplementation((hookName) =>
-      registeredRunner.hasHooks(hookName as never),
-    );
-    hookRunner.runBeforeCompaction.mockImplementation(
-      registeredRunner.runBeforeCompaction as never,
-    );
-    hookRunner.runAfterCompaction.mockImplementation(registeredRunner.runAfterCompaction as never);
-
-    sessionMessages.splice(0, sessionMessages.length, {
-      role: "user",
-      content: "<b>HEARTBEAT_OK</b>",
-      timestamp: 1,
-    });
-    const historyBefore = structuredClone(sessionMessages);
-    const accountingReceipts: unknown[] = [];
+        return result;
+      });
+    }
+    const before = structuredClone(sessionMessages.slice(0, 2));
+    const { attachCompactionAccountingRecorder } =
+      await import("./run/compaction-accounting-bridge.js");
+    const receipts: unknown[] = [];
     const contextEngineRuntimeContext = {};
-    attachAccounting(contextEngineRuntimeContext, {
-      recordCompaction: (receipt) => accountingReceipts.push(receipt),
-    });
-
-    const result = await compactDirect({
-      agentId: "main",
-      sessionId,
-      sessionKey,
-      sessionFile: join(workspaceDir, "session.jsonl"),
-      sessionTarget: {
-        agentId: "main",
-        sessionId,
-        sessionKey,
-        storePath: join(workspaceDir, "sessions.json"),
+    attachCompactionAccountingRecorder(contextEngineRuntimeContext, {
+      recordCompaction: (receipt) => {
+        receipts.push(receipt);
       },
-      workspaceDir,
-      contextEngineRuntimeContext,
-      enqueue: async <T>(task: () => Promise<T> | T) => await task(),
     });
-    const { event, context } = await observed.promise;
-    const createdSession = await createAgentSessionMock.mock.results[0]?.value;
 
-    expect(result).toMatchObject({
-      ok: true,
-      compacted: false,
-      reason: "no real conversation messages",
-    });
-    expect(afterEvents).toHaveLength(1);
-    expect(event).toMatchObject({
-      messageCount: 1,
-      tokenCount: 10,
-      compactedCount: 0,
-      sessionFile: sessionKey,
-    });
-    expect(context).toMatchObject({
+    const result = await compact({
       agentId: "main",
-      sessionId,
+      sessionId: prepared.sessionId,
       sessionKey,
-      workspaceDir,
+      sessionFile: sessionKey,
+      sessionTarget: { agentId: "main", sessionId: prepared.sessionId, sessionKey, storePath },
+      workspaceDir: prepared.workspaceDir,
+      trigger: "overflow",
+      contextEngineRuntimeContext,
     });
-    expect(createdSession?.session.messages).toEqual(historyBefore);
-    expect(accountingReceipts).toEqual([]);
+
+    expect(result).toMatchObject({ ok: true, compacted: false });
+    expect(hookRunner.runBeforeCompaction).toHaveBeenCalledOnce();
+    expect(hookRunner.runAfterCompaction).toHaveBeenCalledExactlyOnceWith(
+      {
+        messageCount: before.length,
+        tokenCount: before.length * 10,
+        compactedCount: 0,
+        sessionFile: `sqlite:main:${prepared.sessionId}:${storePath}`,
+      },
+      expect.objectContaining({ sessionKey, sessionId: prepared.sessionId }),
+    );
+    expect(triggerInternalHookMock.mock.calls.map(([event]) => event)).toMatchObject([
+      { action: "compact:before" },
+      { action: "compact:after", context: { compactionOutcome: "skipped", compactedCount: 0 } },
+    ]);
+    expect((await createAgentSessionMock.mock.results[0]?.value)?.session.messages).toEqual(before);
+    expect(receipts).toEqual([]);
     expect(sessionCompactImpl).not.toHaveBeenCalled();
-  });
-});
+  },
+);

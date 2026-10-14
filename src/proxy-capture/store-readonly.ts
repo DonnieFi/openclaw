@@ -7,6 +7,7 @@ import {
   executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
 } from "../infra/kysely-sync.js";
+import { warnPluginSdkDeprecation } from "../plugins/sdk-deprecation.js";
 import { withExistingOpenClawStateDatabaseReadOnly } from "../state/openclaw-state-db-readonly.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
 import type {
@@ -22,6 +23,7 @@ type DebugProxyCaptureDatabase = Pick<
 >;
 type NodeSqliteDatabase = Parameters<typeof getNodeSqliteKysely>[0];
 
+/** @deprecated Use AsyncDebugProxyCaptureReader and await its read operations. */
 export type DebugProxyCaptureReader = {
   getSessionEvents(sessionId: string, limit?: number): Array<Record<string, unknown>>;
   readBlob(blobId: string): string | null;
@@ -319,10 +321,15 @@ export function readDebugProxyCaptureBlob(db: NodeSqliteDatabase, blobId: string
   return (row.encoding === "gzip" ? gunzipSync(data) : data).toString("utf8");
 }
 
-/** Read capture rows without joining or mutating the shared-state writer lifecycle. */
+/** @deprecated Use createDebugProxyCaptureReaderAsync for worker-backed, noncreating reads. */
 export function createDebugProxyCaptureReader(params: {
   env: NodeJS.ProcessEnv;
 }): DebugProxyCaptureReader {
+  warnPluginSdkDeprecation({
+    family: "proxy-capture-reader",
+    method: "createDebugProxyCaptureReader",
+    replacement: "createDebugProxyCaptureReaderAsync()",
+  });
   return {
     getSessionEvents(sessionId, limit) {
       return (
