@@ -218,6 +218,7 @@ export const createAgentSessionMock = vi.fn(async (..._args: [unknown?, unknown?
 export const createOpenClawCodingToolsMock = vi.fn<typeof createOpenClawCodingToolsInternal>(
   () => [],
 );
+const buildEmbeddedExtensionFactoriesMock = vi.fn(() => []);
 export const resolveEffectiveCompactionModeMock = vi.fn(() => "default");
 const guardSessionManagerMock = vi.fn((sessionManager: Record<string, unknown>) => ({
   ...sessionManager,
@@ -393,6 +394,8 @@ export function resetCompactSessionStateMocks(): void {
   validateReplayTurnsMock.mockImplementation(async ({ messages }: { messages: unknown[] }) => {
     return messages;
   });
+  buildEmbeddedExtensionFactoriesMock.mockReset();
+  buildEmbeddedExtensionFactoriesMock.mockReturnValue([]);
 
   resetCompactMemoryMocks();
   resolveSessionAgentIdMock.mockReset();
@@ -843,8 +846,9 @@ export async function loadCompactHooksHarness(options: { durableSession?: boolea
     })),
   }));
 
+  // mock-isolation: Keep extension state isolated while safeguard tests install their own factories.
   vi.doMock("./extensions.js", () => ({
-    buildEmbeddedExtensionFactories: () => [],
+    buildEmbeddedExtensionFactories: buildEmbeddedExtensionFactoriesMock,
   }));
 
   vi.doMock("./history.js", () => ({
