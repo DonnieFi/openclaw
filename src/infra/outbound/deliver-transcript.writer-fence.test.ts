@@ -22,7 +22,8 @@ const mocks = vi.hoisted(() => ({
   ),
 }));
 
-vi.mock("../../config/sessions/transcript.runtime.js", () => ({
+vi.mock("../../config/sessions/transcript.runtime.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../config/sessions/transcript.runtime.js")>()),
   appendAssistantMessageToSessionTranscript: mocks.appendAssistantMessageToSessionTranscript,
 }));
 

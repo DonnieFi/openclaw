@@ -18,7 +18,10 @@ import { SessionManager } from "../../sessions/session-manager.js";
 import { makeAgentAssistantMessage } from "../../test-helpers/agent-message-fixtures.js";
 import { deliverCompletionDirect } from "./subagent-announce-completion-delivery.js";
 
-vi.mock("../../../infra/outbound/message.js", () => ({ sendMessage: vi.fn() }));
+vi.mock("../../../infra/outbound/message.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../infra/outbound/message.js")>()),
+  sendMessage: vi.fn(),
+}));
 
 it("settles a direct child result before its mirror waits behind the requester's keyed turn", async ({
   signal,
