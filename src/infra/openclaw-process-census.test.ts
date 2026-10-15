@@ -173,10 +173,13 @@ const foreignArgvs = [
 ];
 
 it.each([
-  ["/app/dist/index.js", "denied"],
-  ["/app/dist/index.js", "unnamed"],
-  ["/app/service.js", "missing"],
-])("vetoes absolute entrypoint %s with %s package identity", (script, failure) => {
+  ["/app/dist/index.js", "denied", true],
+  ["/app/dist/index.js", "missing", true],
+  ["/app/dist/index.js", "malformed", true],
+  ["/app/dist/index.js", "unnamed", true],
+  ["/app/service.js", "denied", true],
+  ["/app/service.js", "missing", false],
+])("classifies absolute entrypoint %s with %s package identity", (script, failure, veto) => {
   rows.set(peer, { ppid: 1, argv: ["node", script] });
   const inspect = read.getMockImplementation()!;
   read.mockImplementation((file: string) => {
@@ -186,13 +189,31 @@ it.each([
     if (failure === "unnamed") {
       return JSON.stringify({});
     }
+    if (failure === "malformed") {
+      return "{";
+    }
     throw Object.assign(new Error("unreadable manifest"), {
       code: failure === "denied" ? "EACCES" : "ENOENT",
     });
   });
-  expect(inspectOtherOpenClawProcesses()).toEqual({
-    error: expect.stringContaining("package identity"),
+  expect(inspectOtherOpenClawProcesses()).toEqual(
+    veto ? { error: expect.stringContaining("package identity") } : { pids: [] },
+  );
+});
+
+it("keeps a manifest-free script that references an update runtime", () => {
+  rows.set(peer, {
+    ppid: 1,
+    argv: ["node", "/tmp/openclaw-update-runtime-Ab1234/worker.js"],
   });
+  const inspect = read.getMockImplementation()!;
+  read.mockImplementation((file: string) => {
+    if (file.endsWith("/package.json")) {
+      throw Object.assign(new Error("unreadable manifest"), { code: "ENOENT" });
+    }
+    return inspect(file);
+  });
+  expect(inspectOtherOpenClawProcesses()).toEqual({ pids: [peer] });
 });
 
 it.each(["script", "service-marker", "module-package", "directory-package"])(

@@ -15,6 +15,7 @@ import { isContainerEnvironment } from "./container-environment.js";
 import {
   classifyOpenClawArgv,
   classifyOpenClawEntrypointPath,
+  isAbsentPackageIdentity,
   readProcessPackageIdentity,
   readProcessWorkingDirectories,
   referencesRetainedArtifact,
@@ -123,11 +124,18 @@ function classifyProcessArtifactCustody(
     }
     let scripts: Record<string, unknown> = {};
     if (typeof position !== "number") {
-      const pkg = readProcessPackageIdentity(cwd, true);
-      if (pkg.name === "openclaw") {
+      let pkg: ReturnType<typeof readProcessPackageIdentity> | undefined;
+      try {
+        pkg = readProcessPackageIdentity(cwd, true);
+      } catch (error) {
+        if (!isAbsentPackageIdentity(error)) {
+          throw error;
+        }
+      }
+      if (pkg?.name === "openclaw") {
         return { kind: "holder" };
       }
-      scripts = pkg.scripts;
+      scripts = pkg?.scripts ?? {};
     }
     for (const { value, module } of operands) {
       let candidate = value;
