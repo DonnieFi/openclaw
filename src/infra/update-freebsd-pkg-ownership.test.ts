@@ -56,6 +56,46 @@ describe("system package ownership", () => {
     expect(host).not.toHaveBeenCalled();
   });
 
+  it("treats a missing pacman executable as absent, not as a database outage", async () => {
+    const onWarning = vi.fn();
+    const runCommand = vi.fn<typeof exec.runCommandBuffered>().mockResolvedValue(
+      result("", {
+        code: null,
+        termination: "error",
+        error: Object.assign(new Error("spawn pacman ENOENT"), { code: "ENOENT" }),
+      }),
+    );
+    await withMockedPlatform("linux", async () => {
+      const inspection = createSystemPackageOwnershipInspection(100, { runCommand, onWarning });
+      await expect(inspection.assertUnowned("/fixture/openclaw")).resolves.toBeUndefined();
+      await expect(inspection.assertEntryUnowned("/fixture/launcher")).resolves.toBeUndefined();
+    });
+    expect(runCommand).toHaveBeenCalledOnce();
+    expect(onWarning).toHaveBeenCalledOnce();
+    const message = String(onWarning.mock.calls[0]?.[0]);
+    expect(message).toContain("pacman is not installed, so its package database was not queried.");
+    expect(message).toContain("Continuing without verified system-package ownership.");
+    expect(message).not.toMatch(/Restore access to the active pacman database/u);
+  });
+
+  it("still tells the operator to restore the database when pacman runs and the query fails", async () => {
+    const onWarning = vi.fn();
+    const runCommand = vi
+      .fn<typeof exec.runCommandBuffered>()
+      .mockResolvedValue(result("", { code: 1, termination: "exit" }));
+    await withMockedPlatform("linux", async () => {
+      await createSystemPackageOwnershipInspection(100, {
+        runCommand,
+        onWarning,
+      }).assertUnowned("/fixture/openclaw");
+    });
+    const message = String(onWarning.mock.calls[0]?.[0]);
+    expect(message).toContain(
+      "Restore access to the active pacman database and configuration, then retry.",
+    );
+    expect(message).not.toContain("is not installed");
+  });
+
   it.each(["linux"] as const)(
     "retains the pre-mutation error contract for a positive %s owner",
     async (platform) => {

@@ -47,7 +47,7 @@ export class SystemPackageOwnershipError extends UpdatePreMutationError {
   readonly owned: boolean;
   constructor(
     kind: "owned-install" | "ownership-unavailable",
-    source: "database" | "paths" = "database",
+    source: "database" | "paths" | "executable" = "database",
     diagnostic?: InspectionDiagnostic,
   ) {
     const owner = packageOwner() ?? PACKAGE_OWNERS[0];
@@ -66,9 +66,11 @@ export class SystemPackageOwnershipError extends UpdatePreMutationError {
       prefix +
         (kind === "owned-install"
           ? `This installation contains files installed by ${owner.label}. ${owner.guidance}; openclaw update will not replace package-owned files.`
-          : source === "paths"
-            ? `${owner.label} paths could not be inspected completely. Check access to the registered package directories and installation paths, and resolve any inspection timeout before retrying.`
-            : `${owner.label} ownership could not be verified. Restore access to the active ${owner.manager} database and configuration, then retry.`),
+          : source === "executable"
+            ? `${owner.label} is not installed, so its package database was not queried.`
+            : source === "paths"
+              ? `${owner.label} paths could not be inspected completely. Check access to the registered package directories and installation paths, and resolve any inspection timeout before retrying.`
+              : `${owner.label} ownership could not be verified. Restore access to the active ${owner.manager} database and configuration, then retry.`),
     );
     this.owned = kind === "owned-install";
   }
@@ -102,6 +104,11 @@ async function readPackageFiles(
     files.length > 250_000 ||
     files.some((file) => !path.isAbsolute(file) || containsAsciiControlCharacter(file))
   ) {
+    // A missing optional manager is not a database outage. Query failures still
+    // keep the restore-the-database guidance.
+    if (result.termination === "error" && extractErrorCode(result.error) === "ENOENT") {
+      throw new SystemPackageOwnershipError("ownership-unavailable", "executable");
+    }
     throw new SystemPackageOwnershipError("ownership-unavailable", "database", {
       operation: `${owner.manager} query`,
       ...(result.termination === "timeout"
