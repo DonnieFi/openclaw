@@ -52,9 +52,9 @@ export type OpenClawArgvClassification =
     };
 
 /** Exhausted ENOENT lookup. Cleanup may treat this as a non-holder; other callers still fail closed. */
-export const PACKAGE_IDENTITY_ABSENT = "OPENCLAW_PACKAGE_IDENTITY_ABSENT";
+const PACKAGE_IDENTITY_ABSENT = "OPENCLAW_PACKAGE_IDENTITY_ABSENT";
 
-export function isAbsentPackageIdentity(error: unknown): boolean {
+function isAbsentPackageIdentity(error: unknown): boolean {
   return extractErrorCode(error) === PACKAGE_IDENTITY_ABSENT;
 }
 
