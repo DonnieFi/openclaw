@@ -799,4 +799,30 @@ describe("update run report", () => {
       expect(report.headline).not.toContain("finalize:doctor");
     },
   );
+
+  it("prints a repeated database-path advisory once with completed-update guidance", () => {
+    const advisory =
+      "Skipped agent database path repair during update Doctor. Run openclaw doctor --fix to repair agent database paths.";
+    const report = renderUpdateRunReport(
+      run({
+        steps: [
+          {
+            step: "warning:doctor-agent-database-paths",
+            status: "completed",
+            detail: advisory,
+          },
+          { step: "activating", status: "completed" },
+          {
+            step: "warning:doctor-agent-database-paths",
+            status: "completed",
+            detail: advisory,
+          },
+        ],
+      }),
+    );
+    const occurrences = report.markdown.split(advisory).length - 1;
+    expect(occurrences).toBe(1);
+    expect(report.markdown).not.toContain("after the update finishes");
+    expect(report.headline).toContain("1 warning needs attention");
+  });
 });

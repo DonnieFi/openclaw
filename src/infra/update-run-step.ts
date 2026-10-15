@@ -149,13 +149,21 @@ export function updateRunStepsFromResultStep(step: ResultStep): UpdateRunStep[] 
 }
 
 export function updateRunWarningMessages(steps: readonly UpdateRunStep[]): string[] {
-  return steps.flatMap((step) =>
-    (step.step === "reconcile:settle" ||
-      (step.status === "completed" && step.step.startsWith("warning:"))) &&
-    step.detail
-      ? [step.detail]
-      : [],
-  );
+  const messages: string[] = [];
+  const seen = new Set<string>();
+  for (const step of steps) {
+    const detail = step.detail;
+    const included =
+      Boolean(detail) &&
+      (step.step === "reconcile:settle" ||
+        (step.status === "completed" && step.step.startsWith("warning:")));
+    if (!detail || !included || seen.has(detail)) {
+      continue;
+    }
+    seen.add(detail);
+    messages.push(detail);
+  }
+  return messages;
 }
 
 /** Shared bounded receipt for history and rollback-readable diagnostics. */
