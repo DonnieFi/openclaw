@@ -32,7 +32,7 @@ scenario:
     - docs/channels/qa-channel.md
   codeRefs:
     - src/agents/subagents/announce/subagent-announce-completion-delivery.ts
-    - src/agents/sessions/session-manager-entries.ts
+    - src/agents/sessions/session-manager-append.ts
     - extensions/qa-lab/src/providers/mock-openai/server.ts
   execution:
     kind: flow
