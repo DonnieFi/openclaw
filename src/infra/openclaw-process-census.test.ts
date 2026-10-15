@@ -216,6 +216,20 @@ it("keeps a manifest-free script that references an update runtime", () => {
   expect(inspectOtherOpenClawProcesses()).toEqual({ pids: [peer] });
 });
 
+it("vetoes a scriptless runtime when every package manifest is absent", () => {
+  rows.set(peer, { ppid: 1, argv: ["node", "--eval", "1"] });
+  const inspect = read.getMockImplementation()!;
+  read.mockImplementation((file: string) => {
+    if (file.endsWith("/package.json")) {
+      throw Object.assign(new Error("missing manifest"), { code: "ENOENT" });
+    }
+    return inspect(file);
+  });
+  expect(inspectOtherOpenClawProcesses()).toEqual({
+    error: expect.stringContaining("package identity"),
+  });
+});
+
 it.each(["script", "service-marker", "module-package", "directory-package"])(
   "vetoes unreadable %s evidence",
   (source) => {
