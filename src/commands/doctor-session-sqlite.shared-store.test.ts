@@ -3,7 +3,7 @@ import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { readSqliteTranscriptPayload } from "../../scripts/lib/sqlite-transcript-payload.mjs";
 import {
-  lookupSessionGoalOperation,
+  readSessionGoalOperationInDatabase,
   type SessionGoalOperation,
 } from "../config/sessions/goals-operations.js";
 import {
@@ -31,11 +31,14 @@ import {
   resolveOpenClawAgentSqlitePath,
 } from "../state/openclaw-agent-db.js";
 import { removeCanonicalValidationFromHistoricalAgentFixture } from "../state/openclaw-agent-db.test-support.js";
-import { withLegacySessionParticipantsSchema } from "../state/openclaw-agent-participants-migration.js";
+import { LEGACY_PARTICIPANTS_SCHEMA } from "../state/openclaw-agent-schema-history.js";
 import { seedOpenClawAgentSchemaV21 } from "../state/openclaw-agent-schema-v21.test-support.js";
-import { sessionParticipantsSchemaSql } from "../state/openclaw-agent-session-participants-schema.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
-import { useSessionStoreTempDirs } from "../test-utils/session-state-cleanup.js";
+import { requireNativeSqliteDatabase } from "../test-utils/native-sqlite.js";
+import {
+  cleanupSessionStateForTest,
+  useSessionStoreTempDirs,
+} from "../test-utils/session-state-cleanup.js";
 import { runDoctorSessionSqlite } from "./doctor-session-sqlite.js";
 
 const sessionDirs = useSessionStoreTempDirs(afterAll, "openclaw-doctor-canonical-store-");
@@ -59,9 +62,10 @@ async function createStore() {
   await upsertSessionEntryCore(scope, { sessionId: "doctor-session", updatedAt: 1 });
   const options = toDatabaseOptions(resolveSqliteReadScope(scope));
   const sqlitePath = resolveOpenClawAgentSqlitePath(options);
+  await cleanupSessionStateForTest({ stateDir, rootPath: root });
   closeOpenClawAgentDatabasesForTest();
   closeOpenClawStateDatabaseForTest();
-  return { cfg, env, options, scope, sqlitePath, stateDir, storePath };
+  return { cfg, env, options, root, scope, sqlitePath, stateDir, storePath };
 }
 
 async function createHistoricalSharedStore() {
@@ -76,6 +80,7 @@ async function createHistoricalSharedStore() {
   const turn = await persistSessionTranscriptTurn(
     { ...store.scope, sessionId: "doctor-session" },
     {
+      config: store.cfg,
       expectedSessionId: "doctor-session",
       messages: [{ message: { role: "user", content: goalOperation.objective } }],
       sessionTurnMutation: { kind: "goal", operation: goalOperation, runId: "goal-start" },
@@ -84,6 +89,7 @@ async function createHistoricalSharedStore() {
   );
   const goalReceipt = turn.sessionTurnMutationResult?.result;
   expect(goalReceipt).toMatchObject({ action: "start", status: "started", runId: "goal-start" });
+  await cleanupSessionStateForTest({ stateDir: store.stateDir, rootPath: store.root });
   closeOpenClawAgentDatabasesForTest();
   closeOpenClawStateDatabaseForTest();
   const source = openNodeSqliteDatabase(store.sqlitePath);
@@ -141,7 +147,7 @@ async function createHistoricalSharedStore() {
     database.exec("COMMIT;");
     const goalState = readStoredGoalState(database, store.scope.sessionKey);
     database.exec("DROP TABLE session_participants;");
-    database.exec(withLegacySessionParticipantsSchema(sessionParticipantsSchemaSql()));
+    database.exec(LEGACY_PARTICIPANTS_SCHEMA);
     database
       .prepare(
         "INSERT INTO session_participants VALUES (?, 'human', 'person', 'profile', 3, 10, 20)",
@@ -224,9 +230,11 @@ function expectUpgradedSharedStore(store: Awaited<ReturnType<typeof createHistor
     createdVia: "operator",
     createdActor: { type: "human", source: "profile", id: "person", label: "Original creator" },
   });
-  expect(readStoredGoalState(reopened.db, store.scope.sessionKey)).toEqual(store.goalState);
   expect(
-    lookupSessionGoalOperation({
+    readStoredGoalState(requireNativeSqliteDatabase(reopened.db), store.scope.sessionKey),
+  ).toEqual(store.goalState);
+  expect(
+    readSessionGoalOperationInDatabase(reopened, {
       ...store.scope,
       expectedSessionId: "doctor-session",
       operation: store.goalOperation,

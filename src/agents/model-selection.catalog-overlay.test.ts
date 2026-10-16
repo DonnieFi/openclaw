@@ -8,6 +8,9 @@ import type { ProviderModelRouteCandidate } from "../plugin-sdk/provider-model-t
 import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.test-support.js";
 import * as providerPolicy from "../plugins/provider-policy-surface.js";
 import { prepareModelCatalogThinkingPolicies } from "../plugins/provider-thinking.js";
+import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
+import { isSmallModel } from "../shared/model-param-b.js";
+import { makeModel } from "./embedded-agent-runner/model.test-harness.js";
 import {
   type ModelCatalogRoutePolicy,
   projectModelCatalogEntryForRoute,
@@ -37,6 +40,60 @@ const routePolicy: ModelCatalogRoutePolicy = {
 };
 
 describe("configured catalog route overlays", () => {
+  it.each([undefined, 4_000_000_000])(
+    "keeps discovered parameter counts with their configured physical route (override %s)",
+    (parameterCount) => {
+      const cfg: OpenClawConfig = {
+        models: {
+          providers: {
+            "route-fixture": {
+              ...capturedRoute,
+              models: [{ ...makeModel("compact-chat"), name: "Compact Chat", parameterCount }],
+            },
+          },
+        },
+      };
+      const catalog = buildConfiguredModelCatalog({
+        cfg,
+        catalog: [
+          {
+            ...capturedRoute,
+            provider: "route-fixture",
+            id: "compact-chat",
+            name: "Compact Chat",
+            parameterCount: parameterCount === undefined ? 4_000_000_000 : 70_000_000_000,
+          },
+        ],
+        manifestPlugins: [],
+      });
+      const entry = expectDefined(catalog[0], "configured parameter metadata");
+      expect(entry.parameterCount).toBe(4_000_000_000);
+      for (const baseUrl of [capturedRoute.baseUrl, "https://different.example/v1"]) {
+        const { entry: projected, runtimeEntry } = projectModelCatalogEntryForRoute({
+          entry,
+          catalog,
+          projection: {
+            kind: "selected",
+            route: {
+              ...capturedRoute,
+              baseUrl,
+              authRequirement: "api-key",
+              requestTransportOverrides: "none",
+            },
+            policy: routePolicy,
+          },
+          overrides: createConfiguredModelCatalogOverridesResolver({ cfg, policy: routePolicy })(
+            entry,
+          ),
+        });
+        const matchesConfiguredRoute = baseUrl === capturedRoute.baseUrl;
+        expect(projected.parameterCount).toBe(matchesConfiguredRoute ? 4_000_000_000 : undefined);
+        expect(runtimeEntry.parameterCount).toBe(projected.parameterCount);
+        expect(isSmallModel(runtimeEntry)).toBe(matchesConfiguredRoute);
+      }
+    },
+  );
+
   it.each<OverlayCase>([
     {
       name: "same route with explicit disabled reasoning",
@@ -154,9 +211,21 @@ describe("configured catalog route overlays", () => {
       prepareModelCatalogThinkingPolicies({
         catalog,
         metadataSnapshot,
-        providers: [
-          { provider: { id: "fixture-thinking-owner", resolveThinkingProfile: preparedPolicy } },
-        ],
+        pluginRegistry: {
+          ...createEmptyPluginRegistry(),
+          providers: [
+            {
+              pluginId: "fixture-thinking-owner",
+              source: "test",
+              provider: {
+                id: "fixture-thinking-owner",
+                label: "Thinking owner",
+                auth: [],
+                resolveThinkingProfile: preparedPolicy,
+              },
+            },
+          ],
+        },
       });
       const allowed = buildAllowedModelSet({
         cfg: source.config,

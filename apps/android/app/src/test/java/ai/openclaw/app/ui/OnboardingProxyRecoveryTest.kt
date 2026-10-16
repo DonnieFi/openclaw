@@ -143,6 +143,31 @@ class OnboardingProxyRecoveryTest {
         assertEquals("paired-node", deviceAuth.loadToken(endpoint.stableId, identity.deviceId, "node"))
         assertEquals("replacement-proxy-password", prefs.loadGatewayProxyCredentials(endpoint)?.password)
       }
+
+      // A node connection is not verified operator sign-in. Recover without resetting either grant.
+      val identityProblem = problem.copy(code = "AUTH_VERIFIED_USER_REQUIRED", message = "Verified identity required")
+      composeRule.runOnIdle {
+        ReflectionHelpers.getField<MutableStateFlow<Boolean>>(runtime, "_nodeConnected").value = true
+        ReflectionHelpers.getField<MutableStateFlow<GatewayConnectionDisplay>>(runtime, "_gatewayConnectionDisplay").value =
+          GatewayConnectionDisplay(false, "Connected (operator: sign-in required)", identityProblem)
+      }
+      drainWithMainLooper { withTimeout(10_000) { model.gatewayConnectionDisplay.first { it.problem == identityProblem } } }
+      restoration.emulateSavedInstanceStateRestore()
+      composeRule.onNodeWithText("Verified sign-in required").assertIsDisplayed()
+      composeRule.onNodeWithText("View details").performScrollTo().performClick()
+      composeRule.onNodeWithText("Chat/operator connected: false", substring = true).assertIsDisplayed()
+      composeRule.onNodeWithText("Node connected: true", substring = true).assertIsDisplayed()
+      composeRule.onNodeWithText("Close").performClick()
+      composeRule.onNodeWithText("Use authenticated setup code").performClick()
+      composeRule.onNodeWithText("Enter setup code").assertIsDisplayed()
+      composeRule.onNodeWithText("Connect to this Gateway?").assertDoesNotExist()
+      composeRule.runOnIdle {
+        assertFalse(model.onboardingCompleted.value)
+        assertEquals(savedAuth, prefs.loadGatewayCredentials(endpoint.stableId))
+        assertEquals("paired-operator", deviceAuth.loadToken(endpoint.stableId, identity.deviceId, "operator"))
+        assertEquals("paired-node", deviceAuth.loadToken(endpoint.stableId, identity.deviceId, "node"))
+        assertEquals("replacement-proxy-password", prefs.loadGatewayProxyCredentials(endpoint)?.password)
+      }
     } finally {
       try {
         composeRule.runOnIdle { mounted.value = false }

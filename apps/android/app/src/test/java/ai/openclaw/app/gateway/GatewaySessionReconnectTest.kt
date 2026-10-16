@@ -925,6 +925,43 @@ class GatewaySessionReconnectTest {
     }
 
   @Test
+  fun failedTalkDetachReconnectsOnlyItsOwningSocket() =
+    runBlocking {
+      val ready = Channel<GatewaySession.RequestLease>(Channel.UNLIMITED)
+      val server =
+        startGatewayServer(json = Json) { webSocket, id, method ->
+          webSocket.send(
+            if (method == "connect") {
+              connectResponseFrame(id, capabilities = setOf("talk-session-close-disposition"))
+            } else {
+              """{"type":"res","id":"$id","ok":false,"error":{"code":"UNAVAILABLE","message":"close unavailable"}}"""
+            },
+          )
+        }
+      val harness = createReconnectHarness()
+      try {
+        connectSession(harness.session, server.port, onReady = {
+          ready.trySend(requireNotNull(harness.session.captureRequestLease()))
+        })
+        val original = withTimeout(LIFECYCLE_TEST_TIMEOUT_MS) { ready.receive() }
+        val abort = runCatching { original.closeTalkSession("relay-1", TalkSessionCloseDisposition.Abort) }
+        assertTrue(abort.exceptionOrNull() is GatewayRequestRejected)
+        assertTrue(original.isCurrent())
+
+        val detach = runCatching { original.closeTalkSession("relay-1", TalkSessionCloseDisposition.Detach) }
+        assertTrue(detach.exceptionOrNull() is GatewayRequestRejected)
+        val replacement = withTimeout(LIFECYCLE_TEST_TIMEOUT_MS) { ready.receive() }
+        assertFalse(original.isCurrent())
+
+        val stale = runCatching { original.closeTalkSession("relay-1", TalkSessionCloseDisposition.Detach) }
+        assertTrue(stale.exceptionOrNull() is GatewayRequestNotEnqueued)
+        assertTrue(replacement.isCurrent())
+      } finally {
+        shutdownReconnectHarness(harness, server)
+      }
+    }
+
+  @Test
   fun capturedRequestLeaseRejectsReplacementSocketBeforeEnqueue() =
     runBlocking {
       val json = Json { ignoreUnknownKeys = true }
@@ -1716,6 +1753,80 @@ class GatewaySessionReconnectTest {
     }
 
   @Test
+  fun handshakeRejectionIsNotRepublishedAsTransportDisconnect() =
+    runBlocking {
+      for (transportFailure in listOf(false, true)) {
+        val connectRequestId = CompletableDeferred<String>()
+        val blockEventStarted = CountDownLatch(1)
+        val allowBlockEvent = CountDownLatch(1)
+        val connectFailure = CompletableDeferred<Pair<GatewaySession.ErrorShape, Boolean>>()
+        val callbacks = ConcurrentLinkedQueue<String>()
+        val server =
+          startGatewayServer(json = Json) { _, id, method ->
+            if (method == "connect") connectRequestId.complete(id)
+          }
+        val harness =
+          createReconnectHarness(
+            onConnected = { callbacks += "connected" },
+            onDisconnected = { callbacks += "disconnected:$it" },
+            onConnectFailure = { error, paused ->
+              callbacks += "failure:${error.details?.code}"
+              connectFailure.complete(error to paused)
+            },
+            onEvent = { event, _ ->
+              if (event == "block") {
+                blockEventStarted.countDown()
+                check(allowBlockEvent.await(LIFECYCLE_TEST_TIMEOUT_MS, TimeUnit.MILLISECONDS))
+              }
+            },
+          )
+        var clientSocket: WebSocket? = null
+        try {
+          connectSession(harness.session, server.port, role = "operator", scopes = listOf("operator.read"))
+          val requestId = withTimeout(LIFECYCLE_TEST_TIMEOUT_MS) { connectRequestId.await() }
+          val connection = readField<Any>(harness.session, "currentConnection")
+          val listener = readField<WebSocketListener>(connection, "listener")
+          val socket = readField<WebSocket>(connection, "socket").also { clientSocket = it }
+          val closed = readField<CompletableDeferred<Unit>>(connection, "closedDeferred")
+          listener.onMessage(socket, """{"type":"event","event":"block","payload":{}}""")
+          assertTrue(blockEventStarted.await(LIFECYCLE_TEST_TIMEOUT_MS, TimeUnit.MILLISECONDS))
+          // Hold the pump so the terminal callback closes CONNECTING before it drains the rejection.
+          listener.onMessage(
+            socket,
+            """{"type":"res","id":"$requestId","ok":false,"error":{"code":"INVALID_REQUEST","message":"verified user identity required","details":{"code":"AUTH_VERIFIED_USER_REQUIRED"}}}""",
+          )
+          if (transportFailure) {
+            listener.onFailure(socket, IOException("test transport failure"), null)
+          } else {
+            listener.onClosed(socket, 1008, "verified user identity required")
+          }
+          assertFalse(closed.isCompleted)
+          allowBlockEvent.countDown()
+
+          withTimeout(LIFECYCLE_TEST_TIMEOUT_MS) { closed.await() }
+          val (error, paused) = withTimeout(LIFECYCLE_TEST_TIMEOUT_MS) { connectFailure.await() }
+          assertEquals("AUTH_VERIFIED_USER_REQUIRED", error.details?.code)
+          assertTrue(paused)
+          // Both schedules are wrong: a generic close before OR after the structured failure.
+          assertEquals(
+            listOf(
+              "disconnected:Connecting…",
+              "disconnected:Gateway error: verified user identity required",
+              "failure:AUTH_VERIFIED_USER_REQUIRED",
+            ),
+            callbacks.toList(),
+          )
+          assertFalse(harness.session.isReady())
+        } finally {
+          allowBlockEvent.countDown()
+          // Synthetic terminal delivery does not close the real OkHttp transport.
+          clientSocket?.cancel()
+          shutdownReconnectHarness(harness, server)
+        }
+      }
+    }
+
+  @Test
   fun failureOrdersDisconnectAfterInFlightHandlerAndAcceptedConnectResponse() =
     runBlocking {
       val json = Json { ignoreUnknownKeys = true }
@@ -1835,7 +1946,7 @@ class GatewaySessionReconnectTest {
         socketField.set(connection, RejectFirstSendWebSocket(socket) { rejectedNodeEvent.complete(Unit) })
         val outbox =
           NotificationNodeEventOutbox {
-            harness.session.sendNodeEventWithOutcome(it.event, it.payloadJson)
+            harness.session.sendNodeEventWithOutcomeForEndpoint(null, it.event, it.payloadJson)
           }
         val deliveryJob = launch { outbox.deliver() }
 
@@ -2442,7 +2553,7 @@ class GatewaySessionReconnectTest {
     onDisconnected: (String) -> Unit = {},
     deviceAuthStore: DeviceAuthTokenStore = ReconnectDeviceAuthStore(),
     onEvent: (String, String?) -> Unit = { _, _ -> },
-    onInvoke: suspend (GatewaySession.InvokeRequest) -> GatewaySession.InvokeResult = {
+    onInvoke: suspend (GatewayNodeInvokeRequest) -> GatewaySession.InvokeResult = {
       GatewaySession.InvokeResult.ok("""{"handled":true}""")
     },
     connectTimeoutMs: Long = 20_000,

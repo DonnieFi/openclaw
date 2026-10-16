@@ -137,6 +137,15 @@ network wakes; explicit Retry or a credential edit owns resumption. Phone pairin
 waits have a two-minute visible budget. Existing non-proxy retry behavior and the
 [two-role bootstrap handoff](GATEWAY_AUTH_POLICY.md) remain unchanged.
 
+Named-role operator admission requires verified user identity in addition to
+node pairing. `AUTH_VERIFIED_USER_REQUIRED` offers a fresh setup-code entry,
+explaining `openclaw qr --url` for the authenticated proxy's `wss://` address.
+It does not rewrite a LAN code's destination, transfer credentials, reset saved
+pairing, disable roles, or treat node connectivity as operator readiness.
+Diagnostics show node and chat/operator connectivity separately. The proxy must
+supply its validated identity on WebSocket upgrades; browser-only SSO has no
+native sign-in mechanism in this Basic-only feature.
+
 This is HTTP Basic support, not OAuth/OIDC/SSO or HTTP forward-proxy authentication.
 Existing setup-code formats are supported; HTTPS join-link exchange and automatic
 alternate-endpoint selection are separate capabilities.

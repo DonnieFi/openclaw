@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import { constants } from "node:os";
 import path from "node:path";
-import { setTimeout as waitForProcessTick } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { waitForDead } from "../../test/helpers/process-wait.js";
 import { awaitGateBeforeSettlement, withinTest } from "../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { quoteCliArg } from "../cli/quote-cli-arg.js";
@@ -91,20 +91,6 @@ async function start(args: string[], overrides: Partial<TerminalPtySpawnParams> 
     }
   };
   return { handle, observed, exited: exited.promise, waitForOutput };
-}
-
-// Session signaling has no completion promise for an adopted slave-holding child.
-async function waitForPidToExit(pid: number, signal: AbortSignal): Promise<void> {
-  try {
-    while (isPidAlive(pid)) {
-      await waitForProcessTick(10, undefined, { signal });
-    }
-  } catch (error) {
-    if (signal.aborted) {
-      throw new Error(`Timed out waiting for PTY descendant ${pid} to exit`, { cause: error });
-    }
-    throw error;
-  }
 }
 
 // Stock Bun and the current CI pin lack the capability required by the native route.
@@ -200,7 +186,8 @@ describe.runIf(Boolean(process.versions.bun) && process.platform !== "win32" && 
       descendants.push(childPid);
       expect(isPidAlive(childPid)).toBe(true);
       handle.kill();
-      await waitForPidToExit(childPid, signal);
+      // Session signaling has no completion promise for an adopted slave-holding child.
+      await waitForDead(childPid, signal);
       expect(isPidAlive(childPid)).toBe(false);
     });
 
@@ -261,33 +248,30 @@ describe.runIf(Boolean(process.versions.bun) && process.platform !== "win32" && 
         expect(observed.output).toBe("READY\r\ntail 🦞\r\n");
       });
 
-      it("reports exit after kill while the consumer keeps re-pausing output", async () => {
+      it("reports exit after kill while the consumer keeps re-pausing output", async ({
+        signal,
+      }) => {
         const cwd = tempDirs.make("openclaw-bun-pty-kill-");
-        fs.writeFileSync(path.join(cwd, "payload"), "x".repeat(4 * 1024 * 1024));
-        const { handle, observed } = await start(
-          [
-            "-c",
-            'stty -echo; printf "READY\\n"; read input; printf started > progress; cat payload',
-          ],
-          { cwd },
-        );
-        await vi.waitFor(() => expect(observed.output).toBe("READY\r\n"), deadline);
-        handle.pause();
-        handle.write("go\r");
-        await vi.waitFor(
-          () => expect(fs.readFileSync(path.join(cwd, "progress"), "utf8")).toBe("started"),
-          deadline,
-        );
+        const payload = path.join(cwd, "payload");
+        fs.writeFileSync(payload, "x".repeat(4 * 1024 * 1024));
+        // A shell can exit with its killed child's status before the tree kill reaches it.
+        const { handle, observed, exited, waitForOutput } = await start([payload], {
+          file: "/bin/cat",
+          cwd,
+        });
         // A viewer whose backlog stays full pauses again on every chunk it receives.
         handle.onData(() => handle.pause());
+        await waitForOutput("x", signal);
+        expect(observed.exit).toBeUndefined();
+        const beforeKill = observed.output.length;
         handle.kill();
-        await vi.waitFor(
-          () => expect(observed.exit).toEqual({ exitCode: 0, signal: constants.signals.SIGKILL }),
-          deadline,
-        );
+        expect(await withinTest(exited, signal)).toEqual({
+          exitCode: 0,
+          signal: constants.signals.SIGKILL,
+        });
         // Teardown delivered the dying tree's output before exit; nothing trails it.
         const atExit = observed.output.length;
-        expect(atExit).toBeGreaterThan("READY\r\n".length);
+        expect(atExit).toBeGreaterThan(beforeKill);
         handle.resume();
         expect(observed.output.length).toBe(atExit);
       });
@@ -337,48 +321,47 @@ function spawnControlledBunPty() {
   return { handle, callbacks, terminal, done };
 }
 
-it("replays queued chunks in order, honors a listener pause, and delivers exit last", async () => {
-  const { handle, callbacks, terminal, done } = spawnControlledBunPty();
-  const events: string[] = [];
-  handle.onExit(({ exitCode }) => events.push(`exit:${exitCode}`));
-  for (const chunk of ["early 🦞\r\n", "two\r\n", "three\r\n"]) {
-    callbacks.data(terminal, new TextEncoder().encode(chunk));
-  }
-  expect(events).toEqual([]);
-  handle.onData((chunk) => {
-    events.push(chunk);
-    if (events.length === 1) {
-      handle.pause();
+it.each([false, true])(
+  "settles queued output before exit with subscriber=%s",
+  async (subscribed) => {
+    const { handle, callbacks, terminal, done } = spawnControlledBunPty();
+    const events: string[] = [];
+    const chunks = subscribed ? ["early 🦞\r\n", "two\r\n", "three\r\n"] : ["unobserved\r\n"];
+    handle.onExit(({ exitCode }) => events.push(`exit:${exitCode}`));
+    for (const chunk of chunks) {
+      callbacks.data(terminal, new TextEncoder().encode(chunk));
     }
-  });
-  expect(events).toEqual(["early 🦞\r\n"]);
-  callbacks.exit(terminal);
-  done.resolve(7);
-  await done.promise;
-  expect(events).toEqual(["early 🦞\r\n"]);
-  expect(terminal.close).not.toHaveBeenCalled();
-  handle.resume();
-  expect(events).toEqual(["early 🦞\r\n", "two\r\n", "three\r\n", "exit:7"]);
-  expect(terminal.close).toHaveBeenCalledOnce();
-  handle.resume();
-  expect(events).toEqual(["early 🦞\r\n", "two\r\n", "three\r\n", "exit:7"]);
-});
-
-it("never delivers unsubscribed output after exit", async () => {
-  const { handle, callbacks, terminal, done } = spawnControlledBunPty();
-  const events: string[] = [];
-  handle.onExit(({ exitCode }) => events.push(`exit:${exitCode}`));
-  callbacks.data(terminal, new TextEncoder().encode("unobserved\r\n"));
-  callbacks.exit(terminal);
-  done.resolve(7);
-  await done.promise;
-  expect(events).toEqual(["exit:7"]);
-  handle.onData((chunk) => events.push(chunk));
-  expect(events).toEqual(["exit:7"]);
-});
+    expect(events).toEqual([]);
+    if (subscribed) {
+      handle.onData((chunk) => {
+        events.push(chunk);
+        if (events.length === 1) {
+          handle.pause();
+        }
+      });
+      expect(events).toEqual(["early 🦞\r\n"]);
+    }
+    callbacks.exit(terminal);
+    done.resolve(7);
+    await done.promise;
+    if (subscribed) {
+      expect(events).toEqual(["early 🦞\r\n"]);
+      expect(terminal.close).not.toHaveBeenCalled();
+      handle.resume();
+      expect(events).toEqual(["early 🦞\r\n", "two\r\n", "three\r\n", "exit:7"]);
+      expect(terminal.close).toHaveBeenCalledOnce();
+      handle.resume();
+      expect(events).toEqual(["early 🦞\r\n", "two\r\n", "three\r\n", "exit:7"]);
+    } else {
+      expect(events).toEqual(["exit:7"]);
+      handle.onData((chunk) => events.push(chunk));
+      expect(events).toEqual(["exit:7"]);
+    }
+  },
+);
 
 it.each([false, true])("routes Bun PTYs with Terminal.pause=%s", async (flowControl) => {
-  vi.spyOn(process, "versions", "get").mockReturnValue({ ...process.versions, bun: "1.4.2" });
+  vi.spyOn(process, "versions", "get").mockReturnValue({ ...process.versions, bun: "1.4.3" });
   vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
   const prototype = bun?.Terminal?.prototype ?? {};
   const pause = Object.getOwnPropertyDescriptor(prototype, "pause");
@@ -422,7 +405,7 @@ it.each([false, true])("routes Bun PTYs with Terminal.pause=%s", async (flowCont
       });
     } else {
       expect(native).not.toHaveBeenCalled();
-      expect(helper).toHaveBeenCalledWith(params, expect.any(Function));
+      expect(helper).toHaveBeenCalledWith(params, expect.any(Function), undefined);
       expect(helper.mock.calls[0]?.[0]).toBe(params);
       helper.mock.calls[0]?.[1]?.();
       expect(assertCurrent).toHaveBeenCalledTimes(2);

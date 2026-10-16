@@ -11,9 +11,13 @@ import { resolveRuntimeWorkerUrl } from "../../infra/runtime-worker-url.js";
 import * as workerCpu from "../../infra/worker-cpu.js";
 import type { PluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.types.js";
 import { createDeferredCore } from "../../shared/deferred.js";
-import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
-import { withEnv } from "../../test-utils/env.js";
+import {
+  closeOpenClawAgentDatabasesAsync,
+  closeOpenClawAgentDatabasesForTest,
+} from "../../state/openclaw-agent-db.js";
+import { closeStateDatabaseForTest } from "../../test-utils/database-cleanup.js";
 import { clearRuntimeAuthProfileStoreSnapshots } from "../auth-profiles/runtime-snapshots.js";
+import { closeAuthProfileReadPool } from "../auth-profiles/sqlite-read-pool.js";
 import type { ModelCatalogSnapshot } from "../model-catalog.types.js";
 import {
   encodePluginModelCatalogRelativePath,
@@ -27,6 +31,30 @@ import type {
   PreparedModelRuntimeOwner,
   PreparedModelRuntimeSnapshot,
 } from "../prepared-model-runtime.types.js";
+
+function createJwtWithExp(exp: number, marker?: string): string {
+  const payload = Buffer.from(JSON.stringify({ exp, ...(marker ? { marker } : {}) })).toString(
+    "base64url",
+  );
+  return `header.${payload}.signature`;
+}
+
+export function writeCodexAuth(codexHome: string, marker: string): void {
+  const authPath = path.join(codexHome, "auth.json");
+  fs.writeFileSync(
+    authPath,
+    JSON.stringify({
+      auth_mode: "chatgpt",
+      tokens: {
+        access_token: createJwtWithExp(Math.floor(Date.now() / 1000) + 3600, marker),
+        refresh_token: `refresh-${marker}-not-real`,
+      },
+    }),
+    "utf8",
+  );
+  const future = new Date(Date.now() + 2_000);
+  fs.utimesSync(authPath, future, future);
+}
 
 const waitTimeoutMs = 30_000;
 
@@ -104,12 +132,17 @@ export function usePreparedCatalogWorkerFixtures(
         restoreCatalogWorkerFactory = undefined;
         catalogSettlements.clear();
         clearRuntimeAuthProfileStoreSnapshots();
+        closeAuthProfileReadPool();
+        await closeOpenClawAgentDatabasesAsync();
         closeOpenClawAgentDatabasesForTest();
+        // Agent lease retirement can retain shared actors; retire them before roots can reuse inodes.
+        await closeStateDatabaseForTest();
         cleanup();
       }
     });
   });
   return {
+    readCatalogWorkers: (): readonly Worker[] => [...workers],
     makeTempDir: (prefix: string) => tempDirs.make(prefix),
     observeCatalogEntry: (
       receipts: FixtureReceiptChannel,
@@ -342,30 +375,29 @@ export async function loadCompletedFullCatalog(
   return completed!;
 }
 
-export function seedFixturePluginModelCatalog(
+export async function seedFixturePluginModelCatalog(
   agentDir: string,
   env: NodeJS.ProcessEnv,
   pluginId: string,
   providerId: string,
-): void {
-  withEnv(env, () =>
-    replacePersistedPluginModelCatalogs({
-      agentDir,
-      pluginCatalogWrites: {
-        [encodePluginModelCatalogRelativePath(pluginId)]: JSON.stringify({
-          generatedBy: PLUGIN_MODEL_CATALOG_GENERATED_BY,
-          providers: {
-            [providerId]: {
-              baseUrl: "https://worker-catalog.invalid/v1",
-              api: "openai-completions",
-              apiKey: "WORKER_CATALOG_API_KEY",
-              models: [{ id: "sqlite-model", name: "SQLite model" }],
-            },
+): Promise<void> {
+  await replacePersistedPluginModelCatalogs({
+    agentDir,
+    env,
+    pluginCatalogWrites: {
+      [encodePluginModelCatalogRelativePath(pluginId)]: JSON.stringify({
+        generatedBy: PLUGIN_MODEL_CATALOG_GENERATED_BY,
+        providers: {
+          [providerId]: {
+            baseUrl: "https://worker-catalog.invalid/v1",
+            api: "openai-completions",
+            apiKey: "WORKER_CATALOG_API_KEY",
+            models: [{ id: "sqlite-model", name: "SQLite model" }],
           },
-        }),
-      },
-    }),
-  );
+        },
+      }),
+    },
+  });
 }
 
 export function writeCatalogFailureControl(

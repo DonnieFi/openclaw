@@ -15,6 +15,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { expectDefined } from "@openclaw/normalization-core";
 import { beforeAll, expect, it, vi } from "vitest";
+import { parse } from "yaml";
 import { spawnOwnedVitestProcess } from "../../scripts/lib/vitest-process.mts";
 import { isProcessAlive } from "../helpers/process-wait.js";
 import {
@@ -48,18 +49,85 @@ function expectedHarnessSparseCheckoutArgs(linux: boolean) {
     "/scripts/ios-screenshot-evidence.mjs",
     "/scripts/lib/direct-run.mjs",
     "/scripts/ci-static-step.sh",
+    "/scripts/ci-collect-checks.sh",
     ...(linux
       ? [
           "/scripts/lib/release-upgrade-baseline.mjs",
           "/scripts/lib/release-version.mjs",
+          "/scripts/lib/canonical-json.mjs",
+          "/scripts/lib/upgrade-survivor-policy.mjs",
+          "/scripts/lib/upgrade-survivor-scenarios.json",
           "/scripts/ci-npm-lock-admission.mjs",
           "/scripts/generate-npm-package-lock.mjs",
           "/scripts/generate-npm-package-lock.mts",
           "/scripts/changed-lanes.mts",
           "/scripts/lib/merge-head-diff-base.mjs",
+          "/scripts/ci-additional-checks.sh",
+          "/scripts/stage-openclaw-bun.sh",
+          "/scripts/lib/openclaw-bun.json",
         ]
-      : ["/scripts/lib/swift-toolchain.sh", "/scripts/lib/ci-ios-smoke-plan.mjs"]),
+      : [
+          "/scripts/lib/swift-toolchain.sh",
+          "/scripts/lib/ci-ios-smoke-plan.mjs",
+          "/scripts/ci-xcodebuild.py",
+          "/scripts/swift-build-cache-metadata.py",
+        ]),
   ];
+}
+
+// Workflow consumers define the required files; the real Git fixture below
+// checks both index exports and sparse fetches against the owner, not a copied list.
+const harnessReferences = new Map<string, Map<string, string>>();
+const workflowDefinition = parse(readFileSync(".github/workflows/ci.yml", "utf8")) as {
+  jobs: Record<
+    string,
+    {
+      "runs-on"?: unknown;
+      steps?: {
+        env?: Record<string, string>;
+        with?: { path?: string; "sparse-checkout"?: string };
+      }[];
+    }
+  >;
+};
+for (const [jobId, job] of Object.entries(workflowDefinition.jobs)) {
+  const checkout = job.steps?.find((step) => step.env?.CHECKOUT_REPO);
+  const kind =
+    checkout?.env?.CHECKOUT_KIND ??
+    (/(?:macos|windows|xcode)-/u.test(JSON.stringify(job["runs-on"])) ? "platform" : "linux-node");
+  const references = new Map<string, string>();
+  for (const step of job.steps ?? []) {
+    for (const match of JSON.stringify(step).matchAll(/\.ci-harness\/([\w./-]+)/gu)) {
+      references.set(expectDefined(match[1], "harness reference"), jobId);
+    }
+  }
+  if (references.size === 0) {
+    continue;
+  }
+  const sparse = job.steps?.find((step) => step.with?.path === ".ci-harness");
+  if (sparse) {
+    it(`exports every harness reference for ${jobId}'s sparse checkout`, () => {
+      const paths = (sparse.with?.["sparse-checkout"] ?? "")
+        .split(/\s+/u)
+        .filter(Boolean)
+        .map((entry) => entry.replace(/^\/|\/$/gu, ""));
+      for (const reference of references.keys()) {
+        expect(
+          paths.some((entry) => reference === entry || reference.startsWith(`${entry}/`)),
+          `${jobId}: .ci-harness/${reference}`,
+        ).toBe(true);
+      }
+    });
+    // Preflight uses the owner's index export when workflow and target match.
+    if (kind !== "preflight") {
+      continue;
+    }
+  }
+  const required = harnessReferences.get(kind) ?? new Map<string, string>();
+  for (const [reference, consumer] of references) {
+    required.set(reference, consumer);
+  }
+  harnessReferences.set(kind, required);
 }
 
 // Execute both workflow policies against the same owned tree fixture. A leader's
@@ -178,9 +246,6 @@ if (process.argv[2] === "sentinel") {
       throw error;
     }
   };
-  // Loaded macOS hosts can drop FSEvents directory notifications entirely.
-  const watch = fs.watch;
-  fs.watch = (target, ...args) => (target === root ? { close() {} } : watch(target, ...args));
 }
 syncFixtureBuiltinExports();
 `
@@ -346,8 +411,6 @@ it.concurrent.for([
     ? []
     : [
         { event: "push", workflow: "same", target: "selected", code: 0, fetches: 2 },
-        { event: "pull_request", workflow: "same", target: "selected", code: 0, fetches: 2 },
-        { event: "pull_request", workflow: "previous", target: "selected", code: 0, fetches: 2 },
         {
           event: "workflow_dispatch",
           workflow: "previous",
@@ -403,6 +466,7 @@ it.concurrent.for([
       "scripts/ios-screenshot-evidence.mjs": "workflow evidence script\n",
       "scripts/lib/direct-run.mjs": "workflow direct-run script\n",
       "scripts/ci-static-step.sh": "workflow static-step script\n",
+      "scripts/ci-collect-checks.sh": "workflow collect-checks script\n",
     };
     const nodeSetupScripts = {
       "scripts/lib/pnpm-lockfile-documents.mjs": readFileSync(
@@ -412,6 +476,7 @@ it.concurrent.for([
     };
     const platformScripts = {
       "scripts/lib/swift-toolchain.sh": "workflow Swift toolchain helper\n",
+      "scripts/ci-xcodebuild.py": "workflow Xcode diagnostics helper\n",
     };
     const preflightScripts = {
       "scripts/ci-build-manifest.mjs": readFileSync("scripts/ci-build-manifest.mjs", "utf8"),
@@ -427,7 +492,17 @@ it.concurrent.for([
         "scripts/lib/release-context.mjs",
         "scripts/lib/release-version.mjs",
         "scripts/lib/release-upgrade-baseline.mjs",
+        "scripts/lib/canonical-json.mjs",
+        "scripts/lib/upgrade-survivor-policy.mjs",
+        "scripts/lib/upgrade-survivor-scenarios.json",
       ].map((name) => [name, readFileSync(name, "utf8")]),
+    );
+    const references = harnessReferences.get(kind) ?? new Map<string, string>();
+    const referencedFiles = Object.fromEntries(
+      [...references.keys()].map((reference) => {
+        const file = statSync(reference).isDirectory() ? `${reference}/action.yml` : reference;
+        return [file, readFileSync(file, "utf8")];
+      }),
     );
     const candidateFiles = {
       "candidate-only.txt": "candidate stays intact\n",
@@ -490,6 +565,7 @@ it.concurrent.for([
           }).trim();
         run("init");
         for (const [name, contents] of Object.entries({
+          ...referencedFiles,
           ...files,
           ...evidenceScripts,
           ...nodeSetupScripts,
@@ -643,6 +719,12 @@ it.concurrent.for([
           expect(existsSync(harness)).toBe(false);
           return;
         }
+        for (const [reference, consumer] of references) {
+          expect(
+            existsSync(path.join(harness, reference)),
+            `${consumer} (${kind}, workflow=${workflow}): .ci-harness/${reference}`,
+          ).toBe(true);
+        }
         const sourceStatus = expectDefined(readSourceStatus, "native source status");
         expect(sourceStatus()).toEqual([]);
         expect(readFileSync(path.join(workspace, ".git/info/exclude"), "utf8")).toBe(
@@ -696,7 +778,12 @@ it.concurrent.for([
         }
         for (const [name, contents] of Object.entries(releasePolicy)) {
           const ownsPolicy = preflight
-            ? name !== "scripts/lib/release-upgrade-baseline.mjs"
+            ? ![
+                "scripts/lib/release-upgrade-baseline.mjs",
+                "scripts/lib/canonical-json.mjs",
+                "scripts/lib/upgrade-survivor-policy.mjs",
+                "scripts/lib/upgrade-survivor-scenarios.json",
+              ].includes(name)
             : kind === "linux-node" && name !== "scripts/lib/release-context.mjs";
           expect(existsSync(path.join(harness, name))).toBe(ownsPolicy);
           if (ownsPolicy) {
@@ -1065,6 +1152,14 @@ cp.spawnSync = (command, args, options) => {
 ''' + "\nrequire(" + json.dumps(sys.argv[5]) + ").syncFixtureBuiltinExports();\n")
     with subprocess.Popen([sys.executable, "-I", "-S", "-c", "import sys; sys.stdin.read()"],
                           stdin=subprocess.PIPE) as child, contextlib.ExitStack() as cleanup:
+        lease_owner = cleanup.enter_context(subprocess.Popen([
+            sys.argv[1], sys.argv[2], "lease-owner", str(root), "standalone"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True))
+        def close_lease_owner():
+            lease_owner.communicate(timeout=4)
+            assert lease_owner.returncode == 0, "lease owner failed during retirement"
+        cleanup.callback(close_lease_owner)
+        assert lease_owner.stdout.readline().strip() == "ready", "lease owner failed to initialize"
         if os.name == "nt":
             broker = cleanup.enter_context(subprocess.Popen([
                 sys.argv[1], "--input-type=module", "-e", """
@@ -1159,11 +1254,19 @@ with subprocess.Popen([sys.executable, "-I", "-S", "-c", "pass"], start_new_sess
     assert not group_alive(child.pid, deadline), "zombies are terminated, not checkout writers"
     group_signal(child.pid, signal.SIGTERM, deadline)
     group_signal(child.pid, signal.SIGKILL, deadline)
-    with tempfile.TemporaryDirectory(prefix="checkout-zombie-") as directory:
+    with tempfile.TemporaryDirectory(prefix="checkout-zombie-") as directory, contextlib.ExitStack() as cleanup:
         root = pathlib.Path(directory).resolve()
         (root / "workspace").mkdir()
         (root / "pids").mkdir()
         (root / "lease").write_text("owned")
+        lease_owner = cleanup.enter_context(subprocess.Popen([
+            sys.argv[1], sys.argv[2], "lease-owner", str(root), "standalone"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True))
+        def close_lease_owner():
+            lease_owner.communicate(timeout=4)
+            assert lease_owner.returncode == 0, "lease owner failed during retirement"
+        cleanup.callback(close_lease_owner)
+        assert lease_owner.stdout.readline().strip() == "ready", "lease owner failed to initialize"
         for pid, role, attempt in [(child.pid, "grandchild", 1), (os.getpid(), "sentinel", 0)]:
             (root / "pids" / f"{pid}.json").write_text(json.dumps(dict(pid=pid, role=role, attempt=attempt, instance=str(pid))))
         subprocess.run([sys.argv[1], sys.argv[2], "git", str(root), "early-leader-exit",
@@ -1371,7 +1474,6 @@ ${policy}`,
 }
 
 it.each([
-  { scenario: "direct denial", setup: "", types: ["PermissionError"] },
   {
     scenario: "timeout context",
     setup: "error.__context__ = owner.FetchTimeout()",

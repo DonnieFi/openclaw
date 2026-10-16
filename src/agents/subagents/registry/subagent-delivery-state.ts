@@ -23,7 +23,6 @@ export function resetRequesterSettleWakeRetry(
     attemptCount: 0,
     replayCount: undefined,
     nextAttemptAt: undefined,
-    deferralCount: undefined,
     lastError: undefined,
   };
 }
@@ -45,7 +44,10 @@ export function projectSubagentRunForSessionList(entry: SubagentRunRecord): Suba
     ...(entry.taskRunId !== undefined ? { taskRunId: entry.taskRunId } : {}),
     ...(entry.pauseReason ? { pauseReason: entry.pauseReason } : {}),
     ...(entry.swarmRunId ? { swarmRunId: entry.swarmRunId } : {}),
+    ...(entry.schedulerSlotId ? { schedulerSlotId: entry.schedulerSlotId } : {}),
+    ...(entry.swarmLaunchReplayKey ? { swarmLaunchReplayKey: entry.swarmLaunchReplayKey } : {}),
     childSessionKey: entry.childSessionKey,
+    ...(entry.childAgentId ? { childAgentId: entry.childAgentId } : {}),
     ...(entry.controllerSessionKey ? { controllerSessionKey: entry.controllerSessionKey } : {}),
     requesterSessionKey: entry.requesterSessionKey,
     requesterStorePath: entry.requesterStorePath,
@@ -88,9 +90,7 @@ export function projectSubagentRunForSessionList(entry: SubagentRunRecord): Suba
       ? {
           delivery: {
             status: entry.delivery.status,
-            ...(entry.delivery.disposition === "intentional_non_delivery"
-              ? { disposition: entry.delivery.disposition }
-              : {}),
+            ...(entry.delivery.disposition ? { disposition: entry.delivery.disposition } : {}),
             ...(entry.delivery.suspendedAt !== undefined
               ? { suspendedAt: entry.delivery.suspendedAt }
               : {}),
@@ -107,6 +107,7 @@ export function projectSubagentRunForMaintenance(
   return {
     runId: entry.runId,
     childSessionKey: entry.childSessionKey,
+    ...(entry.childAgentId ? { childAgentId: entry.childAgentId } : {}),
     requesterSessionKey: entry.requesterSessionKey,
     createdAt: entry.createdAt,
     cleanupCompletedAt: entry.cleanupCompletedAt,

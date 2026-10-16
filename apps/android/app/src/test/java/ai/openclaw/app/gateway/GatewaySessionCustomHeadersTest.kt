@@ -217,7 +217,7 @@ class GatewaySessionCustomHeadersTest {
         token = "gateway-secret".takeIf { authField == "token" },
         bootstrapToken = null,
         password = "gateway-secret".takeIf { authField == "password" },
-        tls = GatewayTlsParams(true, null, false, endpoint.stableId, requireSystemTrust = true),
+        tls = GatewayTlsParams(expectedFingerprint = tls.second.takeIf { authField == "password" }, requireSystemTrust = true),
         options =
           GatewayConnectOptions(
             role = "operator",
@@ -558,7 +558,6 @@ class GatewaySessionCustomHeadersTest {
         .Builder()
         .addInterceptor(
           GatewayPreparingPlaybackInterceptor(
-            policy = GatewayPlaybackRetryPolicy(maxElapsedMs = 100L, initialDelayMs = 0L, maxDelayMs = 0L),
             nowMs = { nowMs++ },
             sleepMs = {},
           ),
@@ -596,9 +595,8 @@ class GatewaySessionCustomHeadersTest {
         .Builder()
         .addInterceptor(
           GatewayPreparingPlaybackInterceptor(
-            policy = GatewayPlaybackRetryPolicy(maxElapsedMs = 2L, initialDelayMs = 1L, maxDelayMs = 1L),
             nowMs = { nowMs },
-            sleepMs = { delayMs -> nowMs += delayMs + 1L },
+            sleepMs = { nowMs = 120_001L },
           ),
         ).build()
 
@@ -622,7 +620,7 @@ class GatewaySessionCustomHeadersTest {
     val prefs = SecurePrefs(app, securePrefsOverride = securePrefsBacking)
     val stableId = "manual|gateway.example|443"
     val endpoint = GatewayEndpoint.manual(host = "gateway.example", port = 443)
-    val tls = GatewayTlsParams(required = true, expectedFingerprint = "aa".repeat(32), allowTOFU = false, stableId = stableId)
+    val tls = GatewayTlsParams(expectedFingerprint = "aa".repeat(32))
 
     prefs.saveGatewayCustomHeaders(stableId, mapOf("CF-Access-Client-Id" to "client-id"))
     securePrefsBacking
@@ -784,13 +782,13 @@ class GatewaySessionCustomHeadersTest {
       try {
         gatewayPlatformTrustOverrideForTests =
           syntheticPlatformTrust(trusted.certificate, wrongHostname.certificate)
-        for (scenario in listOf("wrong-password", "same-redirect", "foreign-redirect", "gateway-role", "wrong-hostname", "untrusted-ca")) {
+        for (scenario in listOf("wrong-password", "same-redirect", "foreign-redirect", "gateway-role", "wrong-hostname", "untrusted-ca", "pinned-wrong-hostname", "pinned-untrusted-ca", "pin-mismatch")) {
           val server =
             MockWebServer().apply {
               useHttps(
                 when (scenario) {
-                  "untrusted-ca" -> untrusted.first
-                  "wrong-hostname" -> wrongHostname.first
+                  "untrusted-ca", "pinned-untrusted-ca" -> untrusted.first
+                  "wrong-hostname", "pinned-wrong-hostname" -> wrongHostname.first
                   else -> trusted.first
                 },
                 false,
@@ -877,7 +875,17 @@ class GatewaySessionCustomHeadersTest {
                   permissions = emptyMap(),
                   client = GatewayClientInfo("openclaw-android-test", "Android Test", "test", "android", "node", "test", "android", "test"),
                 ),
-              tls = GatewayTlsParams(true, null, false, endpoint.stableId, requireSystemTrust = true),
+              tls =
+                GatewayTlsParams(
+                  expectedFingerprint =
+                    when (scenario) {
+                      "pinned-wrong-hostname" -> wrongHostname.second
+                      "pinned-untrusted-ca" -> untrusted.second
+                      "pin-mismatch" -> "aa".repeat(32)
+                      else -> null
+                    },
+                  requireSystemTrust = true,
+                ),
             )
             val observed = withTimeout(TEST_TIMEOUT_MS) { failure.await() }
             assertTrue("$scenario must pause: ${observed.first.code} ${observed.first.message}", observed.second)
@@ -888,7 +896,7 @@ class GatewaySessionCustomHeadersTest {
               "gateway-role" -> assertEquals("AUTH_SCOPE_MISMATCH", observed.first.details?.code)
               else -> assertEquals("PROXY_TLS_FAILURE", observed.first.code)
             }
-            if (scenario in listOf("wrong-hostname", "untrusted-ca")) {
+            if (scenario in listOf("wrong-hostname", "untrusted-ca", "pinned-wrong-hostname", "pinned-untrusted-ca", "pin-mismatch")) {
               assertEquals(0, server.requestCount)
             } else {
               assertEquals("Basic c3ludGhldGljOnByb3h5", server.takeRequest().getHeader("Authorization"))
@@ -945,7 +953,7 @@ class GatewaySessionCustomHeadersTest {
               permissions = emptyMap(),
               client = GatewayClientInfo("openclaw-android-test", "Android Test", "test", "android", "node", "test", "android", "test"),
             ),
-          tls = GatewayTlsParams(true, tls.second, false, endpoint.stableId),
+          tls = GatewayTlsParams(expectedFingerprint = tls.second),
         )
         val observed = withTimeout(TEST_TIMEOUT_MS) { failure.await() }
         assertEquals("PROXY_AUTH_REQUIRED", observed.first.code)
@@ -1555,7 +1563,6 @@ class GatewaySessionCustomHeadersTest {
             .newBuilder()
             .addInterceptor(
               GatewayPreparingPlaybackInterceptor(
-                policy = GatewayPlaybackRetryPolicy(initialDelayMs = 1),
                 sleepMs = { valid.set(false) },
               ),
             ).build()
@@ -1633,7 +1640,7 @@ class GatewaySessionCustomHeadersTest {
           permissions = emptyMap(),
           client = GatewayClientInfo("openclaw-android-test", "Android Test", "test", "android", "node", "test", "android", "test"),
         ),
-      tls = GatewayTlsParams(required = true, expectedFingerprint = "aa".repeat(32), allowTOFU = false, stableId = endpoint.stableId, requireSystemTrust = requireSystemTrust),
+      tls = GatewayTlsParams(expectedFingerprint = "aa".repeat(32), requireSystemTrust = requireSystemTrust),
     )
   }
 
