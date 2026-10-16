@@ -1,6 +1,7 @@
 package ai.openclaw.app
 
 import ai.openclaw.app.chat.AndroidClientDatabases
+import ai.openclaw.app.chat.ChatComposerOwner
 import ai.openclaw.app.chat.ChatMessage
 import ai.openclaw.app.chat.ChatMessageContent
 import ai.openclaw.app.chat.ChatSessionEntry
@@ -30,12 +31,19 @@ import ai.openclaw.app.node.InvokeDispatcher
 import ai.openclaw.app.protocol.OpenClawCameraCommand
 import ai.openclaw.app.protocol.OpenClawLocationCommand
 import ai.openclaw.app.protocol.OpenClawTalkCommand
+import ai.openclaw.app.ui.GatewayConnectConfig
+import ai.openclaw.app.ui.GatewayConnectPlan
+import ai.openclaw.app.ui.GatewayProxyAuthAction
+import ai.openclaw.app.ui.GatewaySavedAuthAction
 import ai.openclaw.app.ui.canFinishOnboarding
 import ai.openclaw.app.voice.MicCaptureManager
 import ai.openclaw.app.voice.TalkModeManager
 import android.Manifest
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import androidx.lifecycle.SavedStateHandle
+import androidx.lifecycle.ViewModelStore
+import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -200,9 +208,81 @@ class GatewayBootstrapAuthTest {
     }
 
   @Test
+  fun failedSetupProxyCommitPreservesGatewayAuthAndDraft() = assertRejectedSetupProxyPreservesState(headerConflict = false)
+
+  @Test
+  fun conflictingSetupProxyHeaderPreservesGatewayAuthAndDraft() = assertRejectedSetupProxyPreservesState(headerConflict = true)
+
+  private fun assertRejectedSetupProxyPreservesState(headerConflict: Boolean) =
+    runBlocking {
+      val app = RuntimeEnvironment.getApplication() as NodeApp
+      val previousRuntime = app.peekRuntime()
+      val backing = ProxyCommitFailingPreferences(app.getSharedPreferences("setup-proxy-${UUID.randomUUID()}", android.content.Context.MODE_PRIVATE))
+      val prefs = SecurePrefs(app, securePrefsOverride = backing)
+      val transcriptCache = RecordingTranscriptCache()
+      val runtime = trackRuntime(NodeRuntime(app, prefs, transcriptCache))
+      neutralizeColdStartAutoConnect(runtime)
+      val viewModels = ViewModelStore()
+      try {
+        val endpoint = GatewayEndpoint.manual("gateway.example", 443, true)
+        prefs.gatewayRegistry.upsert(gatewayRegistryEntry(endpoint, null))
+        val credentials = GatewayCredentials(token = "dummy-old-token", bootstrapToken = "dummy-old-setup", password = "dummy-old-password")
+        prefs.saveGatewayCredentials(endpoint.stableId, credentials)
+        val deviceId = DeviceIdentityStore.withPrefs(app, prefs).loadOrCreate().deviceId
+        val tokens = DeviceAuthStore(prefs)
+        for (role in listOf("node", "operator")) {
+          assertTrue(tokens.saveToken(endpoint.stableId, deviceId, role, "dummy-old-$role"))
+        }
+        if (headerConflict) {
+          prefs.saveGatewayCustomHeaders(endpoint.stableId, mapOf("Authorization" to "Bearer dummy-existing"))
+        } else {
+          assertEquals(GatewayProxySaveResult.SAVED, prefs.saveGatewayProxyCredentials(endpoint, GatewayProxyCredentials("dummy-user", "dummy-old-proxy")))
+          backing.failProxyCommits = true
+        }
+        writeField(app, "runtimeInstance", runtime)
+        val viewModel = MainViewModel(app, prefs, SavedStateHandle())
+        viewModels.put("setup-proxy", viewModel)
+        val draft = ChatDraft("Keep this draft", ChatDraftPlacement.Replace, ChatComposerOwner(endpoint.stableId, "main", "main"))
+        viewModel.setChatDraft(draft)
+        val previousJobs =
+          viewModel.viewModelScope.coroutineContext.job.children
+            .toSet()
+
+        viewModel.saveGatewayConfigAndConnect(
+          GatewayConnectPlan(
+            config = GatewayConnectConfig(endpoint.host, endpoint.port, true, "", "dummy-new-setup", "", endpoint.contextPath),
+            savedAuthAction = GatewaySavedAuthAction.REPLACE_SETUP,
+            proxyAuthAction = GatewayProxyAuthAction.Save(GatewayProxyCredentials("dummy-user", "dummy-new-proxy")),
+          ),
+        )
+        drainWithMainLooper {
+          viewModel.viewModelScope.coroutineContext.job.children
+            .filterNot(previousJobs::contains)
+            .toList()
+            .joinAll()
+        }
+
+        assertTrue(runtime.statusText.value.startsWith("Could not save proxy login."))
+        assertEquals(credentials, prefs.loadGatewayCredentials(endpoint.stableId))
+        for (role in listOf("node", "operator")) {
+          assertEquals("dummy-old-$role", tokens.loadToken(endpoint.stableId, deviceId, role))
+        }
+        assertSame(draft, viewModel.chatDraft.value)
+        assertTrue(transcriptCache.clearedGatewayIds.isEmpty())
+        assertEquals(if (headerConflict) null else "dummy-old-proxy", prefs.loadGatewayProxyCredentials(endpoint)?.password)
+      } finally {
+        viewModels.clear()
+        writeField(app, "runtimeInstance", previousRuntime)
+      }
+    }
+
+  @Test
   fun proxyCredentialEditsDrainBothRolesPreservePairingAndRetireStreaming() =
     runBlocking {
       val server = MockWebServer()
+      val app = RuntimeEnvironment.getApplication() as NodeApp
+      val previousRuntime = app.peekRuntime()
+      val viewModels = ViewModelStore()
       try {
         val keyPair = KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }.generateKeyPair()
         val algorithm = AlgorithmIdentifier(PKCSObjectIdentifiers.sha256WithRSAEncryption, DERNull.INSTANCE)
@@ -333,7 +413,35 @@ class GatewayBootstrapAuthTest {
         assertEquals("native-operator-token", tokens.loadToken(endpoint.stableId, identity.deviceId, "operator"))
         assertEquals("native-node-token", tokens.loadToken(endpoint.stableId, identity.deviceId, "node"))
         acceptedHeader.set(replacementHeader)
-        assertEquals(GatewayProxySaveResult.SAVED, runtime.updateGatewayProxyCredentials(endpoint, GatewayProxyCredentials("synthetic", "second")))
+        withTimeout(8_000) { runtime.gatewayConnectionHandoff.first { !it.pending } }
+        writeField(app, "runtimeInstance", runtime)
+        val viewModel = MainViewModel(app, prefs, SavedStateHandle())
+        viewModels.put("proxy-addition", viewModel)
+        viewModel.openGatewayAddition()
+        val addition = requireNotNull(viewModel.gatewayAdditionRequest.value)
+        val previousJobs =
+          viewModel.viewModelScope.coroutineContext.job.children
+            .toSet()
+        // Exercise the admitted Add Gateway operation, not the editor's standalone predicate.
+        viewModel.saveGatewayConfigAndConnect(
+          GatewayConnectPlan(
+            config = GatewayConnectConfig(endpoint.host, endpoint.port, true, "", "", "", endpoint.contextPath),
+            savedAuthAction = GatewaySavedAuthAction.PRESERVE,
+            proxyAuthAction = GatewayProxyAuthAction.Save(GatewayProxyCredentials("synthetic", "second")),
+          ),
+          addition = addition,
+        )
+        drainWithMainLooper {
+          withTimeout(8_000) {
+            viewModel.viewModelScope.coroutineContext.job.children
+              .filterNot(previousJobs::contains)
+              .toList()
+              .joinAll()
+          }
+        }
+        assertNull(viewModel.gatewayAdditionRequest.value)
+        assertEquals("second", prefs.loadGatewayProxyCredentials(endpoint)?.password)
+        assertEquals(endpoint.stableId, prefs.gatewayRegistry.activeEntry()?.stableId)
         withTimeout(8_000) { replacementReady.await() }
         withTimeout(8_000) { runtime.gatewayConnectionDisplay.first { it.statusText == "Connected" } }
         assertFalse(oldOperator.isCurrent())
@@ -384,6 +492,8 @@ class GatewayBootstrapAuthTest {
         assertEquals(GatewayProxySaveResult.SAVED, prefs.saveGatewayProxyCredentials(endpoint, GatewayProxyCredentials("synthetic-other", "other")))
         assertEquals("synthetic-other", prefs.loadGatewayProxyCredentials(endpoint)?.username)
       } finally {
+        viewModels.clear()
+        writeField(app, "runtimeInstance", previousRuntime)
         try {
           closeFixtures()
         } finally {

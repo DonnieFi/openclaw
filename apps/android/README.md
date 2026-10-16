@@ -24,8 +24,17 @@ OpenClaw Android is the officially released Google Play app. It connects to an O
 Manual setup and QR/setup-code onboarding confirm the destination before connecting.
 Choose **Proxy authentication → HTTP Basic → Configure** to enter the reverse-proxy
 username and password. Gateway tokens, passwords, permissions, and phone pairing
-remain separate. Existing entries expose **Edit** under **Settings → Gateway**;
-saving or removing proxy login preserves pairing.
+remain separate. Existing entries expose **Edit** under **Settings → Gateway**.
+Replacing the same proxy account’s password or removing its login preserves pairing.
+
+Once a Gateway has connected or received a device token, its proxy username is
+locked. Removing the login removes its password, not that account binding. To use
+a different proxy login, choose **Forget Gateway** and add it again. This changes
+the ingress credentials, not the Gateway’s user-isolation boundary. Forget
+clears Android-local Gateway credentials, role tokens, certificate pins, and cached
+chat data. It does not replace the phone’s device identity, revoke server-side
+pairing, or erase server history. Re-adding the Gateway can therefore reuse its
+server-side pairing and retrieve history that the Gateway still permits.
 
 Proxy login uses encrypted preferences scoped to that HTTPS authority and mount.
 The actual connection requires Android CA trust and hostname verification; any
@@ -34,10 +43,30 @@ follow redirects. Proxy rejection stops automatic password retries; network fail
 have at most two retries, and phone pairing waits stop after two minutes.
 
 The reverse proxy must authenticate Basic itself and strip its Authorization header
-before forwarding to the Gateway. Trusted identity forwarding and Gateway roles
-remain administrator-owned. This change does not alter Caddy or Gateway configuration.
-Native scanner/Caddy/Gateway end-to-end compatibility must be verified separately
-before deployment; unit fixtures do not establish that behavior.
+before forwarding to the Gateway. Basic authentication is an ingress gate, not
+a Gateway user identity. Separately configured trusted identity forwarding can
+identify callers and apply operator roles, but neither it nor different Basic
+usernames isolates their history within one shared Gateway. Android does not
+create identity headers.
+
+OpenClaw supports one trust boundary per Gateway: a single operator or a mutually
+trusting team. For users who must not access one another’s history, tools,
+credentials, or files, use separate Gateways with isolated state and appropriate
+OS-user or host isolation. Enforce access to each Gateway at the proxy on every
+HTTP and WebSocket route. See the
+[Gateway trust model](https://docs.openclaw.ai/gateway/security/trust-model#scope-one-trust-boundary-per-gateway).
+
+Server-side revocation remains Gateway-administrator-owned. This feature does
+not alter Caddy or Gateway configuration. Validate the actual proxy, identity
+forwarding, permissions, and pairing behavior for the deployment; a successful
+proxy login alone does not prove user isolation.
+
+Source icons use the Gateway’s authenticated `controlUi.linkPreview` RPC instead
+of a second HTTP authentication attempt. The Gateway’s bounded, cached preview
+loader may fetch the public site’s root page and preview assets to find its icon;
+Android sends no proxy or Gateway credentials to that site. The existing
+`automaticallyFetchFavicons` setting still controls these requests. If the Gateway
+does not expose that RPC or returns no usable icon, Android keeps its generic icon.
 
 ## Open in Android Studio
 

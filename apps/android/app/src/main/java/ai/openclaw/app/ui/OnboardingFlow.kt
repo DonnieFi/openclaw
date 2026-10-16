@@ -467,7 +467,6 @@ fun OnboardingFlow(
     val pendingTrust by viewModel.pendingGatewayTrust.collectAsState()
     val startAtGatewaySetup by viewModel.startOnboardingAtGatewaySetup.collectAsState()
     var step by rememberSaveable { mutableStateOf(OnboardingStep.Welcome) }
-    var confirmedGatewayPlan by remember { mutableStateOf<GatewayConnectPlan?>(null) }
     var pendingProxyReview by remember { mutableStateOf<GatewayConnectPlan?>(null) }
     var pendingProxyInputSource by remember { mutableStateOf(OnboardingGatewayInputSource.Manual) }
     var pendingProxyName by remember { mutableStateOf<String?>(null) }
@@ -701,7 +700,6 @@ fun OnboardingFlow(
             setupScanErrorCode = OnboardingErrorCode.None
             attemptedGatewayName = pendingProxyName
             lastGatewayInputSource = pendingProxyInputSource
-            confirmedGatewayPlan = plan.copy(proxyAuthAction = GatewayProxyAuthAction.Keep)
             viewModel.saveGatewayConfigAndConnect(plan.copy(proxyAuthAction = proxyAction))
             proxyAction = GatewayProxyAuthAction.Keep
             step = OnboardingStep.Recovery
@@ -1053,12 +1051,32 @@ fun OnboardingFlow(
           onBack = ::goBack,
           onRetry = viewModel::refreshGatewayConnection,
           onConfigureProxy = {
-            val plan = confirmedGatewayPlan
-            if (plan == null) {
-              viewModel.openGatewaySettings()
+            // Connection admission persists the target before connecting. Read its non-secret
+            // endpoint after recreation rather than retaining the credential-bearing setup plan.
+            val target = viewModel.pairedGateways.value.firstOrNull { it.stableId == viewModel.activeGatewayStableId.value }
+            val host = target?.host
+            val port = target?.port
+            if (target == null || host == null || port == null) {
+              step = OnboardingStep.Gateway
             } else {
-              pendingProxyReview = plan.copy(config = plan.config.copy(bootstrapToken = "", token = "", password = "", setupExpiresAtMs = null), savedAuthAction = GatewaySavedAuthAction.PRESERVE)
-              proxyAction = GatewayProxyAuthAction.Keep
+              connectGateway(
+                plan =
+                  GatewayConnectPlan(
+                    config =
+                      GatewayConnectConfig(
+                        host = host,
+                        port = port,
+                        tls = target.tls,
+                        contextPath = target.contextPath,
+                        bootstrapToken = "",
+                        token = "",
+                        password = "",
+                      ),
+                    savedAuthAction = GatewaySavedAuthAction.PRESERVE,
+                  ),
+                inputSource = lastGatewayInputSource,
+                attemptedName = attemptedGatewayName,
+              )
             }
           },
           onContinue = ::continueFromGatewayPairing,

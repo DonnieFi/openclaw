@@ -828,7 +828,7 @@ class GatewaySession(
   ): GatewayLoadedImage? {
     if (!config.automaticallyFetchFavicons) return null
     val conn = readyConnection(expectedEndpointStableId) ?: return null
-    val image = conn.loadSourceFavicon(config, hostname, guardRequestEnqueue(conn, withEnqueue))
+    val image = conn.loadSourceFavicon(hostname, guardRequestEnqueue(conn, withEnqueue))
     return synchronized(lifecycleLock) { image.takeIf { currentConnection === conn && conn.isReady() } }
   }
 
@@ -1054,14 +1054,12 @@ class GatewaySession(
               )
             }
           }
-        } catch (error: GatewayExternalAuthorizationException) {
-          throw error
-        } catch (error: IllegalArgumentException) {
+        } catch (_: IllegalArgumentException) {
           throw GatewayExternalAuthorizationException(
             "The saved proxy login does not match this destination. Edit its proxy authentication settings.",
             "PROXY_AUTH_CONFIGURATION",
           )
-        } catch (error: IllegalStateException) {
+        } catch (_: IllegalStateException) {
           throw GatewayExternalAuthorizationException(
             "The saved proxy login does not match this destination. Edit its proxy authentication settings.",
             "PROXY_AUTH_CONFIGURATION",
@@ -1087,8 +1085,7 @@ class GatewaySession(
         }
       }
     private val client: OkHttpClient = buildClient()
-    private val sourceFaviconLoader by lazy { GatewaySourceFaviconLoader(client) }
-    private var controlUiReadCredentials: List<String> = emptyList()
+    private val sourceFaviconLoader by lazy { GatewaySourceFaviconLoader() }
     private val listener = Listener()
     private var socket: WebSocket? = null
 
@@ -1237,19 +1234,25 @@ class GatewaySession(
     }
 
     suspend fun loadSourceFavicon(
-      config: GatewaySourcePreviewConfig,
       hostname: String,
       withEnqueue: (() -> Unit) -> Unit,
-    ): GatewayLoadedImage? =
-      sourceFaviconLoader.load(
-        gatewayUrl = "${if (tlsConfig != null) "https" else "http"}://${formatGatewayAuthority(target.endpoint.host, target.endpoint.port)}",
-        basePath = config.basePath,
-        hostname = hostname,
-        headers = mediaTransportHeaders(),
-        credentials = controlUiReadCredentials,
-        usesBasicProxyGrant = hasBasicProxyAuthorization,
-        withEnqueue = withEnqueue,
-      )
+    ): GatewayLoadedImage? {
+      // Older Gateways without page-preview RPC keep the globe. Never replace
+      // proxy Basic credentials or export Gateway credentials to an image URL.
+      val method = "controlUi.linkPreview"
+      if (method !in advertisedMethods) return null
+      return try {
+        sourceFaviconLoader.load(hostname) { url ->
+          val params = buildJsonObject { put("url", JsonPrimitive(url)) }
+          val response = request(method, params, timeoutMs = 15_000, withEnqueue = withEnqueue)
+          if (response.ok) response.payloadJson?.let(::parseJsonOrNull).asObjectOrNull() else null
+        }
+      } catch (_: GatewayRequestDefinitiveFailure) {
+        null
+      } catch (_: GatewayRequestOutcomeUnknown) {
+        null
+      }
+    }
 
     fun bufferedMedia(
       bytes: ByteArray,
@@ -1877,11 +1880,6 @@ class GatewaySession(
       val deviceToken = authObj?.get("deviceToken").asStringOrNull()
       val authRole = authObj?.get("role").asStringOrNull() ?: target.options.role
       val authSessionCap = authObj?.get("sessionCap").asStringOrNull()
-      controlUiReadCredentials =
-        listOfNotNull(deviceToken, selectedAuth.authDeviceToken, selectedAuth.authToken, selectedAuth.authPassword)
-          .map(String::trim)
-          .filter(String::isNotEmpty)
-          .distinct()
       val authScopes =
         authObj
           ?.get("scopes")

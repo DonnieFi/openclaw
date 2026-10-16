@@ -16,6 +16,9 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.OkHttpClient
@@ -61,6 +64,7 @@ import java.security.KeyStore
 import java.security.MessageDigest
 import java.security.Signature
 import java.security.cert.CertificateFactory
+import java.util.Base64
 import java.util.Date
 import java.util.UUID
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -105,133 +109,115 @@ private class NoopDeviceAuthStore : DeviceAuthTokenStore {
 @Config(sdk = [34])
 class GatewaySessionCustomHeadersTest {
   @Test
-  fun sourceFaviconsUseReadAuthContextPathBoundsAndCurrentConnection() =
+  fun sourceFaviconsUseAuthenticatedRpcBehindBasicProxy() =
     runBlocking {
-      assertSourceFavicons(contextPath = "/socket", basePath = "/ui")
-    }
-
-  @Test
-  fun sourceFaviconsPreserveNativeProxyMountsWithoutDuplicatingExplicitUiPaths() =
-    runBlocking {
-      for ((contextPath, basePath, encodedPath) in listOf(
-        Triple("/openclaw", "", "/openclaw"),
-        Triple("/tenant%20mount", "", "/tenant%20mount"),
-        Triple("/openclaw", "/openclaw", "/openclaw"),
-        Triple("/socket", "/team space", "/team%20space"),
-        Triple("/socket", "/知识", "/%E7%9F%A5%E8%AF%86"),
-        Triple("/socket", "/team%20space", "/team%20space"),
-      )) {
-        assertSourceFavicons(contextPath, basePath, expectedBasePath = encodedPath)
+      for (authField in listOf("token", "password")) {
+        assertSourceFavicons(authField)
       }
     }
 
   @Test
-  fun sourceFaviconsPreserveLegacyBasicHeadersAndGatewayBearerFallback() =
-    runBlocking {
-      for (proxyAcceptsRead in listOf(true, false)) {
-        assertSourceFavicons(contextPath = "/socket", basePath = "/ui", proxyAcceptsRead = proxyAcceptsRead)
-      }
-    }
+  fun sourceFaviconsWithoutAdvertisedRpcDoNotFetch() = runBlocking { assertSourceFavicons("token", advertisePreview = false) }
 
   private suspend fun assertSourceFavicons(
-    contextPath: String,
-    basePath: String,
-    proxyAcceptsRead: Boolean? = null,
-    expectedBasePath: String = basePath.ifEmpty { contextPath },
+    authField: String,
+    advertisePreview: Boolean = true,
   ) = coroutineScope {
     val connected = CompletableDeferred<Unit>()
-    val slowStarted = CompletableDeferred<Unit>()
-    val releaseSlow = java.util.concurrent.CountDownLatch(1)
-    val iconRequests = ConcurrentLinkedQueue<RecordedRequest>()
+    val connectParams = CompletableDeferred<JsonObject>()
+    val slowResponse = CompletableDeferred<() -> Unit>()
+    val previewParams = ConcurrentLinkedQueue<JsonObject>()
+    val response = AtomicReference(""""ok":true,"payload":{"faviconDataUrl":"data:image/png;base64,AQIDBA=="}""")
     val imageBytes = byteArrayOf(1, 2, 3, 4)
-    val tls = if (proxyAcceptsRead != null) sourceFaviconTls() else null
+    val remoteImage =
+      MockWebServer().apply {
+        enqueue(MockResponse().setHeader("Content-Type", "image/png").setBody(Buffer().write(imageBytes)))
+        start()
+      }
+    val tls = sourceFaviconTls()
     val proxyAuthorization = "Basic c3ludGhldGljOnByb3h5"
-    val expectedAuthorization = if (proxyAcceptsRead == true) listOf(proxyAuthorization) else listOfNotNull(proxyAuthorization.takeIf { tls != null }) + listOf("Bearer issued-device-token", "Bearer shared-token")
-    val trap = MockWebServer().apply { start() }
     val server =
       MockWebServer().apply {
-        tls?.let { useHttps(it.first, false) }
+        useHttps(tls.first, false)
         dispatcher =
           object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
-              if (request.path == contextPath) {
-                if (tls != null && request.getHeader("Authorization") != proxyAuthorization) return MockResponse().setResponseCode(401)
-                return MockResponse().withWebSocketUpgrade(
-                  object : WebSocketListener() {
-                    override fun onOpen(
-                      webSocket: WebSocket,
-                      response: Response,
-                    ) {
-                      webSocket.send(CONNECT_CHALLENGE_FRAME)
-                    }
+              // The proxy requires Basic on every HTTP request; only the WebSocket
+              // connect payload can independently authenticate the Gateway.
+              if (request.getHeader("Authorization") != proxyAuthorization || request.path != "/tenant%20mount") {
+                return MockResponse().setResponseCode(401)
+              }
+              return MockResponse().withWebSocketUpgrade(
+                object : WebSocketListener() {
+                  override fun onOpen(
+                    webSocket: WebSocket,
+                    response: Response,
+                  ) {
+                    webSocket.send(CONNECT_CHALLENGE_FRAME)
+                  }
 
-                    override fun onMessage(
-                      webSocket: WebSocket,
-                      text: String,
-                    ) {
-                      val frame = Json.parseToJsonElement(text).jsonObject
-                      if (frame["method"]?.jsonPrimitive?.content == "connect") {
-                        val id = frame.getValue("id").jsonPrimitive.content
-                        webSocket.send("""{"type":"res","id":"$id","ok":true,"payload":{"auth":{"deviceToken":"issued-device-token","role":"operator","scopes":["operator.read"]}}}""")
+                  override fun onMessage(
+                    webSocket: WebSocket,
+                    text: String,
+                  ) {
+                    val frame = Json.parseToJsonElement(text).jsonObject
+                    val id = frame.getValue("id").jsonPrimitive.content
+                    val params = frame.getValue("params").jsonObject
+                    when (frame.getValue("method").jsonPrimitive.content) {
+                      "connect" -> {
+                        connectParams.complete(params)
+                        val auth = params.getValue("auth").jsonObject
+                        if (auth[authField]?.jsonPrimitive?.content != "gateway-secret" || params["role"]?.jsonPrimitive?.content != "operator") {
+                          webSocket.send("""{"type":"res","id":"$id","ok":false,"error":{"code":"INVALID_REQUEST","message":"Gateway authentication rejected"}}""")
+                          return
+                        }
+                        val methods = if (advertisePreview) """["controlUi.linkPreview"]""" else "[]"
+                        webSocket.send("""{"type":"res","id":"$id","ok":true,"payload":{"features":{"methods":$methods},"auth":{"deviceToken":"issued-device-token","role":"operator","scopes":["operator.read"]}}}""")
+                      }
+
+                      "controlUi.linkPreview" -> {
+                        previewParams.add(params)
+                        val result = response.get()
+                        val send = {
+                          webSocket.send("""{"type":"res","id":"$id",$result}""")
+                          Unit
+                        }
+                        if (params["url"]?.jsonPrimitive?.content == "https://slow.example/") {
+                          slowResponse.complete(send)
+                        } else {
+                          send()
+                        }
                       }
                     }
-                  },
-                )
-              }
-              iconRequests.add(request)
-              if (request.path?.startsWith("$expectedBasePath/__openclaw__/link-favicon/") != true) return MockResponse().setResponseCode(404)
-              val authorization = request.getHeader("Authorization")
-              if (proxyAcceptsRead == true && authorization != proxyAuthorization) return MockResponse().setResponseCode(401)
-              if (proxyAcceptsRead != true && authorization != "Bearer shared-token") return MockResponse().setResponseCode(401)
-              return when {
-                request.path?.endsWith("redirect.example") == true -> {
-                  MockResponse().setResponseCode(302).setHeader("Location", trap.url("/must-not-load"))
-                }
-
-                request.path?.endsWith("large.example") == true -> {
-                  MockResponse().setHeader("Content-Type", "image/png").setChunkedBody(Buffer().write(ByteArray(65_537)), 4_096)
-                }
-
-                else -> {
-                  if (request.path?.endsWith("slow.example") == true) {
-                    slowStarted.complete(Unit)
-                    releaseSlow.await(8, java.util.concurrent.TimeUnit.SECONDS)
                   }
-                  MockResponse().setHeader("Content-Type", "image/x-icon").setBody(Buffer().write(imageBytes))
-                }
-              }
+                },
+              )
             }
           }
         start()
       }
-    val sessionScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    val endpoint = GatewayEndpoint.manual("127.0.0.1", server.port, tlsEnabled = tls != null, contextPath = contextPath)
+    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    val endpoint = GatewayEndpoint.manual("127.0.0.1", server.port, tlsEnabled = true, contextPath = "/tenant%20mount")
+    val grant = GatewayBasicProxyAuthorization(endpoint, GatewayProxyCredentials("synthetic", "proxy"), isCurrent = { true })
     val session =
       GatewaySession(
-        scope = sessionScope,
+        scope = scope,
         identityStore = testDeviceIdentityStore(RuntimeEnvironment.getApplication()),
         deviceAuthStore = NoopDeviceAuthStore(),
         onConnected = { connected.complete(Unit) },
         onDisconnected = {},
         onEvent = { _, _ -> },
-        customHeadersProvider = {
-          check(tls != null) { "Cleartext favicon reads must not access proxy credentials" }
-          mapOf("authorization" to proxyAuthorization, "X-Proxy-Route" to "source-proof")
-        },
+        ingressAuthorizationProvider = { grant },
       )
-    val config =
-      resolveGatewaySourcePreviewConfig(
-        Json.parseToJsonElement("""{"gateway":{"controlUi":{"basePath":"$basePath","automaticallyFetchFavicons":true}}}""").jsonObject,
-        server.url(contextPath).toString(),
-        1L,
-      )!!
+    val config = requireNotNull(resolveGatewaySourcePreviewConfig(Json.parseToJsonElement("{}").jsonObject, server.url("/tenant%20mount").toString(), 1L))
     try {
+      gatewayPlatformTrustOverrideForTests = syntheticPlatformTrust(tls.certificate)
       session.connect(
         endpoint = endpoint,
-        token = "shared-token",
-        bootstrapToken = "never-http-bootstrap",
-        password = null,
-        tls = tls?.let { GatewayTlsParams(required = true, expectedFingerprint = it.second, allowTOFU = false, stableId = endpoint.stableId) },
+        token = "gateway-secret".takeIf { authField == "token" },
+        bootstrapToken = null,
+        password = "gateway-secret".takeIf { authField == "password" },
+        tls = GatewayTlsParams(true, null, false, endpoint.stableId, requireSystemTrust = true),
         options =
           GatewayConnectOptions(
             role = "operator",
@@ -239,38 +225,106 @@ class GatewaySessionCustomHeadersTest {
             caps = emptyList(),
             commands = emptyList(),
             permissions = emptyMap(),
-            client = GatewayClientInfo("openclaw-android-test", "Android Test", "1.0.0-test", "android", "ui", "source-test", "android", "test"),
+            client = GatewayClientInfo("openclaw-android-test", "Android Test", "test", "android", "ui", "source-test", "android", "test"),
           ),
       )
       withTimeout(TEST_TIMEOUT_MS) { connected.await() }
+      val auth = connectParams.await().getValue("auth").jsonObject
+      assertEquals("gateway-secret", auth.getValue(authField).jsonPrimitive.content)
+      assertNull(auth[if (authField == "token") "password" else "token"])
+      assertEquals(proxyAuthorization, server.takeRequest().getHeader("Authorization"))
 
       suspend fun load(
         host: String,
         current: GatewaySourcePreviewConfig = config,
       ) = session.loadSourceFavicon(endpoint.stableId, current, host) { it() }
+
       assertNull(load("disabled.example", config.copy(automaticallyFetchFavicons = false)))
-      assertTrue(iconRequests.isEmpty())
+      if (!advertisePreview) {
+        assertNull(load("example.com"))
+        assertTrue(previewParams.isEmpty())
+        assertEquals(1, server.requestCount)
+        return@coroutineScope
+      }
+      assertTrue(previewParams.isEmpty())
       assertArrayEquals(imageBytes, load("example.com")?.bytes)
-      assertEquals(expectedAuthorization, iconRequests.map { it.getHeader("Authorization") })
-      assertTrue(iconRequests.all { it.path == "$expectedBasePath/__openclaw__/link-favicon/example.com" })
-      if (tls != null) assertTrue(iconRequests.all { it.getHeader("X-Proxy-Route") == "source-proof" })
+      assertEquals("image/png", load("example.com")?.mimeType)
+      assertEquals(1, previewParams.size)
+      assertEquals("https://example.com/", previewParams.single()["url"]?.jsonPrimitive?.content)
+      assertEquals(1, server.requestCount)
+
+      for (host in listOf("example.com/path", "user@example.com", "example.com:443", "example.com?token=secret", "example.com#fragment", "a".repeat(254))) {
+        assertNull(load(host))
+      }
+      assertEquals(1, previewParams.size)
+      assertNull(session.loadSourceFavicon(endpoint.stableId, config, "retired.example") { throw GatewayRequestNotEnqueued("config retired") })
+      assertEquals(1, previewParams.size)
+
+      val maximumBytes = ByteArray(65_536) { 1 }
+      val cases =
+        listOf(
+          "ico" to "data:image/x-icon;base64,AQIDBA==",
+          "limit" to ("data:image/png;base64," + Base64.getEncoder().encodeToString(maximumBytes)),
+          "encoded-large" to ("data:image/png;base64," + "A".repeat(87_385)),
+          "decoded-large" to ("data:image/png;base64," + Base64.getEncoder().encodeToString(ByteArray(65_537))),
+          "malformed" to "data:image/png;base64,%%%%",
+          "empty" to "data:image/png;base64,",
+          "svg" to "data:image/svg+xml;base64,AQIDBA==",
+          "remote" to remoteImage.url("/favicon.ico").toString(),
+          "missing" to null,
+        )
+      for ((name, dataUrl) in cases) {
+        val payload =
+          buildJsonObject {
+            if (dataUrl != null) put("faviconDataUrl", JsonPrimitive(dataUrl))
+            put("imageDataUrl", JsonPrimitive("data:image/png;base64,AQIDBA=="))
+          }
+        response.set(""""ok":true,"payload":$payload""")
+        val image = load("$name.example")
+        when (name) {
+          "ico" -> {
+            assertArrayEquals(imageBytes, image?.bytes)
+            assertEquals("image/x-icon", image?.mimeType)
+          }
+
+          "limit" -> {
+            assertArrayEquals(maximumBytes, image?.bytes)
+          }
+
+          else -> {
+            assertNull(name, image)
+          }
+        }
+        val count = previewParams.size
+        load("$name.example")
+        assertEquals(count, previewParams.size)
+      }
+      for ((host, code) in listOf("unsupported-rpc.example" to "INVALID_REQUEST", "denied.example" to "FORBIDDEN")) {
+        response.set(""""ok":false,"error":{"code":"$code","message":"Preview unavailable"}""")
+        val count = previewParams.size
+        assertNull(load(host))
+        assertEquals(count + 1, previewParams.size)
+      }
+      response.set(""""ok":true,"payload":{"faviconDataUrl":"data:image/png;base64,AQIDBA=="}""")
+      repeat(32) { assertArrayEquals(imageBytes, load("cache$it.example")?.bytes) }
       assertArrayEquals(imageBytes, load("example.com")?.bytes)
-      assertEquals(expectedAuthorization.size, iconRequests.size)
-      assertNull(load("redirect.example"))
-      assertEquals(0, trap.requestCount)
-      assertNull(load("large.example"))
+      assertEquals(2, previewParams.count { it["url"]?.jsonPrimitive?.content == "https://example.com/" })
+      assertTrue(previewParams.all { it.keys == setOf("url") })
+      assertEquals(1, server.requestCount)
+      assertEquals(0, remoteImage.requestCount)
+
       val stale = async { load("slow.example") }
-      withTimeout(TEST_TIMEOUT_MS) { slowStarted.await() }
+      val sendStale = withTimeout(TEST_TIMEOUT_MS) { slowResponse.await() }
       session.disconnect()
-      releaseSlow.countDown()
+      sendStale()
       assertNull(withTimeout(TEST_TIMEOUT_MS) { stale.await() })
       assertNull(load("example.com"))
     } finally {
-      releaseSlow.countDown()
-      session.disconnect()
-      sessionScope.cancel()
+      session.disconnectAndJoin()
+      scope.cancel()
       server.shutdown()
-      trap.shutdown()
+      remoteImage.shutdown()
+      gatewayPlatformTrustOverrideForTests = null
     }
   }
 
@@ -730,7 +784,7 @@ class GatewaySessionCustomHeadersTest {
       try {
         gatewayPlatformTrustOverrideForTests =
           syntheticPlatformTrust(trusted.certificate, wrongHostname.certificate)
-        for (scenario in listOf("wrong-password", "same-redirect", "foreign-redirect", "gateway-role", "wrong-hostname", "untrusted-ca", "favicon-rejected")) {
+        for (scenario in listOf("wrong-password", "same-redirect", "foreign-redirect", "gateway-role", "wrong-hostname", "untrusted-ca")) {
           val server =
             MockWebServer().apply {
               useHttps(
@@ -745,7 +799,6 @@ class GatewaySessionCustomHeadersTest {
             }
           val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
           val failure = CompletableDeferred<Pair<GatewaySession.ErrorShape, Boolean>>()
-          val connected = CompletableDeferred<Unit>()
           val host = "127.0.0.1"
           val endpoint = GatewayEndpoint.manual(host, server.port, tlsEnabled = true)
           val grant = GatewayBasicProxyAuthorization(endpoint, GatewayProxyCredentials("synthetic", "proxy"), isCurrent = { true })
@@ -754,13 +807,7 @@ class GatewaySessionCustomHeadersTest {
               scope = scope,
               identityStore = testDeviceIdentityStore(RuntimeEnvironment.getApplication()),
               deviceAuthStore = NoopDeviceAuthStore(),
-              onConnected = {
-                if (scenario == "favicon-rejected") {
-                  connected.complete(Unit)
-                } else {
-                  throw AssertionError("A rejected connection must not become ready")
-                }
-              },
+              onConnected = { throw AssertionError("A rejected connection must not become ready") },
               onDisconnected = {},
               onEvent = { _, _ -> },
               onConnectFailure = { error, paused -> failure.complete(error to paused) },
@@ -781,7 +828,7 @@ class GatewaySessionCustomHeadersTest {
                   MockResponse().setResponseCode(302).setHeader("Location", foreign.url("/must-not-leak"))
                 }
 
-                "gateway-role", "favicon-rejected" -> {
+                "gateway-role" -> {
                   MockResponse().withWebSocketUpgrade(
                     object : WebSocketListener() {
                       override fun onOpen(
@@ -805,11 +852,7 @@ class GatewaySessionCustomHeadersTest {
                             .jsonPrimitive.content,
                         )
                         val id = frame.getValue("id").jsonPrimitive.content
-                        if (scenario == "favicon-rejected") {
-                          webSocket.send("""{"type":"res","id":"$id","ok":true,"payload":{"auth":{"deviceToken":"issued-device-token","role":"node","scopes":[]}}}""")
-                        } else {
-                          webSocket.send("""{"type":"res","id":"$id","ok":false,"error":{"code":"INVALID_REQUEST","message":"synthetic-secret","details":{"code":"AUTH_SCOPE_MISMATCH"}}}""")
-                        }
+                        webSocket.send("""{"type":"res","id":"$id","ok":false,"error":{"code":"INVALID_REQUEST","message":"synthetic-secret","details":{"code":"AUTH_SCOPE_MISMATCH"}}}""")
                       }
                     },
                   )
@@ -836,22 +879,6 @@ class GatewaySessionCustomHeadersTest {
                 ),
               tls = GatewayTlsParams(true, null, false, endpoint.stableId, requireSystemTrust = true),
             )
-            if (scenario == "favicon-rejected") {
-              withTimeout(TEST_TIMEOUT_MS) { connected.await() }
-              server.enqueue(MockResponse().setResponseCode(401).setHeader("WWW-Authenticate", "Basic realm=\"gateway\""))
-              val config =
-                requireNotNull(
-                  resolveGatewaySourcePreviewConfig(
-                    Json.parseToJsonElement("{}").jsonObject,
-                    server.url("/").toString(),
-                    1L,
-                  ),
-                )
-              assertNull(session.loadSourceFavicon(endpoint.stableId, config, "example.com") { it() })
-              assertEquals(2, server.requestCount)
-              repeat(2) { assertEquals("Basic c3ludGhldGljOnByb3h5", server.takeRequest().getHeader("Authorization")) }
-              continue
-            }
             val observed = withTimeout(TEST_TIMEOUT_MS) { failure.await() }
             assertTrue("$scenario must pause: ${observed.first.code} ${observed.first.message}", observed.second)
             assertTrue(!observed.first.message.contains("synthetic-secret"))

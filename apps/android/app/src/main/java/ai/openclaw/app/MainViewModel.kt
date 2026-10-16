@@ -917,12 +917,14 @@ class MainViewModel private constructor(
           },
         operation = operation,
         replaceAuth = replacesSavedAuth,
-        replacesProxyAuth = plan.proxyAuthAction != GatewayProxyAuthAction.Keep,
+        persistProxyAuth =
+          if (plan.proxyAuthAction == GatewayProxyAuthAction.Keep) {
+            null
+          } else {
+            { check(prefs.saveGatewayProxyCredentials(endpoint, proxyCredentials) == GatewayProxySaveResult.SAVED) }
+          },
         clearComposer = { clearChatComposerGateway(endpoint.stableId) },
       ) {
-        if (plan.proxyAuthAction != GatewayProxyAuthAction.Keep) {
-          check(prefs.saveGatewayProxyCredentials(endpoint, proxyCredentials) == GatewayProxySaveResult.SAVED)
-        }
         prefs.setManualEnabled(true)
         prefs.setManualHost(config.host)
         prefs.setManualPort(config.port)

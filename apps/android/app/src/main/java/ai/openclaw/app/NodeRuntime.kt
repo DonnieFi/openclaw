@@ -3708,36 +3708,46 @@ class NodeRuntime private constructor(
     explicitAuth: GatewayConnectAuth?,
     operation: GatewayConnectionOperation,
     replaceAuth: Boolean,
-    replacesProxyAuth: Boolean = false,
+    persistProxyAuth: (() -> Unit)? = null,
     clearComposer: suspend () -> Unit,
     persistConfig: () -> Unit,
   ): Boolean {
     val intent = beginGatewayReplacementOperation(operation) ?: return false
     return connectGateway(endpoint, explicitAuth, intent) {
-      if (replacesProxyAuth && (connectedEndpoint?.stableId == endpoint.stableId || connectingEndpoint?.stableId == endpoint.stableId)) {
+      if (persistProxyAuth != null && (connectedEndpoint?.stableId == endpoint.stableId || connectingEndpoint?.stableId == endpoint.stableId)) {
         drainPrimaryGatewaySessions()
         if (!intent()) return@connectGateway false
       }
+      // Reject a failed proxy write before retiring paired auth, cached chats, or drafts.
+      val proxySaved =
+        synchronized(gatewayLifecycleIntentLock) {
+          operation() && (persistProxyAuth == null || persistGatewayConfigOrReportFailure(persistProxyAuth))
+        }
+      if (!proxySaved) return@connectGateway false
       if (replaceAuth) {
         if (!resetGatewaySetupAuthLocked(endpoint.stableId, operation)) return@connectGateway false
         clearComposer()
       }
       synchronized(gatewayLifecycleIntentLock) {
         if (!operation()) return@synchronized false
-        try {
-          persistConfig()
-          resumeSecondaryProxyConnectionLocked(endpoint.stableId)
-          true
-        } catch (_: IllegalArgumentException) {
-          setStandaloneGatewayStatus("Could not save proxy login. Confirm the HTTPS destination and try again.")
-          false
-        } catch (_: IllegalStateException) {
-          setStandaloneGatewayStatus("Could not save proxy login. Check secure storage and existing proxy headers, then try again.")
-          false
-        }
+        if (!persistGatewayConfigOrReportFailure(persistConfig)) return@synchronized false
+        resumeSecondaryProxyConnectionLocked(endpoint.stableId)
+        true
       }
     }
   }
+
+  private fun persistGatewayConfigOrReportFailure(persistConfig: () -> Unit): Boolean =
+    try {
+      persistConfig()
+      true
+    } catch (_: IllegalArgumentException) {
+      setStandaloneGatewayStatus("Could not save proxy login. Confirm the HTTPS destination and try again.")
+      false
+    } catch (_: IllegalStateException) {
+      setStandaloneGatewayStatus("Could not save proxy login. Check secure storage and existing proxy headers, then try again.")
+      false
+    }
 
   private suspend fun connectGateway(
     endpoint: GatewayEndpoint,
@@ -5510,7 +5520,12 @@ class NodeRuntime private constructor(
     val intent =
       synchronized(gatewayLifecycleIntentLock) {
         if (!isCurrent() || !matchesGatewayProxyEditDestination(endpoint)) return GatewayProxySaveResult.FAILED
-        gatewayLifecycleIntent(advanceGatewayLifecycleIntent(retiringGatewayId = stableId), isCurrent)
+        // Reuse Add Gateway's admitted owner instead of retiring its captured generation.
+        if (isCurrent is GatewayConnectionOperation) {
+          beginGatewayReplacementOperation(isCurrent) ?: return GatewayProxySaveResult.FAILED
+        } else {
+          gatewayLifecycleIntent(advanceGatewayLifecycleIntent(retiringGatewayId = stableId), isCurrent)
+        }
       }
     return gatewaySwitchMutex.withLock {
       if (!intent() || !matchesGatewayProxyEditDestination(endpoint)) return@withLock GatewayProxySaveResult.FAILED
