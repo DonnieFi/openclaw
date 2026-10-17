@@ -14,22 +14,14 @@
     "extensions": [
       "./index.ts"
     ],
-    "install": {
-      "clawhubSpec": "clawhub:@openclaw/cloudflare-clef",
-      "npmSpec": "@openclaw/cloudflare-clef",
-      "defaultChoice": "npm",
-      "minHostVersion": ">=2026.10.4"
-    },
-    "compat": {
-      "pluginApi": ">=2026.10.4"
-    },
     "build": {
       "bundledDist": false,
       "openclawVersion": "2026.10.4"
     },
     "release": {
-      "publishToClawHub": true,
-      "publishToNpm": true
+      "publishToClawHub": false,
+      "publishToNpm": false
     }
-  }
+  },
+  "private": true
 }

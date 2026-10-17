@@ -17,6 +17,11 @@ This source-checkout plugin is an unpublished candidate. It needs a host with th
 prepared V2 Decision provider API. No chat model, image-generation provider, or
 Cloudflare management tools are registered.
 
+The package is private and npm/ClawHub publication is disabled until a released
+host with the required V2 exports has been verified. OpenClaw `2026.10.4` does
+not export that API; it is not a supported installation target for this candidate.
+Official repository ownership and publication remain a maintainer decision.
+
 ## Setup
 
 Install the Cloudflare CLI separately. This transport was tested with
@@ -154,6 +159,20 @@ Choice, and Score questions in each request:
 
 ```bash
 OPENCLAW_LIVE_TEST=1 OPENCLAW_LIVE_CF_CLEF=1 pnpm test:live -- extensions/cloudflare-clef/provider.live.test.ts
+```
+
+For production-boundary proof, the registered-host suite loads the actual plugin
+and a small consumer plugin that calls `api.runtime.decisions.evaluateV2`.
+It exercises prepared model/catalog/auth resolution, a real CLI image evaluation,
+caller cancellation, and rejection after consumer disposal or provider reload.
+An observing executable delegates to the real `cf` process and records dispatch
+counts. The suite asserts that rejected authority starts no additional CLI process,
+and that cancellation settles child processes and removes private request files.
+OpenClaw state, agent files, and config paths are isolated from the running Gateway;
+only the CLI's existing login is used. No inference or authority predicates are mocked.
+
+```bash
+OPENCLAW_LIVE_TEST=1 OPENCLAW_LIVE_CF_CLEF=1 pnpm test:live -- src/decisions/cloudflare-clef.live.test.ts
 ```
 
 The live tests require an existing CLI login and incur provider charges. If the

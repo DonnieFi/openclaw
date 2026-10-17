@@ -74,7 +74,7 @@ describeLive("Cloudflare Clef CLI typed decisions", () => {
         if (coverage?.type === "score") {
           expect(coverage.score).toBeGreaterThan(1);
         }
-        console.log(JSON.stringify({ model, kind, ...result.result }));
+        console.log(JSON.stringify({ kind, ...result.result }));
       },
       35000,
     );

@@ -2,8 +2,8 @@ import { writeFile, readFile, stat, access } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DecisionBatchV2, DecisionProviderContextV2 } from "openclaw/plugin-sdk/decisions";
+import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, expect, it, vi } from "vitest";
-import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { toWire, fromWire, MODEL_IDS } from "./codec.js";
 import manifest from "./openclaw.plugin.json" with { type: "json" };
 import { createDecisionProvider } from "./provider.js";
@@ -56,7 +56,7 @@ function context(binaryPath?: string, model = "clef"): DecisionProviderContextV2
 const provider = createDecisionProvider();
 
 it.each(MODEL_IDS)("preserves typed evidence and estimates for %s", (model) => {
-  expect(toWire(batch, model)?.questions.red.type).toBe("noul");
+  expect(toWire(batch, model)?.questions.red?.type).toBe("noul");
   expect(toWire(batch, model)?.model).toBe(model);
   const result = fromWire({ success: true, result: wire(model) }, batch, model);
   expect(result?.answers).toEqual({

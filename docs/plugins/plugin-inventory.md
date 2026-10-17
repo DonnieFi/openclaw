@@ -200,7 +200,7 @@ Each entry lists the package, distribution route, and description.
 
 ## Official external packages
 
-98 plugins
+97 plugins
 
 - **[acpx](/plugins/reference/acpx)** (`@openclaw/acpx`) - npm or ClawHub: `@openclaw/acpx`. OpenClaw ACP runtime backend with plugin-owned session and transport management.
 
@@ -227,8 +227,6 @@ Each entry lists the package, distribution route, and description.
 - **[clickclack](/plugins/reference/clickclack)** (`@openclaw/clickclack`) - npm or ClawHub: `@openclaw/clickclack`. OpenClaw ClickClack channel plugin.
 
 - **[cloudflare-ai-gateway](/plugins/reference/cloudflare-ai-gateway)** (`@openclaw/cloudflare-ai-gateway-provider`) - npm or ClawHub: `@openclaw/cloudflare-ai-gateway-provider`. Adds Cloudflare AI Gateway model provider support to OpenClaw.
-
-- **[cloudflare-clef](/plugins/reference/cloudflare-clef)** (`@openclaw/cloudflare-clef`) - npm or ClawHub: `@openclaw/cloudflare-clef`. Typed text and image decisions through the authenticated Cloudflare CLI.
 
 - **[codex](/plugins/reference/codex)** (`@openclaw/codex`) - npm or ClawHub: `@openclaw/codex`. Codex app-server harness and native session catalog.
 
@@ -400,7 +398,9 @@ Each entry lists the package, distribution route, and description.
 
 ## Source checkout only
 
-3 plugins
+4 plugins
+
+- **[cloudflare-clef](/plugins/reference/cloudflare-clef)** (`@openclaw/cloudflare-clef`) - source checkout only. Typed text and image decisions through the authenticated Cloudflare CLI.
 
 - **[qa-channel](/plugins/reference/qa-channel)** (`@openclaw/qa-channel`) - source checkout only. OpenClaw QA synthetic channel plugin.
 
