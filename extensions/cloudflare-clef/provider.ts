@@ -1,8 +1,7 @@
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { writeFile } from "node:fs/promises";
 import type { DecisionProviderV2, ProviderDecisionOutcomeV2 } from "openclaw/plugin-sdk/decisions";
 import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { tempWorkspace, resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/temp-path";
 import { fromWire, toWire } from "./codec.js";
 import { runCli } from "./transport.js";
 
@@ -75,10 +74,12 @@ export function createDecisionProvider(): DecisionProviderV2 {
       }
       const config =
         asOptionalRecord(context.config.plugins?.entries?.["cloudflare-clef"]?.config) ?? {};
-      let dir: string | undefined;
+      const workspace = await tempWorkspace({
+        rootDir: resolvePreferredOpenClawTmpDir(),
+        prefix: "openclaw-clef-",
+      });
       try {
-        dir = await mkdtemp(join(tmpdir(), "openclaw-clef-"));
-        const body = join(dir, "request.json");
+        const body = workspace.path("request.json");
         await writeFile(body, JSON.stringify(wire), { mode: 0o600, flag: "wx" });
         const args = ["ai", "run", `@cf/cloudflare/${context.model.id}`, "--body", `@${body}`];
         if (typeof config.profile === "string") {
@@ -97,7 +98,7 @@ export function createDecisionProvider(): DecisionProviderV2 {
           typeof config.binaryPath === "string" ? config.binaryPath : "cf",
           args,
           {
-            cwd: dir,
+            cwd: workspace.dir,
             signal: context.signal,
             timeoutMs: Math.max(1, Math.min(30000, remaining)),
             env: cliEnvironment(config.accountId),
@@ -138,9 +139,7 @@ export function createDecisionProvider(): DecisionProviderV2 {
           return unavailable("invalid-response");
         }
       } finally {
-        if (dir) {
-          await rm(dir, { recursive: true, force: true });
-        }
+        await workspace.cleanup();
       }
     },
   };

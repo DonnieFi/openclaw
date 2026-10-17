@@ -83,7 +83,8 @@ export function runCli(
       clearTimeout(forceTimer);
       options.signal.removeEventListener("abort", stop);
       if (options.signal.aborted) {
-        reject(options.signal.reason);
+        const reason: unknown = options.signal.reason;
+        reject(reason instanceof Error ? reason : new Error("Clef evaluation aborted"));
         return;
       }
       if (spawnError) {

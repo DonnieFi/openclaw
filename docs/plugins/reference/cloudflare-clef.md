@@ -15,7 +15,7 @@ Typed text and image decisions through the authenticated Cloudflare CLI.
 ## Distribution
 
 - Package: `@openclaw/cloudflare-clef`
-- Install route: npm or ClawHub: `@openclaw/cloudflare-clef`
+- Install route: source checkout only
 
 ## Surface
 

@@ -230,7 +230,8 @@
               }
             }
           }
-        ]
+        ],
+        "authScope": "plugin"
       }
     }
   },
@@ -283,5 +284,11 @@
         "confidence": "provider-specific"
       }
     }
+  ],
+  "syntheticAuthRefs": [
+    "cloudflare-clef"
+  ],
+  "nonSecretAuthMarkers": [
+    "cloudflare-cli"
   ]
 }
