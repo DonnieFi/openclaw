@@ -72,34 +72,31 @@ All three routes support Boolean, Choice, and Score questions. The plugin keeps
 provider probabilities, confidence, and fractional scores without thresholding,
 normalizing, or recomputing them. Boolean questions map to Clef's `noul` wire type.
 
-The core `decision_evaluate` tool currently accepts text and JSON state. Native
-image input is available to plugin consumers through
-`api.runtime.decisions.evaluateV2`:
+The core `decision_evaluate` tool dispatches this image through the selected
+V2 provider. Pass `contractVersion: 2` and tagged state. Omit
+`contractVersion` for legacy text or JSON state. An inline image is one PNG,
+JPEG, or WebP data URI:
 
-```ts
-const outcome = await api.runtime.decisions.evaluateV2(
-  {
-    state: {
-      type: "image",
-      dataUri: suppliedImageDataUri,
-      text: "Evaluate the supplied image only.",
-    },
-    questions: {
-      red: {
-        type: "boolean",
-        instructions: "Is the large square red?",
-      },
-    },
+```json
+{
+  "contractVersion": 2,
+  "state": {
+    "type": "image",
+    "dataUri": "data:image/png;base64,...",
+    "text": "Evaluate the supplied image only."
   },
-  {
-    agentId,
-    purpose: "image.color-check",
-    rubricVersion: "1",
-    timeoutMs: 30000,
-    signal,
-  },
-);
+  "questions": {
+    "red": {
+      "type": "boolean",
+      "instructions": "Is the large square red?"
+    }
+  }
+}
 ```
+
+That input is inline image bytes. A local screenshot file path is a separate
+admission feature and is not accepted here. Plugin code can pass the same
+state object to `api.runtime.decisions.evaluateV2`.
 
 The selected Decision model, not the request, chooses which Clef route runs.
 Image input must be an embedded PNG, JPEG, or WebP data URI, at most four MiB
