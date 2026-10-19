@@ -2,6 +2,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { registerAgentHarness } from "../agents/harness/registry.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { resolveInitialDoctorHealthContributions } from "../flows/doctor-health-contributions-initial.js";
+import type { HealthCheckContext } from "../flows/health-checks.js";
+import { buildUpdateRehearsalPathEnv } from "../infra/update-rehearsal-paths.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import {
   getActivePluginRegistry,
@@ -11,6 +14,38 @@ import {
 import { collectNodeHostingPreconditionFindings as findingsFor } from "./doctor-node-hosting-preconditions.js";
 
 const originalPluginRegistry = getActivePluginRegistry();
+
+function completeRehearsalEnv(root = "/synthetic/rehearsal"): NodeJS.ProcessEnv {
+  return {
+    ...buildUpdateRehearsalPathEnv(root),
+    OPENCLAW_UPDATE_IN_PROGRESS: "1",
+    OPENCLAW_SERVICE_REPAIR_POLICY: "external",
+    OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_SERVICE_REPAIR: "0",
+    OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_ACTIVATION: "0",
+  };
+}
+
+async function nodeHostingFindings(cfg: OpenClawConfig, env?: NodeJS.ProcessEnv) {
+  const contribution = resolveInitialDoctorHealthContributions({
+    runStructuredHealthRepairs: async () => {},
+    runGatewayConfigHealth: async () => {},
+    runAuthProfileMigration: async () => {},
+    runAuthProfileHealth: async () => {},
+    runGatewayAuthHealth: async () => {},
+    runLegacyStateHealth: async () => {},
+  }).find((entry) => entry.id === "doctor:node-hosting-preconditions");
+  const check = contribution?.healthChecks[0];
+  if (!check) {
+    throw new Error("node-hosting contribution is missing");
+  }
+  const ctx: HealthCheckContext = {
+    mode: "lint",
+    runtime: {} as HealthCheckContext["runtime"],
+    cfg,
+    env,
+  };
+  return check.detect(ctx);
+}
 
 function runtimeAgent(id: string, model = "openai/gpt-5.6-sol") {
   return { model, models: { [model]: { agentRuntime: { id } } } };
@@ -187,6 +222,35 @@ describe("node-hosting preconditions", () => {
     const cfg = { ...healthyBase, agents: { defaults: runtimeAgent("codex") } };
     expect(await findingsFor(cfg)).toEqual([]);
     expect(getActivePluginRegistry()).toBeNull();
+  });
+
+  it("suppresses synthetic loopback onboarding during a complete update rehearsal", async () => {
+    const cfg: OpenClawConfig = {
+      ...healthyBase,
+      gateway: { ...healthyBase.gateway, bind: "loopback" },
+    };
+    const live = await nodeHostingFindings(cfg);
+    expect(live.map((finding) => finding.requirement)).toEqual(["node-onboarding-url"]);
+
+    const updateInProgressOnly = await nodeHostingFindings(cfg, {
+      OPENCLAW_UPDATE_IN_PROGRESS: "1",
+    });
+    expect(updateInProgressOnly.map((finding) => finding.requirement)).toEqual([
+      "node-onboarding-url",
+    ]);
+
+    const rehearsed = await nodeHostingFindings(cfg, completeRehearsalEnv());
+    expect(rehearsed).toEqual([]);
+
+    const trustedProxy: OpenClawConfig = {
+      ...healthyBase,
+      gateway: { bind: "loopback", auth: { mode: "trusted-proxy" } },
+    };
+    expect(
+      (await nodeHostingFindings(trustedProxy, completeRehearsalEnv())).map(
+        (finding) => finding.requirement,
+      ),
+    ).toEqual(["machine-client-auth"]);
   });
 
   it("accepts gateway.publicOrigin for loopback onboarding", async () => {

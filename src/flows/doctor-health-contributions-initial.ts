@@ -143,7 +143,15 @@ export function resolveInitialDoctorHealthContributions(params: {
           async detect(ctx) {
             const { collectNodeHostingPreconditionFindings } =
               await import("../commands/doctor-node-hosting-preconditions.js");
-            return collectNodeHostingPreconditionFindings(ctx.cfg);
+            const { resolveUpdateRehearsalRoot } =
+              await import("../infra/update-rehearsal-paths.js");
+            const findings = await collectNodeHostingPreconditionFindings(ctx.cfg);
+            // Rehearsal forces gateway.bind to loopback. That synthetic ingress is not
+            // the operator's config, so the onboarding-url warning stays out of update lint.
+            if (!resolveUpdateRehearsalRoot(ctx.env ?? process.env)) {
+              return findings;
+            }
+            return findings.filter((finding) => finding.requirement !== "node-onboarding-url");
           },
         },
       },
