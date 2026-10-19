@@ -10,8 +10,15 @@ Audio/video, multiple images, list, sort, and tags are not supported.
 
 This candidate requires the prepared V2 Decision provider API, including
 `DecisionProviderV2` and `api.runtime.decisions.evaluateV2`. The published
-OpenClaw `2026.10.4` package does not provide this contract. Its version number
-must not be used as a compatibility floor for this plugin.
+OpenClaw `2026.10.4` and `2026.10.10-beta.2` packages do not provide this contract.
+Neither version number is a compatibility floor for this plugin. A newer beta
+label alone does not establish V2 support.
+
+On these V1-only hosts, manifest discovery can show the plugin as loaded and its
+models in the Decision picker even though the provider cannot register. Native
+`decision_evaluate` then returns `unavailable/not-configured`. Check the host's
+Decision contract before changing CLI credentials or reinstalling the plugin.
+Do not relabel the V2 provider as V1: its prepared auth and model context differ.
 
 No compatible released host floor has been established. This package is private,
 and both npm and ClawHub publication are disabled. The package deliberately omits

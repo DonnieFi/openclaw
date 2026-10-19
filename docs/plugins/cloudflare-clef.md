@@ -18,9 +18,31 @@ prepared V2 Decision provider API. No chat model, image-generation provider, or
 Cloudflare management tools are registered.
 
 The package is private and npm/ClawHub publication is disabled until a released
-host with the required V2 exports has been verified. OpenClaw `2026.10.4` does
-not export that API; it is not a supported installation target for this candidate.
+host with the required V2 exports has been verified. OpenClaw `2026.10.4` and
+`2026.10.10-beta.2` do not export that API; neither is a supported installation
+target for this candidate. A newer beta label alone does not establish V2 support.
 Official repository ownership and publication remain a maintainer decision.
+
+## Host compatibility
+
+| Host                                      | Decision contract | Candidate support                                           |
+| ----------------------------------------- | ----------------- | ----------------------------------------------------------- |
+| Published `2026.10.4`                     | V1 only           | Unsupported                                                 |
+| Published `2026.10.10-beta.2`             | V1 only           | Unsupported                                                 |
+| Matching source checkout with prepared V2 | V2                | Source-only; verify SDK and native-tool dispatch separately |
+
+On a V1-only host, manifest discovery can show this plugin as loaded and its models
+in the Decision picker while runtime registration is absent. Native
+`decision_evaluate` then returns `unavailable/not-configured`. For that combination,
+check the host's exported Decision SDK and provider registration before changing
+CLI credentials or reinstalling the plugin. Do not change `contractVersion` to 1:
+the V2 provider requires prepared model, credential, and live-authority context
+that V1 does not supply.
+
+Successful source-host inference is not a Gateway upgrade or soak test. Keep the
+running release unchanged while testing a compatible candidate with isolated
+state, ports, and channel delivery. Verify state migration and recovery before
+using that candidate with production state.
 
 ## Setup
 
@@ -161,7 +183,8 @@ OPENCLAW_LIVE_TEST=1 OPENCLAW_LIVE_CF_CLEF=1 pnpm test:live -- extensions/cloudf
 For production-boundary proof, the registered-host suite loads the actual plugin
 and a small consumer plugin that calls `api.runtime.decisions.evaluateV2`.
 It exercises prepared model/catalog/auth resolution, a real CLI image evaluation,
-caller cancellation, and rejection after consumer disposal or provider reload.
+the native `decision_evaluate` tool, caller cancellation, and rejection after
+caller revocation, consumer disposal, or provider reload.
 An observing executable delegates to the real `cf` process and records dispatch
 counts. The suite asserts that rejected authority starts no additional CLI process,
 and that cancellation settles child processes and removes private request files.
