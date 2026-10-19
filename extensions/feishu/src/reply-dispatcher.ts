@@ -6,7 +6,6 @@ import {
 } from "openclaw/plugin-sdk/channel-inbound";
 import {
   createChannelMessageReplyPipeline,
-  formatChannelProgressDraftLineForEntry,
   resolveChannelPreviewStreamMode,
   resolveChannelStreamingBlockEnabled,
 } from "openclaw/plugin-sdk/channel-outbound";
@@ -59,6 +58,7 @@ import {
 import { FeishuStreamingSession, mergeStreamingText } from "./streaming-card.js";
 import { queueFeishuStreamingUpdate } from "./streaming-update.js";
 import { resolveReceiveIdType } from "./targets.js";
+import { formatFeishuToolProgressLine } from "./tool-progress-line.js";
 import { addTypingIndicator, removeTypingIndicator, type TypingIndicatorState } from "./typing.js";
 
 function mergeStreamingFinalText(
@@ -1391,7 +1391,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
               return updateStreamingStatusLine(statusLine, payload.phase !== "end");
             }
             const { kind: itemKind, ...item } = payload;
-            const statusLineLocal = formatChannelProgressDraftLineForEntry(account.config, {
+            const statusLineLocal = formatFeishuToolProgressLine(account.config, {
               event: "item",
               itemKind,
               ...item,
