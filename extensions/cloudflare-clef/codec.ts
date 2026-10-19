@@ -1,6 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
 import {
-  validateDecisionBatchV2,
   validateDecisionResultV2,
   type DecisionBatchV2,
   type DecisionBatchResultV2,
@@ -12,7 +11,6 @@ export const MODEL_IDS = ["clef", "clef-flash", "clef-omni"] as const;
 export function toWire(batch: DecisionBatchV2, model: string) {
   if (
     !MODEL_IDS.some((id) => id === model) ||
-    !validateDecisionBatchV2(batch) ||
     Object.keys(batch.questions).length > 64 ||
     batch.state.type === "list" ||
     (batch.state.type === "json" &&

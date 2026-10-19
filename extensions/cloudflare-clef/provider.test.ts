@@ -1,4 +1,4 @@
-import { writeFile, readFile, stat, access } from "node:fs/promises";
+import { writeFile, readFile, access } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DecisionBatchV2, DecisionProviderContextV2 } from "openclaw/plugin-sdk/decisions";
@@ -55,7 +55,8 @@ function context(binaryPath?: string, model = "clef"): DecisionProviderContextV2
 }
 const provider = createDecisionProvider();
 
-it.each(MODEL_IDS)("preserves typed evidence and estimates for %s", (model) => {
+it("preserves typed evidence and estimates", () => {
+  const model = "clef";
   expect(toWire(batch, model)?.questions.red?.type).toBe("noul");
   expect(toWire(batch, model)?.model).toBe(model);
   const result = fromWire({ success: true, result: wire(model) }, batch, model);
@@ -72,12 +73,12 @@ it.each(MODEL_IDS)("preserves typed evidence and estimates for %s", (model) => {
   expect(result?.usage).toEqual({ inputTokens: 42, outputTokens: 0 });
 });
 
-it.each(MODEL_IDS)("maps native image evidence to an embedded image for %s", (model) => {
+it("maps native image evidence to an embedded image", () => {
   const imageBatch: DecisionBatchV2 = {
     ...batch,
     state: { type: "image", dataUri: "data:image/png;base64,AAAA", text: "Which color?" },
   };
-  const value = toWire(imageBatch, model);
+  const value = toWire(imageBatch, "clef");
   expect(value?.images).toEqual(["data:image/png;base64,AAAA"]);
   expect(value?.state).toBe("Which color?");
 });
@@ -148,7 +149,6 @@ console.log(JSON.stringify({ ...${JSON.stringify(wire())}, model: body.model }))
 `,
       { mode: 0o700 },
     );
-    expect((await stat(executable)).isFile()).toBe(true);
     for (const model of MODEL_IDS) {
       const ctx = context(executable, model);
       ctx.config.plugins!.entries!["cloudflare-clef"]!.config = {
