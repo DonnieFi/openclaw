@@ -3,6 +3,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { createAdmittedRunOperatorAuthority } from "../agents/admitted-run-context.js";
+import { createDecisionTool } from "../agents/tools/decision-tool.js";
 import { withGatewayToolCallerIdentity } from "../agents/tools/gateway-caller-context.js";
 import {
   clearRuntimeConfigSnapshot,
@@ -150,15 +151,13 @@ child.on("close", code => process.exit(code ?? 1));
         signal: source.signal,
         assertCurrent: () => source.signal.throwIfAborted(),
       });
+      const caller = {
+        agentId: "main",
+        sessionKey: "agent:main:clef-proof",
+        operatorAuthority,
+      };
       const asCaller = (id: string) =>
-        withGatewayToolCallerIdentity(
-          {
-            agentId: "main",
-            sessionKey: "agent:main:clef-proof",
-            operatorAuthority,
-          },
-          () => tool.execute(id, batch),
-        );
+        withGatewayToolCallerIdentity(caller, () => tool.execute(id, batch));
       const allowed = await asCaller("allowed");
       const outcome = allowed.details as DecisionOutcomeV2;
       expect(outcome, JSON.stringify(outcome)).toMatchObject({
@@ -179,11 +178,43 @@ child.on("close", code => process.exit(code ?? 1));
         }),
       );
 
+      // Picker discovery and SDK dispatch do not prove the core tool bridge.
+      const nativeTool = createDecisionTool("main", { config });
+      if (!nativeTool) {
+        throw new Error("Expected the configured native Decision tool");
+      }
+      const asNativeCaller = (id: string) =>
+        withGatewayToolCallerIdentity(caller, () =>
+          nativeTool.execute(id, { contractVersion: 2, ...batch }),
+        );
+      const native = await asNativeCaller("allowed-native");
+      const nativeOutcome = native.details as DecisionOutcomeV2;
+      expect(nativeOutcome, JSON.stringify(nativeOutcome)).toMatchObject({
+        status: "ok",
+        result: { model: "clef-flash", answers: { red: { type: "boolean" } } },
+        provenance: { providerId: "cloudflare-clef" },
+      });
+      if (nativeOutcome.status !== "ok" || nativeOutcome.result.answers.red?.type !== "boolean") {
+        throw new Error("Expected native Boolean result");
+      }
+      expect(nativeOutcome.result.answers.red.probabilityTrue).toBeGreaterThan(0.5);
+      expect(await receipts()).toHaveLength(2);
+      console.log(
+        JSON.stringify({
+          case: "allowed-native-dispatch",
+          outcome: native.details,
+          cliDispatches: 1,
+        }),
+      );
+
       source.abort(new Error("synthetic operator source revoked"));
       await expect(async () => asCaller("revoked-caller")).rejects.toThrow(
         "synthetic operator source revoked",
       );
-      expect(await receipts()).toHaveLength(1);
+      await expect(async () => asNativeCaller("revoked-native-caller")).rejects.toThrow(
+        "synthetic operator source revoked",
+      );
+      expect(await receipts()).toHaveLength(2);
       console.log(
         JSON.stringify({
           case: "revoked-caller-source",
@@ -199,7 +230,7 @@ child.on("close", code => process.exit(code ?? 1));
         (error: unknown) => ({ error }),
       );
       try {
-        await vi.waitFor(async () => expect(await receipts()).toHaveLength(2), { timeout: 15000 });
+        await vi.waitFor(async () => expect(await receipts()).toHaveLength(3), { timeout: 15000 });
         controller.abort(new Error("synthetic caller cancellation"));
         expect(await settled).toMatchObject({
           error: { message: "synthetic caller cancellation" },
@@ -230,7 +261,7 @@ child.on("close", code => process.exit(code ?? 1));
       await expect(async () => tool.execute("revoked-consumer", batch)).rejects.toThrow(
         /reloaded or disabled/,
       );
-      expect(await receipts()).toHaveLength(2);
+      expect(await receipts()).toHaveLength(3);
       console.log(
         JSON.stringify({ case: "disposed-consumer", rejected: true, additionalCliDispatches: 0 }),
       );
@@ -249,7 +280,7 @@ child.on("close", code => process.exit(code ?? 1));
         config,
       );
       expect(revoked).toEqual({ status: "unavailable", reason: "retiring" });
-      expect(await receipts()).toHaveLength(2);
+      expect(await receipts()).toHaveLength(3);
       console.log(
         JSON.stringify({ case: "revoked-provider", outcome: revoked, additionalCliDispatches: 0 }),
       );
