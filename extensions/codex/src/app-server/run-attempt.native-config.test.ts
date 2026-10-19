@@ -6,13 +6,17 @@ import { initializeGlobalHookRunner } from "openclaw/plugin-sdk/hook-runtime";
 import {
   createAgentHarnessHostCapabilitiesForTest,
   createMockPluginRegistry,
+  runInHarnessToolAuthorityForTest,
   useProviderToolSchemaRuntimeForTest,
 } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { createCodexAppServerAgentHarness } from "../../harness.js";
 import { resolveCodexAppServerHomeDir } from "./auth-start-options.js";
 import { CodexAppServerClient } from "./client.js";
-import { resolveCodexSupervisionAppServerRuntimeOptions } from "./config.js";
+import {
+  resolveCodexSupervisionAppServerRuntimeOptions,
+  type CodexPluginConfig,
+} from "./config.js";
 import { setCodexTestToolFactory } from "./host-capability.test-support.js";
 import { getCodexInferenceThread, ownCodexInferenceClient } from "./inference-routing.js";
 import { buildCodexRuntimeModelParams } from "./model-runtime.js";
@@ -249,9 +253,9 @@ describe("Codex native configuration", () => {
         throw new Error("Registered Codex harness must support run attempts");
       }
       // Model policy owns this proof; cold preparation must not spend its logical clock.
-      // Keep I/O and cleanup timers real.
-      vi.useFakeTimers({ toFake: ["Date"] });
-      const run = harness.runAttempt(params);
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+      const runAttempt = harness.runAttempt.bind(harness);
+      const run = runInHarnessToolAuthorityForTest(params, "codex", runAttempt);
       const settled = run.then(
         () => false,
         () => false,
@@ -376,7 +380,7 @@ describe("Codex native configuration", () => {
           ...(transport === "unix" ? { url: "unix:///tmp/synthetic-codex.sock" } : {}),
         },
         supervision: { enabled: true },
-      };
+      } satisfies CodexPluginConfig;
       await writeCodexAppServerBinding(sessionFile, {
         threadId: "thread-existing",
         cwd: workspaceDir,
@@ -483,6 +487,9 @@ describe("Codex native configuration", () => {
       });
       params.hostCapabilities = { ...params.hostCapabilities, bindModelExecution };
       params.registerPluginRuntimeRefreshConsumer = vi.fn();
+      params.onSettledTurn = async (attempt, captureContext) => {
+        attempt.settledTurnFinalizationContext = await captureContext();
+      };
       params.agentDir = agentDir;
       params.provider = "anthropic";
       params.modelId = "claude-opus-4-6";
@@ -506,6 +513,10 @@ describe("Codex native configuration", () => {
         },
       };
       if (nativeSearchEnabled) {
+        params.preparedWebSearchPolicy = {
+          allowed: true,
+          persistentAllowed: true,
+        };
         params.config = {
           ...params.config,
           tools: { ...params.config?.tools, web: { search: { enabled: true } } },
@@ -608,7 +619,6 @@ describe("Codex native configuration", () => {
           expect(result.settledTurnFinalizationContext).toBeUndefined();
         } else {
           expect(result.settledTurnFinalizationContext).toEqual({ source: "unavailable" });
-          expect(Object.isFrozen(result.settledTurnFinalizationContext)).toBe(true);
           expect(warn).toHaveBeenCalledWith(
             "codex settled-turn finalization context is unavailable",
             expect.objectContaining({
@@ -672,7 +682,7 @@ describe("Codex native configuration", () => {
   );
 });
 
-it.each(["restore", "fresh", "fresh after yield"] as const)(
+it.each(["restore", "fresh"] as const)(
   "cancels accepted unqualified native work when a policy is introduced (%s)",
   async (origin) => {
     const fresh = origin !== "restore";

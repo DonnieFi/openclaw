@@ -8,7 +8,6 @@ import {
   readRequiredClawHubBooleanField,
   readRequiredClawHubNumberField,
   readRequiredClawHubStringField,
-  type ClawHubFetch,
 } from "./clawhub-client.js";
 import { parseRegistryNpmSpec } from "./npm-registry-spec.js";
 
@@ -138,14 +137,11 @@ export async function fetchClawHubPromotions(
   params: {
     baseUrl?: string;
     timeoutMs?: number;
-    fetchImpl?: ClawHubFetch;
   } = {},
 ): Promise<ClawHubPromotion[]> {
   const response = await fetchClawHubJson<unknown>({
-    baseUrl: params.baseUrl,
+    ...params,
     path: "/api/v1/promotions",
-    timeoutMs: params.timeoutMs,
-    fetchImpl: params.fetchImpl,
   });
   if (!isJsonObject(response) || !Array.isArray(response.promotions)) {
     throw new Error("Malformed ClawHub promotions response: expected a promotions array.");
@@ -157,13 +153,10 @@ export async function fetchClawHubPromotion(params: {
   slug: string;
   baseUrl?: string;
   timeoutMs?: number;
-  fetchImpl?: ClawHubFetch;
 }): Promise<ClawHubPromotion> {
   const response = await fetchClawHubJson<unknown>({
-    baseUrl: params.baseUrl,
+    ...params,
     path: `/api/v1/promotions/${encodeURIComponent(params.slug)}`,
-    timeoutMs: params.timeoutMs,
-    fetchImpl: params.fetchImpl,
   });
   return parseClawHubPromotion(response);
 }

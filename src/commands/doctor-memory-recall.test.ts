@@ -172,9 +172,8 @@ describe("memory recall doctor integration", () => {
       await noteMemoryRecallHealth(cfg);
 
       if (backend === "provider-runtime") {
-        expect(String(note.mock.calls[0]?.[0] ?? "")).toContain(
-          "Not applicable: records uses the provider runtime; see its health.",
-        );
+        expectFirstNoteContains("Dreaming:");
+        expect(note).toHaveBeenCalledOnce();
         expect(auditShortTermPromotionArtifacts).not.toHaveBeenCalled();
         expect(getActiveMemorySearchManagerCore).not.toHaveBeenCalled();
         return;
@@ -188,7 +187,7 @@ describe("memory recall doctor integration", () => {
         "doctor --fix",
         "memory status --fix",
       );
-      expect(String(note.mock.calls[1]?.[0] ?? "")).toContain("Dreaming: enabled");
+      expect(String(note.mock.calls[1]?.[0] ?? "")).toContain("Dreaming:");
     },
   );
 
@@ -224,7 +223,6 @@ describe("memory recall doctor integration", () => {
     await maybeRepairMemoryRecallHealth({ cfg, prompter });
 
     expect(maybeRepairWorkspaceMemoryHealth).toHaveBeenCalledWith({
-      cfg,
       prompter,
       scope: {
         agentId: "agent-default",

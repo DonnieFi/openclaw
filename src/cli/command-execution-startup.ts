@@ -1,4 +1,3 @@
-// CLI startup presentation and config-before-plugin bootstrap.
 import type { StartupConfigPreflightOptions } from "../commands/startup-config-preflight.js";
 import { routeLogsToStderr } from "../logging/console.js";
 import type { RuntimeEnv } from "../runtime.js";
@@ -58,37 +57,18 @@ export async function ensureCliExecutionBootstrap(params: {
   const validateConfigOnly = params.validateConfigOnly ?? startupPolicy.validateConfigOnly;
   if (!skipConfigGuard) {
     await measureCliCommandStartup("config-ready", async () => {
-      const { ensureConfigReady } = await configGuardModuleLoader.load();
-      const runConfigGuard = () =>
-        ensureConfigReady({
-          runtime,
-          commandPath,
-          measure: (stage, run) => measureCliCommandStartup(stage, run),
-          ...(allowInvalid ? { allowInvalid: true } : {}),
-          ...(validateConfigOnly ? { validateConfigOnly: true } : {}),
-          ...(beforeStatePreparation ? { beforeStatePreparation } : {}),
-          ...(suppressDoctorStdout ? { suppressDoctorStdout: true } : {}),
-        });
-      const nativeGatewayBootstrap =
-        commandPath[0] === "gateway" &&
-        (commandPath.length === 1 || (commandPath.length === 2 && commandPath[1] === "run"));
-      if (nativeGatewayBootstrap && !validateConfigOnly) {
-        const [
-          { withConfigSnapshotPreparation },
-          { prepareHostConfigSnapshot },
-          { resolveConfigPath },
-        ] = await Promise.all([
-          import("../config/io.snapshot-preparation-scope.js"),
-          import("../config/io.snapshot-preparation.js"),
-          import("../config/paths.js"),
-        ]);
-        await withConfigSnapshotPreparation(
-          { configPath: resolveConfigPath(), prepare: prepareHostConfigSnapshot },
-          runConfigGuard,
-        );
-      } else {
-        await runConfigGuard();
-      }
+      const { ensureConfigReady } = await measureCliCommandStartup("config-guard-import", () =>
+        configGuardModuleLoader.load(),
+      );
+      await ensureConfigReady({
+        runtime,
+        commandPath,
+        measure: (stage, run) => measureCliCommandStartup(stage, run),
+        ...(allowInvalid ? { allowInvalid: true } : {}),
+        ...(validateConfigOnly ? { validateConfigOnly: true } : {}),
+        ...(beforeStatePreparation ? { beforeStatePreparation } : {}),
+        ...(suppressDoctorStdout ? { suppressDoctorStdout: true } : {}),
+      });
     });
   }
   if (!loadPlugins) {

@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { signalCheck, signalRpcRequest, streamSignalEvents } from "./client.js";
+import { expectPreparedHandoff } from "./client.test-support.js";
 import * as socketEndpoint from "./socket-path.js";
 import { runSignalSseLoop } from "./sse-reconnect.js";
 
@@ -54,8 +55,37 @@ async function serve(onRequest: (request: Record<string, unknown>, socket: net.S
 function response(id: unknown, result: unknown) {
   return `${JSON.stringify({ jsonrpc: "2.0", id, result })}\n`;
 }
+function notify(socket: net.Socket, result: unknown, subscription = 7) {
+  socket.write(
+    `${JSON.stringify({ jsonrpc: "2.0", method: "receive", params: { subscription, result } })}\n`,
+  );
+}
+const send = (
+  baseUrl: string,
+  message?: string,
+  options: Partial<Parameters<typeof signalRpcRequest>[2]> = {},
+) => signalRpcRequest("send", message ? { message } : undefined, { baseUrl, ...options });
 
 describe.skipIf(process.platform === "win32")("Signal UNIX transport", () => {
+  it.each([false, true])(
+    "prepares the socket write and rechecks its caller after waiting (revoked=%s)",
+    async (revoked) => {
+      await expectPreparedHandoff(revoked, async ({ arrive, response: reply, assertHandoff }) => {
+        const requests: Record<string, unknown>[] = [];
+        const { baseUrl } = await serve((request, socket) => {
+          requests.push(request);
+          arrive();
+          void reply.then(() => socket.end(response(request.id, { sent: true })));
+        });
+        return {
+          send: () => send(baseUrl, "prepared", { assertDirectAdapterHandoff: assertHandoff }),
+          assertCount: (count) => expect(requests).toHaveLength(count),
+          result: { sent: true },
+        };
+      });
+    },
+  );
+
   it("sends newline JSON-RPC and matches a fragmented UTF-8 response by id", async () => {
     const caller = new AbortController();
     const requests: Record<string, unknown>[] = [];
@@ -69,17 +99,10 @@ describe.skipIf(process.platform === "win32")("Signal UNIX transport", () => {
       setImmediate(() => socket.write(bytes.subarray(split)));
     });
     await expect(
-      signalRpcRequest(
-        "send",
-        { message: "test" },
-        {
-          baseUrl,
-          assertDirectAdapterHandoff: () => caller.signal.throwIfAborted(),
-        },
-      ),
-    ).resolves.toEqual({
-      text: "héllo",
-    });
+      send(baseUrl, "test", {
+        assertDirectAdapterHandoff: () => caller.signal.throwIfAborted(),
+      }),
+    ).resolves.toEqual({ text: "héllo" });
     expect(requests).toEqual([
       expect.objectContaining({ jsonrpc: "2.0", method: "send", params: { message: "test" } }),
     ]);
@@ -101,14 +124,9 @@ describe.skipIf(process.platform === "win32")("Signal UNIX transport", () => {
       });
 
     await expect(
-      signalRpcRequest(
-        "send",
-        { message: "pending" },
-        {
-          baseUrl,
-          assertDirectAdapterHandoff: () => caller.signal.throwIfAborted(),
-        },
-      ),
+      send(baseUrl, "pending", {
+        assertDirectAdapterHandoff: () => caller.signal.throwIfAborted(),
+      }),
     ).rejects.toThrow("Signal caller closed during socket preparation");
     expect(preparation).toHaveBeenCalledOnce();
     expect(requests).toHaveLength(0);
@@ -128,9 +146,7 @@ describe.skipIf(process.platform === "win32")("Signal UNIX transport", () => {
     ["oversized frame", "x".repeat(129), /size limit/],
   ] as const)("rejects %s without falling back to HTTP", async (_name, reply, error) => {
     const { baseUrl } = await serve((_request, socket) => socket.end(reply));
-    await expect(
-      signalRpcRequest("send", undefined, { baseUrl, maxResponseBytes: 128 }),
-    ).rejects.toThrow(error);
+    await expect(send(baseUrl, undefined, { maxResponseBytes: 128 })).rejects.toThrow(error);
   });
 
   it.each([
@@ -148,7 +164,7 @@ describe.skipIf(process.platform === "win32")("Signal UNIX transport", () => {
         `${JSON.stringify({ jsonrpc: "2.0", id: request.id, error: { code, message } })}\n`,
       ),
     );
-    await expect(signalRpcRequest("send", undefined, { baseUrl })).rejects.toMatchObject({
+    await expect(send(baseUrl)).rejects.toMatchObject({
       message: `Signal RPC ${code}: ${classification}`,
     });
   });
@@ -163,7 +179,7 @@ describe.skipIf(process.platform === "win32")("Signal UNIX transport", () => {
       const opened = vi.fn();
       const pending =
         mode === "request"
-          ? signalRpcRequest("send", undefined, { baseUrl, timeoutMs: 30 })
+          ? send(baseUrl, undefined, { timeoutMs: 30 })
           : streamSignalEvents({ baseUrl, timeoutMs: 30, onStreamOpen: opened, onEvent: () => {} });
       await expect(pending).rejects.toThrow(/deadline/);
       expect(opened).not.toHaveBeenCalled();
@@ -175,83 +191,71 @@ describe.skipIf(process.platform === "win32")("Signal UNIX transport", () => {
     const onRequest = vi.fn();
     const { baseUrl, dir } = await serve(onRequest);
     await chmod(dir, 0o755);
-    await expect(signalRpcRequest("send", { message: "private" }, { baseUrl })).rejects.toThrow();
+    await expect(send(baseUrl, "private")).rejects.toThrow();
     expect(onRequest).not.toHaveBeenCalled();
   });
 
-  it("subscribes, unwraps manual notifications, filters other accounts and aborts", async () => {
-    const controller = new AbortController();
-    const opened = vi.fn();
-    const events: unknown[] = [];
-    const payload = { account: "+15550000001", envelope: { dataMessage: { message: "hello" } } };
-    const { baseUrl } = await serve((request, socket) => {
-      expect(request).toMatchObject({
-        method: "subscribeReceive",
-        params: { account: payload.account },
+  it.each([false, true])(
+    "receives notifications and aborts (delayed reconnect=%s)",
+    async (delayed) => {
+      const controller = new AbortController();
+      const opened = vi.fn();
+      const events: unknown[] = [];
+      const statusSink = vi.fn();
+      const error = vi.fn(() => controller.abort());
+      const payload = { account: "+15550000001", envelope: { dataMessage: { message: "hello" } } };
+      const { baseUrl } = await serve((request, socket) => {
+        expect(request.method).toBe("subscribeReceive");
+        if (!delayed) {
+          expect(request.params).toEqual({ account: payload.account });
+        }
+        const deliver = () => {
+          socket.write(response(request.id, 7));
+          if (!delayed) {
+            notify(socket, { ...payload, account: "+15550000002" });
+          }
+          notify(socket, payload);
+        };
+        if (!delayed) {
+          deliver();
+        } else {
+          const timer = setTimeout(deliver, 30);
+          socket.once("close", () => clearTimeout(timer));
+        }
       });
-      socket.write(response(request.id, 7));
-      for (const result of [{ ...payload, account: "+15550000002" }, payload]) {
-        socket.write(
-          `${JSON.stringify({ jsonrpc: "2.0", method: "receive", params: { subscription: 7, result } })}\n`,
-        );
-      }
-    });
-    await expect(
-      streamSignalEvents({
+      const options = {
         baseUrl,
-        account: payload.account,
         abortSignal: controller.signal,
-        onStreamOpen: opened,
-        onEvent: (event) => {
+        onEvent: (event: Parameters<Parameters<typeof streamSignalEvents>[0]["onEvent"]>[0]) => {
           events.push(event);
           controller.abort();
         },
-      }),
-    ).rejects.toMatchObject({ name: "AbortError" });
-    expect(opened).toHaveBeenCalledOnce();
-    expect(events).toEqual([{ event: "receive", data: JSON.stringify(payload) }]);
-  });
-
-  it("receives after a delayed subscription through the monitor's zero-timeout reconnect path", async () => {
-    const controller = new AbortController();
-    const events: unknown[] = [];
-    const statusSink = vi.fn();
-    const error = vi.fn(() => controller.abort());
-    const payload = { envelope: { dataMessage: { message: "delayed" } } };
-    const { baseUrl } = await serve((request, socket) => {
-      expect(request.method).toBe("subscribeReceive");
-      const timer = setTimeout(() => {
-        socket.write(response(request.id, 7));
-        socket.write(
-          `${JSON.stringify({ jsonrpc: "2.0", method: "receive", params: { subscription: 7, result: payload } })}\n`,
-        );
-      }, 30);
-      socket.once("close", () => clearTimeout(timer));
-    });
-    await runSignalSseLoop({
-      baseUrl,
-      timeoutMs: 0,
-      abortSignal: controller.signal,
-      runtime: { log: vi.fn(), error, exit: vi.fn() },
-      statusSink,
-      onEvent: (event) => {
-        events.push(event);
-        controller.abort();
-      },
-    });
-    expect(error).not.toHaveBeenCalled();
-    expect(statusSink).toHaveBeenCalledWith(expect.objectContaining({ connected: true }));
-    expect(events).toEqual([{ event: "receive", data: JSON.stringify(payload) }]);
-  });
+      };
+      if (delayed) {
+        await runSignalSseLoop({
+          ...options,
+          timeoutMs: 0,
+          statusSink,
+          runtime: { log: vi.fn(), error, exit: vi.fn() },
+        });
+        expect(error).not.toHaveBeenCalled();
+        expect(statusSink).toHaveBeenCalledWith(expect.objectContaining({ connected: true }));
+      } else {
+        await expect(
+          streamSignalEvents({ ...options, account: payload.account, onStreamOpen: opened }),
+        ).rejects.toMatchObject({ name: "AbortError" });
+        expect(opened).toHaveBeenCalledOnce();
+      }
+      expect(events).toEqual([{ event: "receive", data: JSON.stringify(payload) }]);
+    },
+  );
 
   it("closes a subscribed socket when the event consumer throws", async () => {
     let closed: Promise<unknown> | undefined;
     const { baseUrl } = await serve((request, socket) => {
       closed = once(socket, "close");
       socket.write(response(request.id, 0));
-      socket.write(
-        `${JSON.stringify({ jsonrpc: "2.0", method: "receive", params: { subscription: 0, result: { envelope: {} } } })}\n`,
-      );
+      notify(socket, { envelope: {} }, 0);
     });
     await expect(
       streamSignalEvents({

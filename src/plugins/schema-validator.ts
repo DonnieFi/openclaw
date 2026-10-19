@@ -24,7 +24,6 @@ type CachedValidator = {
   hasDefaults: boolean;
   validate: TypeBoxValidator;
   schema: JsonSchemaValue;
-  schemaFingerprint: string;
 };
 
 /**
@@ -159,6 +158,8 @@ function checkSchemaWithCurrentFormats(
  */
 export type JsonSchemaValidationError = {
   path: string;
+  /** Exact property segments; display paths can collapse literal dots or slashes. */
+  valuePath?: readonly string[];
   message: string;
   text: string;
   additionalProperty?: string;
@@ -175,10 +176,8 @@ export function parseJsonSchemaIssuePath(
   return path.split(".").map((segment) => parseConfigPathArrayIndex(segment) ?? segment);
 }
 
-function normalizeErrorPath(instancePath: string | undefined): string {
-  const path = Pointer.Indices(instancePath ?? "")
-    .join(".")
-    .replace(/\//g, ".");
+function normalizeErrorPath(valuePath: readonly string[]): string {
+  const path = valuePath.join(".").replace(/\//g, ".");
   return path || "<root>";
 }
 
@@ -283,8 +282,9 @@ function formatValidationErrors(
     const missingProperties = resolveMissingProperties(error);
     const allowedValuesSummary = getAllowedValuesSummary(error);
     const additionalProperty = resolveAdditionalProperty(error);
+    const baseValuePath = Pointer.Indices(error.instancePath ?? "");
+    const basePath = normalizeErrorPath(baseValuePath);
     return (missingProperties.length ? missingProperties : [undefined]).map((missingProperty) => {
-      const basePath = normalizeErrorPath(error.instancePath);
       const path =
         missingProperty === undefined ? basePath : appendPathSegment(basePath, missingProperty);
       const baseMessage =
@@ -298,6 +298,8 @@ function formatValidationErrors(
       const safeMessage = sanitizeTerminalText(message);
       const formattedError: JsonSchemaValidationError = {
         path,
+        valuePath:
+          missingProperty === undefined ? baseValuePath : [...baseValuePath, missingProperty],
         message,
         text: `${safePath}: ${safeMessage}`,
       };
@@ -334,14 +336,13 @@ export function validatePluginSchemaValue(
   params: Parameters<typeof validateJsonSchemaValue>[0] & { origin: PluginOrigin },
 ): PluginSchemaValidationResult {
   const { origin, ...validationParams } = params;
-  if (origin === "bundled") {
-    const result = validateJsonSchemaValue(validationParams);
-    return result.ok ? result : { ...result, schemaError: false };
-  }
   try {
     const result = validateJsonSchemaValue(validationParams);
     return result.ok ? result : { ...result, schemaError: false };
   } catch (error) {
+    if (origin === "bundled") {
+      throw error;
+    }
     // The thrown text can embed raw manifest content (TypeBox echoes a bad regex
     // pattern), and callers log it, so it is sanitized like every other error path.
     const text = sanitizeTerminalText(error instanceof Error ? error.message : String(error));
@@ -351,10 +352,11 @@ export function validatePluginSchemaValue(
 
 /**
  * Validate a plugin-owned value against a JSON Schema, optionally hydrating schema defaults.
- * Callers can supply a stable cache key; otherwise the schema fingerprint owns cache identity.
+ * Schema contents own compiled-validator identity, independently of callers and default application.
  */
 export function validateJsonSchemaValue(params: {
   schema: JsonSchemaValue;
+  /** Accepted for SDK compatibility; schema contents now own cache identity. */
   cacheKey?: string;
   value: unknown;
   /** Persisted input paired with this runtime value, before secret resolution. */
@@ -362,8 +364,13 @@ export function validateJsonSchemaValue(params: {
   applyDefaults?: boolean;
   cache?: boolean;
 }): { ok: true; value: unknown } | { ok: false; errors: JsonSchemaValidationError[] } {
-  const schemaKey = params.cacheKey ?? JSON.stringify(params.schema);
-  const cacheKey = params.applyDefaults ? `${schemaKey}::defaults` : schemaKey;
+  let cacheKey: string;
+  try {
+    cacheKey = JSON.stringify(params.schema);
+  } catch (error) {
+    const schemaError = findJsonSchemaShapeError(params.schema);
+    throw schemaError ? new Error(sanitizeTerminalText(`invalid schema: ${schemaError}`)) : error;
+  }
   let cached = params.cache === false ? undefined : schemaCache.get(cacheKey);
   if (!cached || cached.schema !== params.schema) {
     const schemaError = findJsonSchemaShapeError(params.schema);
@@ -371,18 +378,11 @@ export function validateJsonSchemaValue(params: {
       throw new Error(sanitizeTerminalText(`invalid schema: ${schemaError}`));
     }
   }
-  const schemaFingerprint =
-    !cached || cached.schema !== params.schema ? JSON.stringify(params.schema) : undefined;
-  if (
-    !cached ||
-    (cached.schema !== params.schema && cached.schemaFingerprint !== schemaFingerprint)
-  ) {
-    const validate = compileSchema(params.schema);
+  if (!cached) {
     cached = {
-      hasDefaults: params.applyDefaults ? schemaHasDefaults(params.schema) : false,
-      validate,
+      hasDefaults: schemaHasDefaults(params.schema),
+      validate: compileSchema(params.schema),
       schema: params.schema,
-      schemaFingerprint: schemaFingerprint ?? JSON.stringify(params.schema),
     };
     if (params.cache !== false) {
       schemaCache.set(cacheKey, cached);

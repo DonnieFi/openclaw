@@ -1,14 +1,14 @@
 import { parseStrictPositiveInteger } from "openclaw/plugin-sdk/number-runtime";
 import { ProviderHttpError, readResponseTextLimited } from "openclaw/plugin-sdk/provider-http";
 import {
+  externalContentStamp,
   buildSearchCacheKey,
   DEFAULT_SEARCH_COUNT,
   mergeScopedSearchConfig,
   parseIsoDateRange,
   readCachedSearchPayload,
-  readConfiguredSecretString,
   readPositiveIntegerParam,
-  readProviderEnvValue,
+  readWebSearchApiKey,
   readStringParam,
   resolveProviderWebSearchPluginConfig,
   resolveSearchCacheTtlMs,
@@ -63,17 +63,7 @@ type ExaContentsArgs = {
   summary?: ExaSummaryContentsOption;
 };
 
-type ExaSearchResult = {
-  title?: unknown;
-  url?: unknown;
-  publishedDate?: unknown;
-  highlights?: unknown;
-  highlightScores?: unknown;
-  summary?: unknown;
-  text?: unknown;
-};
-
-async function readExaSearchResults(response: Response): Promise<ExaSearchResult[]> {
+async function readExaSearchResults(response: Response) {
   const bytes = await readResponseWithLimit(response, EXA_SEARCH_JSON_MAX_BYTES, {
     onOverflow: ({ maxBytes: maxBytesLocal }) =>
       new Error(`Exa API response exceeds ${maxBytesLocal} bytes`),
@@ -90,13 +80,6 @@ async function readExaSearchResults(response: Response): Promise<ExaSearchResult
 function normalizeExaFreshness(value: string | undefined): ExaFreshness | undefined {
   const trimmed = normalizeOptionalLowercaseString(value);
   return EXA_FRESHNESS_VALUES.find((freshness) => freshness === trimmed);
-}
-
-function resolveExaApiKey(exa?: ExaConfig): string | undefined {
-  return (
-    readConfiguredSecretString(exa?.apiKey, "plugins.entries.exa.config.webSearch.apiKey") ??
-    readProviderEnvValue(["EXA_API_KEY"])
-  );
 }
 
 function invalidBaseUrlPayload(value: string) {
@@ -257,7 +240,11 @@ export async function executeExaWebSearchProviderTool(
     resolveProviderWebSearchPluginConfig(ctx.config, "exa"),
   ) as SearchConfigRecord | undefined;
   const exaConfig = asOptionalRecord(searchConfig?.exa);
-  const apiKey = resolveExaApiKey(exaConfig);
+  const apiKey = readWebSearchApiKey(
+    exaConfig?.apiKey,
+    "plugins.entries.exa.config.webSearch.apiKey",
+    ["EXA_API_KEY"],
+  );
   if (!apiKey) {
     return {
       error: "missing_exa_api_key",
@@ -279,9 +266,7 @@ export async function executeExaWebSearchProviderTool(
     readPositiveIntegerParam(args, "count", {
       max: EXA_MAX_SEARCH_COUNT,
       message: `count must be an integer from 1 to ${EXA_MAX_SEARCH_COUNT}.`,
-    }) ??
-    searchConfig?.maxResults ??
-    undefined;
+    }) ?? searchConfig?.maxResults;
   const rawFreshness = readStringParam(args, "freshness");
   const freshness = normalizeExaFreshness(rawFreshness);
   if (rawFreshness && !freshness) {
@@ -395,12 +380,7 @@ export async function executeExaWebSearchProviderTool(
     provider: "exa",
     count: results.length,
     tookMs: Date.now() - start,
-    externalContent: {
-      untrusted: true,
-      source: "web_search",
-      provider: "exa",
-      wrapped: true,
-    },
+    externalContent: externalContentStamp("exa"),
     results: results.map((entry) => {
       const title = typeof entry.title === "string" ? entry.title : "";
       const url = typeof entry.url === "string" ? entry.url : "";

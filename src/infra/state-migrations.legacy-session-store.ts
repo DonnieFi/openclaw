@@ -58,9 +58,6 @@ const log = createSubsystemLogger("sessions/legacy-importer");
 const loadSessionArchiveRuntime = createLazyRuntimeModule(
   () => import("../gateway/session-archive.runtime.js"),
 );
-const loadTrajectoryCleanupRuntime = createLazyRuntimeModule(
-  () => import("../trajectory/cleanup.js"),
-);
 
 function normalizeOptionalDeliveryContext(value: unknown): DeliveryContext | undefined {
   if (!isRecord(value)) {
@@ -305,10 +302,6 @@ async function writeLegacySessionStoreUnlocked(
       commitReducedStore: () => persistLegacySessionStore(storePath, store),
       artifacts: {
         archiveRemovedSessionTranscripts,
-        removeRemovedSessionTrajectoryArtifacts: async (params) => {
-          const { removeRemovedSessionTrajectoryArtifacts } = await loadTrajectoryCleanupRuntime();
-          await removeRemovedSessionTrajectoryArtifacts(params);
-        },
         cleanupArchivedSessionTranscripts: async (params) => {
           const { cleanupArchivedSessionTranscripts } = await loadSessionArchiveRuntime();
           await cleanupArchivedSessionTranscripts(params);
@@ -380,12 +373,7 @@ function isInternalContext(context?: DeliveryContext): boolean {
 }
 
 function hasExternalTarget(context?: DeliveryContext): boolean {
-  return Boolean(
-    context?.channel &&
-    context.channel !== INTERNAL_MESSAGE_CHANNEL &&
-    !isInternalNonDeliveryChannel(context.channel) &&
-    context.to,
-  );
+  return Boolean(context?.channel && !isInternalContext(context) && context.to);
 }
 
 function mergeExternalOverInternal(
@@ -421,8 +409,13 @@ export function normalizeLegacySessionEntryDelivery(value: SessionEntry | Record
   const routeContext = deliveryContextFromChannelRoute(route);
   const explicitContext = normalizeDeliveryContext(legacy.deliveryContext);
   const lastChannel = normalizeDeliveryContext({ channel: legacy.lastChannel })?.channel;
-  const storedChannel = normalizeDeliveryContext({ channel: legacy.channel })?.channel;
-  const originChannel = normalizeDeliveryContext({ channel: legacy.origin?.provider })?.channel;
+  const channelContext = normalizeDeliveryContext({ channel: legacy.channel });
+  const originContext = normalizeDeliveryContext({
+    channel: legacy.origin?.provider,
+    to: legacy.origin?.to,
+    accountId: legacy.origin?.accountId,
+    threadId: legacy.origin?.threadId,
+  });
   const normalizedLastFields = normalizeDeliveryContext({
     to: legacy.lastTo,
     accountId: legacy.lastAccountId,
@@ -435,7 +428,8 @@ export function normalizeLegacySessionEntryDelivery(value: SessionEntry | Record
   );
   const lastCandidate = normalizeDeliveryContext({
     channel:
-      lastChannel ?? (hasNormalizedLastFields ? (storedChannel ?? originChannel) : undefined),
+      lastChannel ??
+      (hasNormalizedLastFields ? (channelContext?.channel ?? originContext?.channel) : undefined),
     to: normalizedLastFields?.to,
     accountId: normalizedLastFields?.accountId,
     threadId: normalizedLastFields?.threadId,
@@ -447,13 +441,6 @@ export function normalizeLegacySessionEntryDelivery(value: SessionEntry | Record
     (lastCandidate?.channel && lastCandidate.channel === explicitContext?.channel)
       ? lastCandidate
       : undefined;
-  const channelContext = normalizeDeliveryContext({ channel: legacy.channel });
-  const originContext = normalizeDeliveryContext({
-    channel: legacy.origin?.provider,
-    to: legacy.origin?.to,
-    accountId: legacy.origin?.accountId,
-    threadId: legacy.origin?.threadId,
-  });
   const fallbackContext = mergeDeliveryContext(
     lastContext,
     mergeDeliveryContext(explicitContext, mergeDeliveryContext(channelContext, originContext)),

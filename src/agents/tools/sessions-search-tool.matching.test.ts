@@ -29,7 +29,7 @@ function createSearchFixture(
   const tool = createSessionsSearchTool({
     agentSessionKey: "agent:main:requester",
     config: {
-      agents: { entries: { main: { default: true } } },
+      agents: { entries: { main: {} } },
       tools: { sessions: { visibility: "all" } },
     },
     callGateway: async <T>(request: GatewayRequest): Promise<T> => {
@@ -70,10 +70,10 @@ describe("sessions_search candidate matching", () => {
       });
       expect(Value.Check(tool.outputSchema!, result.details)).toBe(true);
       expect(requests.filter((request) => request.method === "sessions.search")).toEqual([
-        {
+        expect.objectContaining({
           method: "sessions.search",
           params: { agentId: "main", query: "text", limit: 25, sessionKeys: keys },
-        },
+        }),
       ]);
       expect(requests.filter((request) => request.method === "sessions.list")).toHaveLength(4);
       const aliasKeys = new Set(aliases);

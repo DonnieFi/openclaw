@@ -13,6 +13,10 @@ import type {
   ControlUiSessionPullRequest,
   ControlUiSessionPullRequests,
 } from "./control-ui-contract.js";
+import {
+  pullRequestMetadataSignature,
+  readSessionPullRequestMetadata,
+} from "./control-ui-session-pr-metadata.js";
 import type { ControlUiSessionPrReadContext } from "./control-ui-session-pr-read.js";
 import {
   createGitHubReadGroup,
@@ -22,6 +26,7 @@ import {
   fetchSessionPullRequestCheckRollup,
   sessionPullRequestRepositoryApiUrl,
 } from "./control-ui-session-prs-checks.js";
+import { readTaskPullRequestReceipts } from "./control-ui-session-task-prs.js";
 import { gitHubPublicApi } from "./github-public-api.js";
 import { resolveGitHubForkParent } from "./github-repository-target.js";
 
@@ -38,19 +43,7 @@ export type ControlUiSessionPullRequestsParams = {
   refresh?: boolean;
 };
 
-type PullListItem = {
-  number: number;
-  title: string;
-  url: string;
-  owner: string;
-  repo: string;
-  state: ControlUiSessionPullRequest["state"];
-  author?: ControlUiSessionPullRequest["author"];
-  branch?: string;
-  headSha?: string;
-  baseRef?: string;
-  mergeCommitSha?: string;
-};
+type PullListItem = NonNullable<ReturnType<typeof parsePullListItem>>;
 
 /**
  * Cached GitHub snapshot plus the merged PRs' heads. The heads stay
@@ -84,10 +77,49 @@ type CacheEntry = {
 
 const branchCache = createRetainedCache<CacheEntry>();
 
+function branchCacheKey(
+  context: GitCheckoutContext,
+  read: Pick<
+    ReturnType<typeof prepareSessionPullRequestGitHubRead>,
+    "host" | "apiBaseUrl" | "cacheScope"
+  >,
+  sessionIdentity: string,
+): string {
+  return JSON.stringify([
+    read.host,
+    read.apiBaseUrl,
+    context.owner.toLowerCase(),
+    context.repo.toLowerCase(),
+    context.branch,
+    sessionIdentity,
+    read.cacheScope,
+  ]);
+}
+
+/** Historical landing facts remain scoped to the current session, source, and credential. */
+export function readKnownSessionBranchMergedHeads(
+  context: GitCheckoutContext,
+  read: ControlUiSessionPrReadContext,
+): readonly MergedPullHead[] {
+  read.assertCurrent();
+  const access = prepareSessionPullRequestGitHubRead(
+    context.host ?? "github.com",
+    read.assertCurrent,
+  );
+  const entry = branchCache.get(
+    branchCacheKey(
+      context,
+      access,
+      JSON.stringify([read.target.branchIdentity ?? read.target.identity, read.sourceIdentity]),
+    ),
+  );
+  access.assertCurrent();
+  return structuredClone(entry?.lastGood?.mergedHeads ?? []);
+}
+
 type LoadSessionPullRequestDeps = {
   read: ControlUiSessionPrReadContext;
   cacheSignal?: AbortSignal;
-  fetchImpl?: typeof fetch;
   resolveGitRoot?: (params: ControlUiSessionPullRequestsParams) => Promise<string | null>;
   resolveGitContext?: (
     params: ControlUiSessionPullRequestsParams,
@@ -107,6 +139,7 @@ async function resolveSessionBranch(
   context: GitCheckoutContext,
   mergedHeads: readonly MergedPullHead[],
   refresh: boolean,
+  refreshIndex: boolean,
 ): Promise<ControlUiSessionBranch | undefined> {
   if (!context.branch || context.branch === context.defaultBranch) {
     return undefined;
@@ -125,7 +158,13 @@ async function resolveSessionBranch(
   const facts = await runGitReadOperation(
     {
       type: "pull-request.branch-facts",
-      input: { root, branch: context.branch, defaultBranch: context.defaultBranch, mergedHeads },
+      input: {
+        root,
+        branch: context.branch,
+        defaultBranch: context.defaultBranch,
+        mergedHeads,
+        refreshIndex,
+      },
     },
     { refresh },
   );
@@ -157,7 +196,7 @@ function derivePullState(value: Record<string, unknown>): ControlUiSessionPullRe
   return value.draft === true ? "draft" : "open";
 }
 
-export function parsePullListItem(value: unknown): PullListItem | null {
+export function parsePullListItem(value: unknown) {
   if (!isRecord(value)) {
     return null;
   }
@@ -248,6 +287,7 @@ async function finishPullRequest(
   item: PullListItem,
   branch: string,
   read: ReturnType<typeof prepareSessionPullRequestGitHubRead>,
+  preparedDetails?: unknown,
 ): Promise<ControlUiSessionPullRequest> {
   const chip = stateOnlyPullRequestChip(item, branch);
   // Merged/closed chips render state only; diff counts and CI rollup are
@@ -257,7 +297,9 @@ async function finishPullRequest(
   }
   const detailUrl = `${sessionPullRequestRepositoryApiUrl({ ...item, apiBaseUrl: read.apiBaseUrl })}/pulls/${item.number}`;
   const [details, checks] = await Promise.all([
-    read.request(detailUrl).catch(rethrowRateLimit),
+    preparedDetails === undefined
+      ? read.request(detailUrl).catch(rethrowRateLimit)
+      : Promise.resolve(preparedDetails),
     fetchSessionPullRequestCheckRollup(
       { ...item, apiBaseUrl: read.apiBaseUrl },
       read.request,
@@ -293,6 +335,7 @@ function mergedHeadsOf(items: readonly PullListItem[]): MergedPullHead[] {
 async function fetchBranchPullRequests(
   context: GitCheckoutContext,
   read: ReturnType<typeof prepareSessionPullRequestGitHubRead>,
+  refresh: boolean,
 ): Promise<BranchPullRequestsSnapshot> {
   const head = `${context.owner}:${context.branch}`;
   let items = parsePullList(
@@ -328,7 +371,17 @@ async function fetchBranchPullRequests(
   let rateLimited = false;
   try {
     pullRequests = await Promise.all(
-      capped.map((item) => finishPullRequest(item, branchOf(item), read)),
+      capped.map((item) =>
+        readSessionPullRequestMetadata(
+          item,
+          read,
+          (transport) => finishPullRequest(item, branchOf(item), transport),
+          {
+            refresh,
+            expected: pullRequestMetadataSignature(stateOnlyPullRequestChip(item, branchOf(item))),
+          },
+        ),
+      ),
     );
   } catch (error) {
     if (!(error instanceof gitHubPublicApi.ControlUiGitHubError && error.statusCode === 429)) {
@@ -357,7 +410,7 @@ async function refreshBranchPullRequests(
   const repository = { owner: context.owner, repo: context.repo };
   try {
     const result = {
-      ...(await fetchBranchPullRequests(context, read)),
+      ...(await fetchBranchPullRequests(context, read, entry.refreshMode === "forced")),
       repository,
     };
     if (result.rateLimited) {
@@ -383,13 +436,8 @@ async function refreshBranchPullRequests(
     // rate-limits at the list fetch must serve the proven PRs, not an empty
     // list that would resurrect the Create PR row mid-outage. The shortened
     // expiry makes the next window retry full detail.
-    entry.lastGood = {
-      pullRequests: result.pullRequests,
-      publicationCandidates: result.publicationCandidates,
-      mergedHeads: result.mergedHeads,
-      workingBranchHasLivePullRequest: result.workingBranchHasLivePullRequest,
-      repository,
-    };
+    const { rateLimited: _rateLimited, ...lastGood } = result;
+    entry.lastGood = lastGood;
     return result;
   } catch (error) {
     read.assertCurrent();
@@ -418,6 +466,104 @@ export async function loadControlUiSessionPullRequests(
   params: ControlUiSessionPullRequestsParams,
   deps: LoadSessionPullRequestDeps,
 ): Promise<ControlUiSessionPullRequests> {
+  // Publication controls deliberately consume the current branch only.
+  if (deps.read.projection === "publication" || !deps.read.target.taskReceipts) {
+    return loadControlUiSessionBranchPullRequests(params, deps);
+  }
+  const branch: ControlUiSessionPullRequests = deps.read.target.taskReceiptsOnly
+    ? (deps.read.branchSnapshot ?? { pullRequests: [], rateLimited: false })
+    : await loadControlUiSessionBranchPullRequests(params, deps).catch(() => ({
+        pullRequests: [],
+        rateLimited: false,
+        status: "unavailable" as const,
+      }));
+  if (!deps.read.target.taskReceiptsOnly) {
+    deps.read.onBranchRead?.(branch);
+  }
+  const task = await readTaskPullRequestReceipts(
+    {
+      ...deps.read.target.taskReceipts,
+      ...(branch.pullRequests.length
+        ? { branchUrls: [...new Set(branch.pullRequests.map((pr) => pr.url))] }
+        : {}),
+    },
+    deps.read.assertCurrent,
+    deps.cacheSignal,
+  );
+  if (deps.read.target.taskReceiptsOnly) {
+    return {
+      ...branch,
+      taskPullRequests: task.taskPullRequests,
+      taskPullRequestCount: task.taskPullRequestCount,
+      ...(deps.read.branchSnapshot ? { pullRequestCount: task.pullRequestCount } : {}),
+      branchRead: false,
+    };
+  }
+  const taskPullRequests = [];
+  let taskMetadataUnavailable = false;
+  // Preview work is bounded by the receipt reader, and the subscription owner supplies concurrency.
+  for (const known of task.taskPullRequests) {
+    const url = new URL(known.url);
+    if (url.hostname !== "github.com" && url.hostname !== deps.read.target.githubHost) {
+      taskPullRequests.push(known);
+      continue;
+    }
+    let pullRequest: ControlUiSessionPullRequest | undefined;
+    try {
+      const read = prepareSessionPullRequestGitHubRead(url.hostname, deps.read.assertCurrent, {
+        signal: deps.cacheSignal,
+      });
+      pullRequest = await readSessionPullRequestMetadata(
+        known,
+        read,
+        async (transport) => {
+          const details = await transport.request(
+            sessionPullRequestRepositoryApiUrl({ ...known, apiBaseUrl: transport.apiBaseUrl }) +
+              "/pulls/" +
+              known.number,
+          );
+          const item = parsePullListItem(details);
+          if (
+            !item ||
+            item.number !== known.number ||
+            item.owner.toLowerCase() !== known.owner.toLowerCase() ||
+            item.repo.toLowerCase() !== known.repo.toLowerCase() ||
+            new URL(item.url).hostname !== url.hostname
+          ) {
+            throw new Error("GitHub returned another task pull request");
+          }
+          return finishPullRequest(item, item.branch ?? known.branch, transport, details);
+        },
+        {
+          refresh: params.refresh,
+          signal: deps.cacheSignal,
+          retainFailure: true,
+          onRetainedFailure: () => {
+            taskMetadataUnavailable = true;
+          },
+        },
+      );
+    } catch {
+      // A durable publication URL remains useful on a cold or rate-limited lookup.
+      taskMetadataUnavailable = true;
+      deps.read.assertCurrent();
+    }
+    taskPullRequests.push({ ...known, ...(pullRequest ? { pullRequest } : {}) });
+  }
+  deps.read.assertCurrent();
+  return {
+    ...branch,
+    taskPullRequests,
+    taskPullRequestCount: task.taskPullRequestCount,
+    pullRequestCount: task.pullRequestCount,
+    ...(taskMetadataUnavailable && !branch.rateLimited ? { status: "unavailable" as const } : {}),
+  };
+}
+
+async function loadControlUiSessionBranchPullRequests(
+  params: ControlUiSessionPullRequestsParams,
+  deps: LoadSessionPullRequestDeps,
+): Promise<ControlUiSessionPullRequests> {
   const { target, assertCurrent, projection } = deps.read;
   try {
     assertCurrent();
@@ -443,8 +589,8 @@ export async function loadControlUiSessionPullRequests(
       branchCache.release(deps.cacheSignal);
       return { pullRequests: [], rateLimited: false };
     }
-    // Conversation text is not evidence of session work. Only the checkout
-    // selects PRs; publication receipts remain owned by the publication flow.
+    // Publication controls select the current checkout branch only. Task history
+    // is projected separately from the publication owner's receipts.
     if (!context.branch || context.branch === context.defaultBranch) {
       branchCache.release(deps.cacheSignal);
       return {
@@ -457,7 +603,7 @@ export async function loadControlUiSessionPullRequests(
       context,
       deps,
       request.refresh === true,
-      JSON.stringify([target.identity, deps.read.sourceIdentity]),
+      JSON.stringify([target.branchIdentity ?? target.identity, deps.read.sourceIdentity]),
     ).catch(() => null);
     assertCurrent();
     if (!result) {
@@ -475,7 +621,12 @@ export async function loadControlUiSessionPullRequests(
     const branch =
       projection === "publication" || workingBranchHasLivePullRequest
         ? undefined
-        : await resolveSessionBranch(context, mergedHeads, request.refresh === true);
+        : await resolveSessionBranch(
+            context,
+            mergedHeads,
+            request.refresh === true,
+            target.refreshIndex === true,
+          );
     assertCurrent();
     return {
       ...snapshot,
@@ -517,25 +668,15 @@ async function cachedBranchPullRequests(
   try {
     read = prepareSessionPullRequestGitHubRead(
       context.host ?? "github.com",
-      deps.fetchImpl ?? fetch,
       deps.read.assertCurrent,
     );
   } catch (error) {
     branchCache.release(deps.cacheSignal);
     throw error;
   }
-  const { cacheScope } = read;
   // Keep proven branch state and quota backoff scoped to this session/source
   // generation, independently of other sessions using the same branch.
-  const key = JSON.stringify([
-    read.host,
-    read.apiBaseUrl,
-    context.owner.toLowerCase(),
-    context.repo.toLowerCase(),
-    context.branch,
-    sessionIdentity,
-    cacheScope,
-  ]);
+  const key = branchCacheKey(context, read, sessionIdentity);
   const cached = branchCache.get(key, deps.cacheSignal);
   const entry: CacheEntry = cached ?? {
     access: createGitHubReadGroup(),
@@ -554,12 +695,9 @@ async function cachedBranchPullRequests(
     entry.access = createGitHubReadGroup();
   }
   const release = entry.access.add(read.assertCurrent, deps.cacheSignal);
-  const transportRead = prepareSessionPullRequestGitHubRead(
-    read.host,
-    deps.fetchImpl ?? fetch,
-    entry.access.assertCurrent,
-    { signal: entry.access.signal },
-  );
+  const transportRead = prepareSessionPullRequestGitHubRead(read.host, entry.access.assertCurrent, {
+    signal: entry.access.signal,
+  });
   try {
     if (reusable) {
       branchCache.set(key, entry, deps.cacheSignal);

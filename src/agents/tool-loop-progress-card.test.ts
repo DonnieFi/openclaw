@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SessionState } from "../logging/diagnostic-session-state.js";
 import { createPostCompactionLoopGuard } from "./embedded-agent-runner/post-compaction-loop-guard.js";
 import {
@@ -6,10 +6,12 @@ import {
   recordToolCall,
   recordToolCallOutcome,
 } from "./tool-loop-detection.js";
+import * as gateway from "./tools/in-process-gateway.js";
 import { createProgressCardTool } from "./tools/progress-card-tool.js";
 
+afterEach(() => vi.restoreAllMocks());
+
 vi.mock("./embedded-agent-messaging.js", () => ({ isMessagingToolSendAction: () => false }));
-const config = { enabled: true };
 const markdown = "Waiting for reviewer results.";
 const makeState = (): SessionState => ({ lastActivity: 0, state: "processing", queueDepth: 0 });
 type Params = {
@@ -18,8 +20,8 @@ type Params = {
 };
 function createFixture() {
   const state = makeState();
-  const callGateway = vi.fn();
-  const tool = createProgressCardTool({ agentSessionKey: "agent:main:proof", callGateway });
+  const callGateway = vi.spyOn(gateway, "callInProcessGatewayTool");
+  const tool = createProgressCardTool({ agentSessionKey: "agent:main:proof" });
   let revision = 0;
   async function execute(params: Params, runId = "run-1") {
     revision++;
@@ -36,7 +38,7 @@ function createFixture() {
             }
           : null,
     });
-    recordToolCall(state, tool.name, params, toolCallId, config, { runId });
+    recordToolCall(state, tool.name, params, toolCallId, { runId });
     const result = await tool.execute(toolCallId, params);
     const record = recordToolCallOutcome(state, {
       toolName: tool.name,
@@ -68,7 +70,7 @@ describe("progress-card loop outcomes", () => {
       const hashes = new Set();
       for (let index = 0; index < 20; index++) {
         expect(
-          detectToolCallLoop(state, "progress_card", params, config, { runId: "run-1" }),
+          detectToolCallLoop(state, "progress_card", params, { runId: "run-1" }),
         ).not.toMatchObject({ level: "critical" });
         const { result, record } = await execute(params);
         expect(result.details).toMatchObject({
@@ -77,15 +79,14 @@ describe("progress-card loop outcomes", () => {
         hashes.add(record.resultHash);
       }
       expect(hashes.size).toBe(1);
-      expect(
-        detectToolCallLoop(state, "progress_card", params, config, { runId: "run-1" }),
-      ).toMatchObject({ stuck: true, level: "critical", count: 20 });
-      expect(
-        detectToolCallLoop(state, "progress_card", params, config, { runId: "run-2" }),
-      ).toEqual({ stuck: false });
-      expect(
-        detectToolCallLoop(state, "progress_card", params, { enabled: false }, { runId: "run-1" }),
-      ).toEqual({ stuck: false });
+      expect(detectToolCallLoop(state, "progress_card", params, { runId: "run-1" })).toMatchObject({
+        stuck: true,
+        level: "critical",
+        count: 20,
+      });
+      expect(detectToolCallLoop(state, "progress_card", params, { runId: "run-2" })).toEqual({
+        stuck: false,
+      });
     },
   );
   it("keeps markdown and plan changes meaningful even when counts match", async () => {
@@ -100,9 +101,9 @@ describe("progress-card loop outcomes", () => {
       {},
     ];
     for (const params of inputs) {
-      expect(
-        detectToolCallLoop(state, "progress_card", params, config, { runId: "run-1" }),
-      ).toEqual({ stuck: false });
+      expect(detectToolCallLoop(state, "progress_card", params, { runId: "run-1" })).toEqual({
+        stuck: false,
+      });
       const { record } = await execute(params);
       hashes.add([record.argsHash, record.resultHash].join(":"));
     }

@@ -100,13 +100,14 @@ export function registerSessionsSpawnInputTests({
   it("gives an executable visible retry for visible-only parameters on a hidden spawn", async () => {
     const callGateway = mockGateway({
       key: "agent:main:dashboard:child",
+      sessionId: "visible-child",
       runStarted: true,
       runId: "run-visible",
     });
     const tool = createTool({
       registerRun: vi.fn(),
       countActiveRuns: () => 0,
-      config: { agents: { list: [{ id: "main" }] }, tools: { swarm: true } },
+      config: { agents: { entries: { main: {} } }, tools: { swarm: true } },
       callGateway,
     });
     finalizeAgentToolAvailability([tool, createAgentsWaitTool({})]);

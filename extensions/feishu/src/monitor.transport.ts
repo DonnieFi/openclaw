@@ -4,10 +4,12 @@ import * as Lark from "@larksuiteoapi/node-sdk";
 import { waitUntilAbort } from "openclaw/plugin-sdk/channel-outbound";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { channelBlockedPatch, channelReadyPatch } from "openclaw/plugin-sdk/gateway-runtime";
+import { sendJson } from "openclaw/plugin-sdk/http-response-runtime";
 import { createPluginRuntimeStore } from "openclaw/plugin-sdk/runtime-store";
 import { safeEqualSecret } from "openclaw/plugin-sdk/security-runtime";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
-import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
+import { truncateWithMarker } from "openclaw/plugin-sdk/string-normalization-runtime";
+import { safeParseJson } from "openclaw/plugin-sdk/text-utility-runtime";
 import {
   applyBasicWebhookRequestGuards,
   getWebhookLegacyListener,
@@ -35,7 +37,6 @@ import {
   FEISHU_WEBHOOK_BODY_TIMEOUT_MS,
   FEISHU_WEBHOOK_MAX_BODY_BYTES,
   feishuWebhookRateLimiter,
-  readFeishuBotIdentityRevision,
   recordWebhookStatus,
   wsClients,
 } from "./monitor.state.js";
@@ -100,15 +101,6 @@ function buildFeishuWebhookEnvelope(
     }
   }
   return envelope;
-}
-
-function parseFeishuWebhookPayload(rawBody: string): Record<string, unknown> | null {
-  try {
-    const parsed = JSON.parse(rawBody) as unknown;
-    return isRecord(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
 }
 
 function isFeishuWebhookTimestampFresh(timestamp: string): boolean {
@@ -177,13 +169,11 @@ function formatFeishuWsErrorForLog(err: unknown): string {
     .replace(/\s+/g, " ")
     .trim();
 
-  if (!redacted) {
-    return "unknown error";
-  }
-  if (redacted.length <= FEISHU_WS_LOG_ERROR_MAX_LENGTH) {
-    return redacted;
-  }
-  return `${truncateUtf16Safe(redacted, FEISHU_WS_LOG_ERROR_MAX_LENGTH)}...`;
+  return truncateWithMarker(redacted || "unknown error", FEISHU_WS_LOG_ERROR_MAX_LENGTH, {
+    marker: "...",
+    reserve: 0,
+    trimEnd: false,
+  });
 }
 
 function isFeishuWsTerminalError(err: Error): boolean {
@@ -320,7 +310,6 @@ export async function monitorWebSocket({
         break;
       }
 
-      // WS start failed (e.g. handshake / auth) — publish disconnected.
       const failedAt = Date.now();
       // The SDK classifier is the only terminal contract here. App-secret/auth refinement is
       // deferred until Feishu exposes a structured authentication failure at this boundary.
@@ -518,8 +507,8 @@ async function handleFeishuWebhook(
     }
 
     const { encryptKey, eventDispatcher, invokeWebhookEvent } = selectedTarget;
-    const payload = parseFeishuWebhookPayload(rawBody);
-    if (!payload) {
+    const payload = safeParseJson(rawBody);
+    if (!isRecord(payload)) {
       respondText(res, 400, "Invalid JSON");
       return;
     }
@@ -528,9 +517,7 @@ async function handleFeishuWebhook(
       encryptKey,
     });
     if (isChallenge) {
-      res.statusCode = 200;
-      res.setHeader("Content-Type", "application/json; charset=utf-8");
-      res.end(JSON.stringify(challenge));
+      sendJson(res, 200, challenge);
       return;
     }
 
@@ -547,9 +534,7 @@ async function handleFeishuWebhook(
         // non-durable event types ack without claiming durable acceptance.
         res.setHeader(FEISHU_WEBHOOK_ACCEPTED_HEADER, FEISHU_WEBHOOK_ACCEPTED_VALUE);
       }
-      res.statusCode = 200;
-      res.setHeader("Content-Type", "application/json; charset=utf-8");
-      res.end(JSON.stringify(invocation.value));
+      sendJson(res, 200, invocation.value);
     }
   } catch (err) {
     reportError("webhook handler error", err);
@@ -573,7 +558,7 @@ export async function monitorWebhook(params: MonitorTransportParams): Promise<vo
   const rawPath = account.config.webhookPath ?? DEFAULT_FEISHU_WEBHOOK_PATH;
   if (normalizeFeishuWebhookPath(rawPath) !== rawPath) {
     throw new Error(
-      `Feishu account "${accountId}" webhookPath must be a canonical HTTP request path; ` +
+      `Feishu account "${accountId}" webhookPath must be a normalized HTTP request path; ` +
         'run "openclaw doctor --fix" to repair it',
     );
   }
@@ -611,7 +596,6 @@ export async function monitorWebhook(params: MonitorTransportParams): Promise<vo
     }
     cleanupStarted = true;
     stopped.abort();
-    const identityRevision = readFeishuBotIdentityRevision(accountId);
     pendingDrain = (async () => {
       const pendingResponses = registration.target.pendingResponses;
       if (pendingResponses.size > 0) {
@@ -624,9 +608,8 @@ export async function monitorWebhook(params: MonitorTransportParams): Promise<vo
           }
         }
       }
-      // A successor can publish identity before registering its route during the drain.
+      // Registered successors retain identity; startup overlapping this drain is best effort.
       if (
-        readFeishuBotIdentityRevision(accountId) === identityRevision &&
         ![...webhookTargets.values()].some((targets) =>
           targets.some(
             (target) =>

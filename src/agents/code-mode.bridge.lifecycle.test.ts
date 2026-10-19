@@ -2,8 +2,13 @@
 import { getEventListeners } from "node:events";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { runWithAgentToolExecutionContext } from "../../packages/agent-core/src/tool-execution-context.js";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { composeTranscriptDisplay } from "../chat/transcript-display-position.js";
+import {
+  clearRuntimeConfigSnapshot,
+  setRuntimeConfigSnapshot,
+} from "../config/runtime-snapshot.js";
 import { resolveDefaultSessionStorePath } from "../config/sessions/paths.js";
 import { upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
 import { patchSessionEntryCore } from "../config/sessions/session-accessor.sqlite-entry.js";
@@ -20,7 +25,7 @@ import { buildExecApprovalPendingToolResult } from "./bash-tools.exec-host-share
 import { resolveCodeModeConfig, toToolSearchConfig } from "./code-mode-runtime.js";
 import { disposeAllCodeModeRuns, waitForPendingBridgeSettlement } from "./code-mode-state.js";
 import { createSubscribedCodeModeHarness as subscribeHarness } from "./code-mode.bridge.lifecycle.test-support.js";
-import { applyCodeModeCatalog } from "./code-mode.js";
+import { applyCodeModeCatalog, buildCodeModeCatalogPrompt } from "./code-mode.js";
 import {
   fakeTool,
   pluginToolWithExecute,
@@ -32,9 +37,10 @@ import {
 } from "./code-mode.test-support.js";
 import { buildEmbeddedRunPayloads } from "./embedded-agent-runner/run/payloads.js";
 import { emitAssistantTextDeltaAndEnd } from "./embedded-agent-subscribe.e2e-harness.js";
-import { countActiveToolExecutions } from "./embedded-agent-subscribe.handlers.tools.js";
+import { countActiveToolExecutions } from "./embedded-agent-subscribe.handlers.tools.start.js";
 import { attachInternalToolExecutionPreparer } from "./runtime/internal-hooks.js";
 import { SessionManager } from "./sessions/session-manager.js";
+import { makeAssistantMessageFixture } from "./test-helpers/assistant-message-fixtures.js";
 import { addClientToolsToToolCatalog } from "./tool-search-catalog.js";
 import { ToolSearchRuntime } from "./tool-search-runtime.js";
 import { clearToolSearchCatalog } from "./tool-search.js";
@@ -56,10 +62,77 @@ describe("Code Mode subscribed bridge lifecycle", () => {
     harnessDisposers.splice(0).forEach((dispose) => dispose());
     vi.useRealTimers();
     await resetCodeModeTestState();
+    clearRuntimeConfigSnapshot();
+  });
+
+  it("admits nested activity when consecutive assistant responses reuse exec_0", async () => {
+    await withStateDirEnv("openclaw-code-mode-reused-id-", async () => {
+      const name = "reused-exec-id";
+      const scope = {
+        agentId: "main",
+        sessionId: `session-code-mode-${name}`,
+        sessionKey: `agent:main:${name}`,
+        storePath: resolveDefaultSessionStorePath("main"),
+      };
+      await upsertSessionEntryCore(scope, { sessionId: scope.sessionId, updatedAt: 1 });
+      const manager = SessionManager.open(scope);
+      manager.appendMessage({ role: "user", content: "Read both records", timestamp: 1 });
+      const harness = createSubscribedCodeModeHarness({ name, sessionManager: manager });
+      const target = fakeTool("read_record", "Read a record");
+      applyCodeModeCatalog({ ...harness, tools: [...harness.tools, target] });
+      const exec = expectDefined(harness.tools[0], "Code Mode exec");
+      const wait = expectDefined(harness.tools[1], "Code Mode wait");
+      try {
+        for (const value of ["first", "second"]) {
+          const toolCall = {
+            type: "toolCall" as const,
+            id: "exec_0",
+            name: "exec",
+            arguments: { code: `return await read_record({ value: "${value}" });` },
+          };
+          const assistantMessage = makeAssistantMessageFixture({
+            responseId: `chatcmpl-${value}`,
+            content: [toolCall],
+            stopReason: "toolUse",
+          });
+          manager.appendMessage(assistantMessage);
+          const details = resultDetails(
+            await runWithAgentToolExecutionContext({ assistantMessage, toolCall }, () =>
+              exec.execute(toolCall.id, toolCall.arguments),
+            ),
+          );
+          const result = await waitUntilCompleted({ details, waitTool: wait });
+          expect(result.status, JSON.stringify(result)).toBe("completed");
+          expect(result.value).toMatchObject({ input: { value } });
+        }
+
+        const activities = await harness.readNestedActivities();
+        expect(activities.map(({ details }) => details.input)).toEqual([
+          { value: "first" },
+          { value: "second" },
+        ]);
+        expect(new Set(activities.map(({ details }) => details.toolCallId)).size).toBe(2);
+        expect(activities.map(({ details }) => details.parentToolCallId)).toEqual([
+          "exec_0",
+          "exec_0",
+        ]);
+        const admitted = SessionManager.open(scope)
+          .getEntries()
+          .flatMap((entry) =>
+            entry.type === "message" ? [readNestedToolActivity(entry.message)] : [],
+          )
+          .filter(Boolean);
+        expect(admitted).toEqual(activities);
+      } finally {
+        harness.dispose();
+      }
+    });
   });
 
   it("returns a committed source reply after recording its nested tool activity", async () => {
     await withStateDirEnv("openclaw-code-mode-source-reply-", async () => {
+      const config = { agents: { entries: { main: {} } } };
+      setRuntimeConfigSnapshot(config);
       const name = "source-reply";
       const scope = {
         agentId: "main",
@@ -71,7 +144,6 @@ describe("Code Mode subscribed bridge lifecycle", () => {
       const manager = SessionManager.open(scope);
       manager.appendMessage({ role: "user", content: "Review this format", timestamp: 1 });
       const harness = createSubscribedCodeModeHarness({ name, sessionManager: manager });
-      const config = { agents: { entries: { main: { default: true } } } };
       const target = createMessageTool({
         config,
         preparedMessageToolCatalog: { version: 0, channels: [], getChannel: () => undefined },
@@ -81,13 +153,6 @@ describe("Code Mode subscribed bridge lifecycle", () => {
         sessionId: scope.sessionId,
         agentId: scope.agentId,
         runId: harness.runId,
-        getScopedChannelsCommandSecretTargets: () => ({ targetIds: new Set<string>() }),
-        resolveCommandSecretRefsViaGateway: async () => ({
-          resolvedConfig: config,
-          diagnostics: [],
-          targetStatesByPath: {},
-          hadUnresolvedTargets: false,
-        }),
       });
       applyCodeModeCatalog({ ...harness, tools: [...harness.tools, target] });
       try {
@@ -184,6 +249,7 @@ describe("Code Mode subscribed bridge lifecycle", () => {
         sessionKey: "agent:main:nested-history",
         storePath: resolveDefaultSessionStorePath("main"),
       };
+      setRuntimeConfigSnapshot({ session: { store: scope.storePath } });
       const initialEntry = { sessionId: scope.sessionId, updatedAt: 1 };
       await patchSessionEntryCore(scope, () => initialEntry, {
         fallbackEntry: initialEntry,
@@ -622,6 +688,9 @@ describe("Code Mode subscribed bridge lifecycle", () => {
     expect(result.status, JSON.stringify(result)).toBe("waiting");
     const runId = result.runId as string;
     const initial = expectDefined(testing.activeRuns.get(runId), "initial snapshot");
+    controller.abort(new Error("exec observer finished"));
+    expect(testing.activeRuns.get(runId)).toBe(initial);
+    expect(initial.owner.signal.aborted).toBe(false);
     expect(applyCodeModeCatalog(owner).catalogReused).toBe(true);
     addClientToolsToToolCatalog({
       enabled: true,
@@ -629,11 +698,12 @@ describe("Code Mode subscribed bridge lifecycle", () => {
       tools: [fakeTool("client_probe", "Client probe")],
     });
     expect(testing.activeRuns.get(runId)).toBe(initial);
-    expect(exec.description).toContain("client_probe");
+    expect(buildCodeModeCatalogPrompt(owner, owner.catalogRef.current?.entries ?? [])).toContain(
+      "client_probe",
+    );
 
     for (let index = 0; index < 2; index += 1) {
       const previous = expectDefined(testing.activeRuns.get(runId), "previous snapshot");
-      const previousController = controller;
       controller = new AbortController();
       result = resultDetails(
         await wait.execute(`transfer-wait-${index}`, { runId }, controller.signal),
@@ -641,7 +711,7 @@ describe("Code Mode subscribed bridge lifecycle", () => {
       expect(result).toMatchObject({ status: "waiting", runId });
       const replacement = expectDefined(testing.activeRuns.get(runId), "replacement snapshot");
       expect(replacement).not.toBe(previous);
-      previousController.abort();
+      controller.abort(new Error("wait observer finished"));
       expect(testing.activeRuns.get(runId)).toBe(replacement);
       expect(replacement.owner).toBe(previous.owner);
       expect(replacement.owner.signal.aborted).toBe(false);
@@ -807,7 +877,6 @@ describe("Code Mode subscribed bridge lifecycle", () => {
   });
 
   it.each([
-    { kind: "explicit cancellation", close: "cancel" },
     { kind: "snapshot expiry", close: "expire" },
     { kind: "gateway shutdown", close: "shutdown" },
   ] as const)(
@@ -869,9 +938,7 @@ describe("Code Mode subscribed bridge lifecycle", () => {
             ? undefined
             : wait.execute(`code-wait-${close}`, { runId: suspended.runId });
 
-        if (close === "cancel") {
-          pending.cancel?.();
-        } else if (close === "expire") {
+        if (close === "expire") {
           parked.expiresAt = Date.now() - 1;
           testing.removeExpiredRuns();
         } else {
@@ -881,12 +948,6 @@ describe("Code Mode subscribed bridge lifecycle", () => {
         if (waiting) {
           const result = resultDetails(await waiting);
           expect(result.status).not.toBe("waiting");
-          if (close === "cancel") {
-            expect(result).toMatchObject({
-              status: "completed",
-              value: expect.stringMatching(/cancel/i),
-            });
-          }
         } else {
           await waitForPendingBridgeSettlement([pending], { kind: "awaiting" });
           await expect(

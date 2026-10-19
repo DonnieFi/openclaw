@@ -4,7 +4,6 @@ import path from "node:path";
 import { afterEach, beforeEach, expect, vi } from "vitest";
 import { clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../../../config/config.js";
 import { callGateway } from "../../../gateway/call.js";
-import type { ChatAbortControllerEntry } from "../../../gateway/chat-abort.types.js";
 import type { GatewayRecoveryRuntime } from "../../../gateway/server-instance-runtime.types.js";
 import { onAgentEvent } from "../../../infra/agent-events.js";
 import { isPathInside } from "../../../infra/path-guards.js";
@@ -21,20 +20,17 @@ const { announceSpy } = vi.hoisted(() => ({
   announceSpy: vi.fn(async (): Promise<"delivered" | "retryable"> => "delivered"),
 }));
 
-vi.mock("../announce/subagent-announce.js", async (importOriginal) => {
-  const { hasUsableSessionEntry } =
-    await importOriginal<typeof import("../announce/subagent-announce.js")>();
-  return {
-    hasUsableSessionEntry,
-    runSubagentAnnounceFlow: announceSpy,
-    captureSubagentCompletionReply: vi.fn(async () => undefined),
-  };
-});
+vi.mock("../announce/subagent-announce.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../announce/subagent-announce.js")>()),
+  runSubagentAnnounceFlow: announceSpy,
+  captureSubagentCompletionReply: vi.fn(async () => undefined),
+}));
 
 export { announceSpy };
 
 export function createSubagentPersistenceRuntime(call: typeof callGateway): GatewayRecoveryRuntime {
   return {
+    prepareRestartRecovery: () => undefined,
     dispatchSessionMethod: (method, params, options) =>
       call({
         method,
@@ -46,6 +42,7 @@ export function createSubagentPersistenceRuntime(call: typeof callGateway): Gate
     dispatchAgent: (params, timeoutMs) => call({ method: "agent", params, timeoutMs }),
     waitForAgent: (params, timeoutMs) => call({ method: "agent.wait", params, timeoutMs }),
     sendRecoveryNotice: vi.fn(),
+    resumeChatInput: vi.fn(),
   };
 }
 
@@ -59,7 +56,6 @@ export function activateSubagentPersistenceRegistry(
 ) {
   const recoveryRuntime = createSubagentPersistenceRuntime(call);
   const gateway = {
-    chatAbortControllers: new Map<string, ChatAbortControllerEntry>(),
     recoveryRuntime,
     resolveGatewayContext: () => gateway as never,
   };

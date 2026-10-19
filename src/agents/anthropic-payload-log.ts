@@ -73,11 +73,9 @@ type AnthropicPayloadLogger = {
   recordUsage: (messages: AgentMessage[], error?: unknown) => void;
 };
 
-/** Create an Anthropic payload/usage logger when the env flag is enabled. */
 export function createAnthropicPayloadLogger(
   params: AgentTraceBase & {
     env?: NodeJS.ProcessEnv;
-    writer?: QueuedFileWriter;
   },
 ): AnthropicPayloadLogger | null {
   const env = params.env ?? process.env;
@@ -90,7 +88,7 @@ export function createAnthropicPayloadLogger(
     return null;
   }
 
-  const writer = params.writer ?? getQueuedFileWriter(writers, filePath);
+  const writer = getQueuedFileWriter(writers, filePath);
   const base = buildAgentTraceBase(params);
 
   const record = (event: PayloadLogEvent) => {

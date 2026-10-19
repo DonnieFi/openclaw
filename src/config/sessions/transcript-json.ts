@@ -1,29 +1,27 @@
 import { isProxy } from "node:util/types";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { copyPreparedModelVisibleToolText } from "../../logging/redact-internal.js";
 
-// Only this owner admits frozen descendants whose strings own their backing storage.
-const ownedTranscriptGraphs = new WeakSet<object>();
+// Keep only immutable payload roots across appends, not every retained descendant.
+const ownedTranscriptRoots = new WeakSet<object>();
+
+/** Normalization seals these payload roots before they can be shared across views. */
+export function isOwnedTranscriptPayload(value: object): boolean {
+  return ownedTranscriptRoots.has(value);
+}
 
 /** Preserve ordinary transcript objects while admitting their JSON storage shape. */
-export function normalizeTranscriptJsonValue(
-  value: unknown,
-  key: string,
-  preserveSource = false,
-): unknown {
-  if (requiresNativeJson(value, new Set())) {
+export function normalizeTranscriptJsonValue(value: unknown, key: string): unknown {
+  const visited = new Set<object>();
+  if (requiresNativeJson(value, visited)) {
     // SDK v2026.9.8 accepts arbitrary custom data. Finish its observable serialization
     // before changing any sibling that a getter or toJSON could inspect.
     // oxlint-disable-next-line unicorn/prefer-structured-clone -- Preserve native JSON/toJSON semantics.
     const projected: unknown = JSON.parse(JSON.stringify({ __proto__: null, [key]: value }));
     const normalized =
       isRecord(projected) && Object.hasOwn(projected, key) ? projected[key] : undefined;
-    if (isRecord(value) && isRecord(normalized)) {
-      copyPreparedModelVisibleToolText(value, normalized);
-    }
-    return normalizePlainJson(normalized, false, false);
+    return normalizePlainJson(normalized, visited, false);
   }
-  return normalizePlainJson(value, preserveSource);
+  return normalizePlainJson(value, visited);
 }
 
 function requiresNativeJson(value: unknown, ancestors: Set<object>): boolean {
@@ -72,7 +70,12 @@ function requiresNativeJson(value: unknown, ancestors: Set<object>): boolean {
   }
 }
 
-function normalizePlainJson(value: unknown, preserveSource: boolean, copyStrings = true): unknown {
+function normalizePlainJson(
+  value: unknown,
+  admitted: Set<object>,
+  copyStrings = true,
+  retainRoots = true,
+): unknown {
   if (value === null || typeof value !== "object") {
     if (copyStrings && typeof value === "string") {
       // A small slice can otherwise pin an entire tool output. Preserve lone surrogates.
@@ -86,23 +89,26 @@ function normalizePlainJson(value: unknown, preserveSource: boolean, copyStrings
         ? undefined
         : value;
   }
-  if (ownedTranscriptGraphs.has(value)) {
+  if (ownedTranscriptRoots.has(value) || admitted.has(value)) {
     return value;
   }
   const array = Array.isArray(value);
   const keys = Object.keys(value);
-  const mutable = !preserveSource && Object.isExtensible(value);
+  const mutable = Object.isExtensible(value);
   let normalized = value;
   const length = array ? value.length : keys.length;
   for (let index = 0; index < length; index++) {
     const member = array ? String(index) : keys[index]!;
     const descriptor = Object.getOwnPropertyDescriptor(value, member);
     const current: unknown = descriptor?.value;
-    const next = normalizePlainJson(current, preserveSource, copyStrings);
+    const next = normalizePlainJson(current, admitted, copyStrings, false);
     const retained = array && next === undefined ? null : next;
     if (retained && typeof retained === "object") {
       Object.freeze(retained);
-      ownedTranscriptGraphs.add(retained);
+      admitted.add(retained);
+      if (retainRoots) {
+        ownedTranscriptRoots.add(retained);
+      }
     }
     // Equal string contents do not imply equal backing-store ownership.
     if (
@@ -128,9 +134,6 @@ function normalizePlainJson(value: unknown, preserveSource: boolean, copyStrings
         writable: true,
       });
     }
-  }
-  if (isRecord(value) && isRecord(normalized)) {
-    copyPreparedModelVisibleToolText(value, normalized);
   }
   return normalized;
 }

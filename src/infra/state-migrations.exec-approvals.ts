@@ -1,6 +1,5 @@
 // Doctor-only import for the retired exec approvals JSON store.
 import { randomUUID } from "node:crypto";
-import { isDeepStrictEqual } from "node:util";
 import { root, type Root } from "@openclaw/fs-safe";
 import { safeParseJsonRecord } from "@openclaw/normalization-core/json-coercion";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
@@ -11,7 +10,6 @@ import {
   normalizeExecApprovalsInternal,
   parseLegacyExecApprovals,
   resolveExecApprovalsPath,
-  tryParsePersistedExecApprovals,
 } from "./exec-approvals-config.js";
 import type { ExecApprovalsFile } from "./exec-approvals-core.js";
 import { ExecApprovalsMigrationRequiredError } from "./exec-approvals-migration-gate.js";
@@ -36,7 +34,6 @@ import {
 import {
   LegacyMigrationSourceClaim,
   legacyMigrationSourceOrClaimMayExist,
-  legacyMigrationSourceSnapshotsMatch as snapshotsMatch,
   readLegacyMigrationSourceSnapshot,
   type LegacyMigrationSourceSnapshot,
 } from "./state-migrations.source-snapshot.js";
@@ -199,26 +196,6 @@ function decideAndRecordMigration(params: {
         removeSource = canonical.raw_json === params.snapshot.raw;
       }
 
-      if (decision === "legacy-imported" || decision === "invalid-canonical-repaired") {
-        if (!legacyFile) {
-          throw new Error("exec approvals import decisions require a parsed legacy file");
-        }
-        const verified = readExecApprovalsConfigRow(db);
-        const verifiedFile = verified ? tryParsePersistedExecApprovals(verified.raw_json) : null;
-        const rawMatches = verified?.raw_json === importedRaw;
-        const fileMatches =
-          verifiedFile &&
-          isDeepStrictEqual(
-            JSON.parse(serializeExecApprovals(verifiedFile)),
-            JSON.parse(serializeExecApprovals(legacyFile)),
-          );
-        if (!rawMatches || !fileMatches) {
-          throw new Error(
-            `SQLite verification failed for the exec approvals migration (raw=${rawMatches}, parsed=${Boolean(fileMatches)})`,
-          );
-        }
-      }
-
       const reportJson = JSON.stringify({
         source: MIGRATION_KIND,
         target: TARGET_TABLE,
@@ -313,10 +290,7 @@ async function migrateWithExclusiveStateOwnership(params: {
 
   try {
     params.beforeVerify?.();
-    const current = await source.read();
-    if (!snapshotsMatch(current, snapshot)) {
-      throw new Error("legacy exec approvals changed after migration loaded them");
-    }
+    await source.verify(snapshot, "legacy exec approvals changed after migration loaded them");
     await source.claim({
       snapshot,
       mismatchMessage: "legacy exec approvals changed before migration could claim them",
