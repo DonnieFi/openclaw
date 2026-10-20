@@ -569,6 +569,7 @@ fun OnboardingFlow(
       inputSource: OnboardingGatewayInputSource,
       attemptedName: String? = null,
     ) {
+      inlineQrScannerActive = false
       pendingProxyReview = plan
       pendingProxyInputSource = inputSource
       pendingProxyName = attemptedName
