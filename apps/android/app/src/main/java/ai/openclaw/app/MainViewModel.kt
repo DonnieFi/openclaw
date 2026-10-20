@@ -323,7 +323,9 @@ class MainViewModel internal constructor(
   private val requestedSettingsRouteState = MutableStateFlow<SettingsRoute?>(null)
   internal val requestedSettingsRoute: StateFlow<SettingsRoute?> get() = requestedSettingsRouteState
 
-  internal class GatewayAdditionRequest
+  internal class GatewayAdditionRequest {
+    val proxySaveFailure = MutableStateFlow<GatewayProxySaveResult?>(null)
+  }
 
   private val gatewayAdditionRequestState = MutableStateFlow<GatewayAdditionRequest?>(null)
   internal val gatewayAdditionRequest: StateFlow<GatewayAdditionRequest?> = gatewayAdditionRequestState
@@ -822,8 +824,8 @@ class MainViewModel internal constructor(
     // Opening, editing, scanning, and dismissing the dialog never reach this boundary.
     launchGatewayConnectionOperation(
       quickSwitch = addition != null,
-      onAdmitted = { addition?.let(::dismissGatewayAddition) },
     ) { runtime, operation ->
+      addition?.proxySaveFailure?.value = null
       val config = plan.config
       if (config.setupExpiresAtMs?.let { it <= System.currentTimeMillis() } == true) {
         withContext(Dispatchers.Main) {
@@ -850,17 +852,22 @@ class MainViewModel internal constructor(
         prefs.gatewayRegistry.entries.value
           .any { it.stableId == endpoint.stableId }
       if (addition != null && targetAlreadyPaired) {
-        if (plan.proxyAuthAction != GatewayProxyAuthAction.Keep &&
-          runtime.updateGatewayProxyCredentials(endpoint, proxyCredentials, operation) != GatewayProxySaveResult.SAVED
-        ) {
-          return@launchGatewayConnectionOperation
+        // Keep the confirmed form and its staged login until persistence succeeds.
+        if (plan.proxyAuthAction != GatewayProxyAuthAction.Keep) {
+          val result = runtime.updateGatewayProxyCredentials(endpoint, proxyCredentials, operation)
+          if (result != GatewayProxySaveResult.SAVED) {
+            if (operation() && gatewayAdditionRequestState.value === addition) addition.proxySaveFailure.value = result
+            return@launchGatewayConnectionOperation
+          }
         }
+        dismissGatewayAddition(addition)
         // Adding an existing target selects it; Gateway credential replacement belongs to Manage Gateways.
         if (runtime.switchToGateway(endpoint.stableId, operation) == GatewayTargetSelection.Unavailable) {
           showUnavailableGateway(operation)
         }
         return@launchGatewayConnectionOperation
       }
+      addition?.let(::dismissGatewayAddition)
       val blankCredentials = config.token.isEmpty() && config.bootstrapToken.isEmpty() && config.password.isEmpty()
       val preservesPairedTarget =
         targetAlreadyPaired && blankCredentials && plan.savedAuthAction == GatewaySavedAuthAction.REPLACE_ENDPOINT
@@ -1381,7 +1388,6 @@ class MainViewModel internal constructor(
 
   private fun launchGatewayConnectionOperation(
     quickSwitch: Boolean = false,
-    onAdmitted: () -> Unit = {},
     action: suspend (NodeRuntime, NodeRuntime.GatewayConnectionOperation) -> Unit,
   ) {
     val createIntent = {
@@ -1410,7 +1416,6 @@ class MainViewModel internal constructor(
         return@launch
       }
       try {
-        onAdmitted()
         withContext(Dispatchers.Default) {
           gatewayConfigOperationMutex.withLock {
             if (operation()) action(runtime, operation)

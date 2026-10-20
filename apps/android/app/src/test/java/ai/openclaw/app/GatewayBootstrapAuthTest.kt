@@ -213,59 +213,76 @@ class GatewayBootstrapAuthTest {
   @Test
   fun conflictingSetupProxyHeaderPreservesGatewayAuthAndDraft() = assertRejectedSetupProxyPreservesState(headerConflict = true)
 
-  private fun assertRejectedSetupProxyPreservesState(headerConflict: Boolean) =
-    runBlocking {
-      val app = RuntimeEnvironment.getApplication() as NodeApp
-      val previousRuntime = app.peekRuntime()
-      val backing = ProxyCommitFailingPreferences(app.getSharedPreferences("setup-proxy-${UUID.randomUUID()}", android.content.Context.MODE_PRIVATE))
-      val prefs = SecurePrefs(app, securePrefsOverride = backing)
-      val transcriptCache = RecordingTranscriptCache()
-      val runtime = trackRuntime(NodeRuntime(app, prefs, transcriptCache))
-      neutralizeColdStartAutoConnect(runtime)
-      val viewModels = ViewModelStore()
-      try {
-        val endpoint = GatewayEndpoint.manual("gateway.example", 443, true)
-        prefs.gatewayRegistry.upsert(gatewayRegistryEntry(endpoint, null))
-        val credentials = GatewayCredentials(token = "dummy-old-token", bootstrapToken = "dummy-old-setup", password = "dummy-old-password")
-        prefs.saveGatewayCredentials(endpoint.stableId, credentials)
-        val deviceId = DeviceIdentityStore.withPrefs(app, prefs).loadOrCreate().deviceId
-        val tokens = DeviceAuthStore(prefs)
-        for (role in listOf("node", "operator")) {
-          assertTrue(tokens.saveToken(endpoint.stableId, deviceId, role, "dummy-old-$role"))
-        }
-        if (headerConflict) {
-          prefs.saveGatewayCustomHeaders(endpoint.stableId, mapOf("Authorization" to "Bearer dummy-existing"))
+  @Test
+  fun failedExistingGatewayProxyChangesKeepAdditionForRetry() = assertRejectedSetupProxyPreservesState(headerConflict = false, existingAddition = true)
+
+  private fun assertRejectedSetupProxyPreservesState(
+    headerConflict: Boolean,
+    existingAddition: Boolean = false,
+  ) = runBlocking {
+    val app = RuntimeEnvironment.getApplication() as NodeApp
+    val previousRuntime = app.peekRuntime()
+    val backing = ProxyCommitFailingPreferences(app.getSharedPreferences("setup-proxy-${UUID.randomUUID()}", android.content.Context.MODE_PRIVATE))
+    val prefs = SecurePrefs(app, securePrefsOverride = backing)
+    val transcriptCache = RecordingTranscriptCache()
+    val runtime = trackRuntime(NodeRuntime(app, prefs, transcriptCache))
+    neutralizeColdStartAutoConnect(runtime)
+    val viewModels = ViewModelStore()
+    try {
+      val endpoint = GatewayEndpoint.manual("gateway.example", 443, true)
+      prefs.gatewayRegistry.upsert(gatewayRegistryEntry(endpoint, null))
+      val credentials = GatewayCredentials(token = "dummy-old-token", bootstrapToken = "dummy-old-setup", password = "dummy-old-password")
+      prefs.saveGatewayCredentials(endpoint.stableId, credentials)
+      val deviceId = DeviceIdentityStore.withPrefs(app, prefs).loadOrCreate().deviceId
+      val tokens = DeviceAuthStore(prefs)
+      for (role in listOf("node", "operator")) {
+        assertTrue(tokens.saveToken(endpoint.stableId, deviceId, role, "dummy-old-$role"))
+      }
+      if (headerConflict) {
+        prefs.saveGatewayCustomHeaders(endpoint.stableId, mapOf("Authorization" to "Bearer dummy-existing"))
+      } else {
+        assertEquals(GatewayProxySaveResult.SAVED, prefs.saveGatewayProxyCredentials(endpoint, GatewayProxyCredentials("dummy-user", "dummy-old-proxy")))
+        backing.failProxyCommits = true
+      }
+      writeField(app, "runtimeInstance", runtime)
+      val viewModel = MainViewModel(app, prefs, SavedStateHandle())
+      viewModels.put("setup-proxy", viewModel)
+      val draft = ChatDraft("Keep this draft", ChatDraftPlacement.Replace, ChatComposerOwner(endpoint.stableId, "main", "main"))
+      viewModel.setChatDraft(draft)
+      val addition =
+        if (existingAddition) {
+          viewModel.openGatewayAddition()
+          requireNotNull(viewModel.gatewayAdditionRequest.value)
         } else {
-          assertEquals(GatewayProxySaveResult.SAVED, prefs.saveGatewayProxyCredentials(endpoint, GatewayProxyCredentials("dummy-user", "dummy-old-proxy")))
-          backing.failProxyCommits = true
+          null
         }
-        writeField(app, "runtimeInstance", runtime)
-        val viewModel = MainViewModel(app, prefs, SavedStateHandle())
-        viewModels.put("setup-proxy", viewModel)
-        val draft = ChatDraft("Keep this draft", ChatDraftPlacement.Replace, ChatComposerOwner(endpoint.stableId, "main", "main"))
-        viewModel.setChatDraft(draft)
+      val replacement = GatewayProxyAuthAction.Save(GatewayProxyCredentials("dummy-user", "dummy-new-proxy"))
+      val actions = if (existingAddition) listOf(replacement, GatewayProxyAuthAction.Remove) else listOf(replacement)
+      val config = GatewayConnectConfig(endpoint.host, endpoint.port, true, "", "dummy-new-setup", "", endpoint.contextPath)
+
+      suspend fun submit(action: GatewayProxyAuthAction) {
         val previousJobs =
           viewModel.viewModelScope.coroutineContext.job.children
             .toSet()
-
-        viewModel.saveGatewayConfigAndConnect(
-          GatewayConnectPlan(
-            config = GatewayConnectConfig(endpoint.host, endpoint.port, true, "", "dummy-new-setup", "", endpoint.contextPath),
-            savedAuthAction = GatewaySavedAuthAction.REPLACE_SETUP,
-            proxyAuthAction = GatewayProxyAuthAction.Save(GatewayProxyCredentials("dummy-user", "dummy-new-proxy")),
-          ),
-        )
+        viewModel.saveGatewayConfigAndConnect(GatewayConnectPlan(config, GatewaySavedAuthAction.REPLACE_SETUP, action), addition)
         drainWithMainLooper {
           viewModel.viewModelScope.coroutineContext.job.children
             .filterNot(previousJobs::contains)
             .toList()
             .joinAll()
         }
+      }
 
-        assertTrue(
-          runtime.gatewayConnectionDisplay.value.statusText
-            .startsWith("Could not save proxy login."),
-        )
+      for (action in actions) {
+        submit(action)
+        if (existingAddition) {
+          assertSame("A rejected proxy change must remain available to retry", addition, viewModel.gatewayAdditionRequest.value)
+        } else {
+          assertTrue(
+            runtime.gatewayConnectionDisplay.value.statusText
+              .startsWith("Could not save proxy login."),
+          )
+        }
         assertEquals(credentials, prefs.loadGatewayCredentials(endpoint.stableId))
         for (role in listOf("node", "operator")) {
           assertEquals("dummy-old-$role", tokens.loadToken(endpoint.stableId, deviceId, role))
@@ -273,11 +290,20 @@ class GatewayBootstrapAuthTest {
         assertSame(draft, viewModel.chatDraft.value)
         assertTrue(transcriptCache.clearedGatewayIds.isEmpty())
         assertEquals(if (headerConflict) null else "dummy-old-proxy", prefs.loadGatewayProxyCredentials(endpoint)?.password)
-      } finally {
-        viewModels.clear()
-        writeField(app, "runtimeInstance", previousRuntime)
       }
+      if (existingAddition) {
+        backing.failProxyCommits = false
+        submit(GatewayProxyAuthAction.Remove)
+        assertNull(viewModel.gatewayAdditionRequest.value)
+        assertNull(prefs.loadGatewayProxyCredentials(endpoint))
+        assertEquals(credentials, prefs.loadGatewayCredentials(endpoint.stableId))
+        assertSame(draft, viewModel.chatDraft.value)
+      }
+    } finally {
+      viewModels.clear()
+      writeField(app, "runtimeInstance", previousRuntime)
     }
+  }
 
   @Test
   fun proxyCredentialEditsDrainBothRolesPreservePairingAndRetireStreaming() =

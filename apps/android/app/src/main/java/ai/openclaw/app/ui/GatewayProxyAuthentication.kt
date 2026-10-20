@@ -44,6 +44,7 @@ internal fun GatewayProxyAuthentication(
   onAction: (GatewayProxyAuthAction) -> Unit,
   savedConfigured: Boolean,
   saveLabel: String = nativeString("Continue"),
+  enabled: Boolean = true,
 ) {
   var editing by remember(endpoint) { mutableStateOf(false) }
   val username = (action as? GatewayProxyAuthAction.Save)?.credentials?.username ?: principal?.username
@@ -63,7 +64,7 @@ internal fun GatewayProxyAuthentication(
       Row(
         Modifier.fillMaxWidth().heightIn(min = 48.dp).selectable(
           selected = basicSelected == basic,
-          enabled = !basic || destinationSupported,
+          enabled = enabled && (!basic || destinationSupported),
           role = Role.RadioButton,
           onClick = {
             basicSelected = basic
@@ -73,13 +74,13 @@ internal fun GatewayProxyAuthentication(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
       ) {
-        RadioButton(selected = basicSelected == basic, onClick = null, enabled = !basic || destinationSupported)
+        RadioButton(selected = basicSelected == basic, onClick = null, enabled = enabled && (!basic || destinationSupported))
         Text(if (basic) nativeString("HTTP Basic") else nativeString("None"), style = ClawTheme.type.body)
       }
     }
   }
   if (basicSelected) {
-    TextButton(onClick = { editing = true }, enabled = destinationSupported) {
+    TextButton(onClick = { editing = true }, enabled = enabled && destinationSupported) {
       Text(if (!configured) nativeString("Configure") else nativeString("Edit"))
     }
   }
@@ -92,6 +93,7 @@ internal fun GatewayProxyAuthentication(
       username = username.orEmpty(),
       configured = configured,
       saveLabel = saveLabel,
+      saving = !enabled,
       usernameLocked = principal?.locked == true,
       onCancel = {
         editing = false
