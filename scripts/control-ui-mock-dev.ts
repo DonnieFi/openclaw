@@ -1813,6 +1813,8 @@ async function createChatPickerScenario(
       agentId: agent.id,
       isMain: true,
       lastMessagePreview: agent.preview,
+      // The agent roster subtitle reads the last assistant message, not the generic preview.
+      lastAssistantMessage: { text: agent.preview, timestamp: rosterTime - (index + 1) * 720_000 },
     }),
     ...agent.sessionLabels.map((label, sessionIndex) => {
       const working = agent.id === "forge" && sessionIndex === 0;
@@ -3794,7 +3796,7 @@ try {
           ...(options.fixture === "board"
             ? { entries: [path.join(uiRoot, "src", "test-helpers", "board-fixture.tsx")] }
             : {}),
-          include: ["diff", "lit/directives/repeat.js"],
+          include: ["diff"],
         },
         plugins: [
           ...createStandaloneMockIsolationPlugins(),

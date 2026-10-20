@@ -153,21 +153,16 @@ function createDeepgramRealtimeTranscriptionSession(
   let speechStarted = false;
   let finalizedTranscript = "";
   let pendingPartial = "";
-  let finalizeRequested = false;
   let finalizeFallbackFired = false;
   let finalizeFallbackTimer: ReturnType<typeof setTimeout> | undefined;
   let openedOnce = false;
 
-  const collapseWhitespace = (value: string) => value.replace(/\s+/g, " ").trim();
-
   const joinTranscript = (left: string, right: string) =>
-    collapseWhitespace(left && right ? `${left} ${right}` : left || right);
+    (left && right ? `${left} ${right}` : left || right).replace(/\s+/g, " ").trim();
 
   const clearFinalizeFallback = () => {
-    if (finalizeFallbackTimer) {
-      clearTimeout(finalizeFallbackTimer);
-      finalizeFallbackTimer = undefined;
-    }
+    clearTimeout(finalizeFallbackTimer);
+    finalizeFallbackTimer = undefined;
   };
 
   const clearTurn = () => {
@@ -275,17 +270,12 @@ function createDeepgramRealtimeTranscriptionSession(
         openedOnce = true;
         clearTurn();
       }
-      finalizeRequested = false;
       finalizeFallbackFired = false;
     },
     sendAudio: (audio, transport) => {
       transport.sendBinary(audio);
     },
     onClose: (transport) => {
-      if (finalizeRequested) {
-        return;
-      }
-      finalizeRequested = true;
       if (finalizedTranscript) {
         // Finalize may produce no Results event when Deepgram has no buffered
         // audio left. Preserve already-finalized text before core force-closes.

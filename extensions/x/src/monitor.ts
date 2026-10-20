@@ -14,11 +14,7 @@ import { parseXPostEnvelope, type XPostEnvelope } from "./api.js";
 import { getXApi, getXTokenState } from "./client.js";
 import { runXEvents, waitForXBudgetReset, type XCursorState, type XEventStatus } from "./events.js";
 import { formatXFailureReport, sendXFailureReport, type XWithheldReason } from "./failure-route.js";
-import {
-  formatXSenderLine,
-  resolveXGuestSettings,
-  resolveXGuestToolPolicy,
-} from "./guest-policy.js";
+import { formatXSenderLine, resolveXGuestSettings } from "./guest-policy.js";
 import { openXGuestUsage, XGuestUsageUnavailableError } from "./guest-usage.js";
 import { getXGuestStatus, resolveXGuestContainmentError } from "./guests.js";
 import { createXPublicationPreparation, resolveXIngress, xMentionFacts } from "./ingress.js";
@@ -30,7 +26,7 @@ import { getXRuntime } from "./runtime.js";
 import { sendXDelivery } from "./send.js";
 import { XBudgetExceededError } from "./spend.js";
 import { assembleXThread } from "./thread.js";
-import { openXWorkOrigins } from "./work-origin.js";
+import { buildXWorkSessionContext, openXWorkOrigins } from "./work-origin.js";
 
 const InvalidXEvent = createChannelIngressError("InvalidXEvent");
 type IngressPayload = { version: number; rawEvent: string };
@@ -326,15 +322,21 @@ export async function startXAccount(ctx: ChannelGatewayContext<ResolvedXAccount>
       if (guest && !(await admitGuest(authorization, cfg))) {
         return;
       }
+      const workSessionContext = guest
+        ? ""
+        : await buildXWorkSessionContext({
+            runtime: core,
+            cfg,
+            accountId: account.accountId,
+            conversationId: post.conversation_id,
+            requesterSessionKey: sessionKey,
+          });
       const author = thread.users.find((user) => user.id === post.author_id);
       const handle = author?.username ?? post.author_id;
       const ctxPayload = core.channel.inbound.buildContext({
         channelIngress,
         access: {
           mentions: { ...xMentionFacts, requireMention: true, explicitlyMentionedBot: true },
-          ...(guest
-            ? { toolPolicy: resolveXGuestToolPolicy(resolveXAccount(cfg, account.accountId)) }
-            : {}),
         },
         channel: "x",
         accountId: account.accountId,
@@ -362,7 +364,7 @@ export async function startXAccount(ctx: ChannelGatewayContext<ResolvedXAccount>
             post.author_id,
             thread.users.find((user) => user.id === post.author_id),
             authorization.github,
-          )}\n${thread.bodyForAgent}`,
+          )}\n${thread.bodyForAgent}${workSessionContext ? `\n\n${workSessionContext}` : ""}`,
         },
       });
       const sessions: XVisibleWorkSession[] = [];
@@ -422,7 +424,7 @@ export async function startXAccount(ctx: ChannelGatewayContext<ResolvedXAccount>
           },
         },
         delivery: {
-          // Only declared successes reach X. Failures go to the configured route or are dropped.
+          // Runtime status notices need no model outcome. Model failures remain withheld.
           preparePayload: async (payload, info) => {
             if (info.kind !== "final") {
               return null;
@@ -442,7 +444,7 @@ export async function startXAccount(ctx: ChannelGatewayContext<ResolvedXAccount>
               log.info(`reply dropped post=${post.id} reason=${text ? "silent" : "empty"}`);
               return null;
             }
-            if (turnOutcome !== "success") {
+            if (turnOutcome !== "success" && !payload.isStatusNotice) {
               await withhold(turnOutcome, text);
               return null;
             }

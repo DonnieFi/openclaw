@@ -1,29 +1,30 @@
 import { buildControlUiFocusPath } from "@openclaw/session-url-contract";
 import type { SessionObserverDigest } from "../../../../packages/gateway-protocol/src/index.js";
-import "./components/chat-details.tsx";
 import type { GatewaySessionRow } from "../../api/types.ts";
 import { availableLinkReaders } from "../../app/link-reader-routing.ts";
 import { isDesktopPanelAvailable } from "../../app/panel-availability.ts";
 import { latestBrowserTabCards } from "../../lib/chat/browser-tab-preview.ts";
 import { storedChatOutboxScopeKey } from "../../lib/chat/outbox-store.ts";
-import { projectOwner } from "../../lib/reactive/projection.ts";
 import { scopedAgentParamsForSession } from "../../lib/sessions/index.ts";
 import { resolveUiConversationIdentity } from "../../lib/sessions/session-key.ts";
 import { resolveSessionWorkspace } from "../../lib/sessions/workspace.ts";
+import { clawCreatorFlow } from "../claws/creator-flow.ts";
+import { canCreateClawDraft } from "../claws/draft-navigation.ts";
 import { PaneOutboxRecovery } from "./chat-outbox-recovery.tsx";
 import { ChatPaneBrowserAnnotationRender } from "./chat-pane-browser-annotation-render.ts";
 import { sidebarPanelDefinitions } from "./chat-pane-embedded-panels.ts";
-import type { PaneDetailsProps } from "./chat-pane-header-view.tsx";
 import type { PaneLayoutData } from "./chat-pane-layout-view.tsx";
 import { resolveChatPaneDesktopTarget } from "./chat-pane-placement.ts";
 import type { createChatPaneRails } from "./chat-pane-rails.ts";
 import type { ResolvedBoardView } from "./chat-pane-shared.ts";
 import { renderSidebarRegion, sidebarRegionCallbacks } from "./chat-pane-sidebar-layout.ts";
+import { createSideChatModelControlProps } from "./chat-session-companion-model-controls.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
 import { createChatToolIcons, type PluginToolIcons } from "./chat-tool-icon-controller.ts";
 import type { ChatProps } from "./chat-view.tsx";
 import { publishChatWorkContext } from "./chat-work-context.ts";
-import { hasTerminalRunStatus } from "./components/chat-composer-state.ts";
+import { getChatComposerState, hasTerminalRunStatus } from "./components/chat-composer-state.ts";
+import type { ChatDetailsElements, ChatDetailsViewProps } from "./components/chat-details.tsx";
 import { resolveAssistantDisplayAvatar } from "./components/chat-welcome.ts";
 import { resolveChatLinkFaviconFetcher } from "./link-favicon-loader.ts";
 import {
@@ -52,16 +53,42 @@ type ChatPaneLayoutRenderParams = {
 };
 
 export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRender {
+  private readonly detailsElements: ChatDetailsElements = {};
+
+  private registerDetailsElement(name: keyof ChatDetailsElements, element: HTMLElement) {
+    this.detailsElements[name] = element;
+    return () => {
+      if (this.detailsElements[name] === element) {
+        delete this.detailsElements[name];
+      }
+    };
+  }
+
+  get composerReady(): boolean {
+    return getChatComposerState(this.presentationId).composerTextarea?.isConnected === true;
+  }
+
+  focusComposerInput(): boolean {
+    const composer = getChatComposerState(this.presentationId).composerTextarea;
+    if (!this.active || !composer?.isConnected || composer.disabled) {
+      return false;
+    }
+    composer.focus({ preventScroll: true });
+    return true;
+  }
+
   private toolIcons?: PluginToolIcons;
 
-  mountToolIcons(): void {
-    const source = projectOwner(this, () => ({
-      context: this.context,
-      session: this.state && !this.catalogHost ? this.resolveChatReadTarget() : undefined,
-    }));
-    this.toolIcons = createChatToolIcons(source.read);
+  mountToolIcons(readGateway: () => unknown): void {
+    this.toolIcons = createChatToolIcons(() => {
+      readGateway();
+      return {
+        context: this.context,
+        session: this.state && !this.history.catalogHost ? this.resolveChatReadTarget() : undefined,
+      };
+    });
   }
-  private desktopFocus: {
+  desktopFocus: {
     key: string;
     client: ChatPageHost["client"];
     href: string;
@@ -91,7 +118,7 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
       session: selectedSession,
       agentWorkspace,
       worktreePath: selectedSession?.worktree
-        ? this.headerWorktreePaths.get(selectedSession.worktree.id)?.path
+        ? this.headerPresentation.worktreePaths.get(selectedSession.worktree.id)?.path
         : undefined,
     });
     if (this.inputRegion === "page") {
@@ -133,13 +160,13 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
             ]),
             onRestored: () => {
               this.chatState.composerPersistence.restore();
-              state.requestUpdate?.();
+              this.chatState.composerPersistence.persistChangedState();
             },
           };
     const latestBrowserTabs = latestBrowserTabCards(chatProps.messages, chatProps.toolMessages);
-    const panePresentation = { owner: this, isPresented: () => this.presented };
+    const panePresentation = { owner: this.element, isPresented: () => this.presented };
     const slotPresentation = (slot: SidebarSlotId, mode: "visible" | "active" = "visible") => ({
-      owner: this,
+      owner: this.element,
       isPresented: () =>
         this.presented &&
         (mode === "active" ? this.active : this.visuallyPresented) &&
@@ -150,6 +177,8 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
     const ownsSubagentsPanel = !catalog && !this.compact;
     const paneChatProps: ChatProps = {
       ...chatProps,
+      onConversationFrameRef: (element) => this.registerDetailsElement("frame", element),
+      onFooterElementRef: (element) => this.registerDetailsElement("footer", element),
       error: conversationVisible ? chatProps.error : null,
       detailsEnabled: !catalog && !this.compact,
       detailsWorkspace: {
@@ -162,10 +191,13 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
       onOpenWorkspace: () => openPanelSlot("workspace"),
       onOpenSubagent: ownsSubagentsPanel ? (key) => this.showSubagents(key) : undefined,
       onOpenSubagents: ownsSubagentsPanel ? (focus) => this.showSubagents(null, focus) : undefined,
+      onOpenProcesses: ownsSubagentsPanel
+        ? () => this.requestBackgroundPanel("processes", "open")
+        : undefined,
       composerRecovery: recovery,
       pluginToolIcons: this.toolIcons,
       presented: {
-        owner: this,
+        owner: this.element,
         isPresented: () => (this.active || Boolean(this.onBackToSubagents)) && this.presented,
       },
       progressCardVisibility: panePresentation,
@@ -173,9 +205,10 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
       latestBrowserTabs: this.active && this.presented ? latestBrowserTabs : undefined,
       historyState: catalog ? undefined : state,
     };
-    const headerDetails: PaneDetailsProps | undefined = ownsSubagentsPanel
+    const headerDetails: ChatDetailsViewProps | undefined = ownsSubagentsPanel
       ? {
           chat: paneChatProps,
+          elements: this.detailsElements,
           mobile: this.mergedChrome && !this.onBackToSubagents,
           presentation: panePresentation,
           conversationVisible,
@@ -202,7 +235,7 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
         }
       : null;
     const discussion = this.buildSessionDiscussionPanel(state, state.sessionKey.trim());
-    const discussionState = this.sessionDiscussionStates.get(state.sessionKey.trim());
+    const discussionState = this.sessionDiscussion.snapshot.states.get(state.sessionKey.trim());
     const discussionAvailable = discussionState === "available" || discussionState === "open";
     const desktopAvailable = isDesktopPanelAvailable(this.context.gateway.snapshot);
     const companionSessionKey = state.sessionKey;
@@ -254,7 +287,7 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
       subagentsPresented: slotPresentation("subagents"),
       processesPresented: slotPresentation("processes"),
       subagentsAvailable: !catalog,
-      subagentsShowRequest: this.subagentsShowRequest,
+      subagentsShowRequest: this.companionIntents.subagentsShowRequest,
       onSubagentSessionSelect: (sessionKey, options) =>
         this.onPaneSessionChange?.(this.paneId, sessionKey, options),
       panePresentation,
@@ -269,31 +302,40 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
       onCloseLinkReader: () => closePanelSlot("link-reader"),
       terminalTabsInHeader: sidebarMainPanel(sidebarLayout)?.slot !== "terminal",
       onCloseTerminal: () => closePanelSlot("terminal"),
-      browserRefreshOnPresentation: !this.pendingPanelToggleRequests.has("browser"),
+      browserRefreshOnPresentation: !this.pendingPanelToggles.requests.has("browser"),
       preferredBrowserTab: [...latestBrowserTabs.values()].at(-1),
       sessionBrowserTabs: [...latestBrowserTabs.values()].map((selection) => selection.tab),
       desktopPresented,
-      desktopRefreshOnPresentation: !this.pendingPanelToggleRequests.has("desktop"),
+      desktopRefreshOnPresentation: !this.pendingPanelToggles.requests.has("desktop"),
       desktopAvailable,
       desktopSource,
+      desktopRuntimeConfig: this.context.runtimeConfig,
       portalPresented: slotPresentation("portal"),
       desktopFocusHref: desktopFocus.href,
       onDesktopFocusTargetChange: (target) => {
         // A retained callback cannot publish a previous presentation's source or control state.
         const href = buildControlUiFocusPath(target, state.basePath);
-        if (this.desktopFocus === desktopFocus && desktopFocus.href !== href) {
-          desktopFocus.href = href;
-          this.requestUpdate();
+        if (
+          this.desktopFocus?.key === desktopFocus.key &&
+          this.desktopFocus.client === desktopFocus.client &&
+          this.desktopFocus.href !== href
+        ) {
+          this.desktopFocus = { ...this.desktopFocus, href };
         }
       },
       dashboard: !this.compact ? this.renderBoardPanel(board, sidebarLayout) : null,
       workspace: sessionWorkspace,
-      detail: { chat: chatProps, host: state, requestUpdate: state.requestUpdate! },
+      detail: { chat: chatProps, host: state },
       digest: observerDigest,
       activeRunId: observerRunId,
       pullRequests: this.sessionPullRequests,
       companion: companionThread,
-      companionFocusRequest: this.sessionCompanionFocusRequest,
+      companionModelControls: createSideChatModelControlProps({
+        state,
+        companion: companionThread,
+        onSelect: (patch) => this.sessionCompanionThreads.setModelSelection(currentAgentId, patch),
+      }),
+      companionFocusRequest: this.companionIntents.focusRequest,
       companionPresented,
       onCompanionSubmit: (question) => void this.submitSessionCompanionQuestion(question),
       onCompanionDraftChange: (draft) =>
@@ -306,6 +348,10 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
         ),
       connected: state.connected,
       onClearCompanion: () => void this.clearSessionCompanion(),
+      onCreateClaw:
+        currentAgentId && canCreateClawDraft(this.context)
+          ? () => void clawCreatorFlow(this.context).start(currentAgentId)
+          : undefined,
       discussion,
       discussionAvailable,
       discussionOpenUrl: discussion?.openUrl ?? null,
@@ -318,7 +364,7 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
       layout: savedLayout,
       closePanelSlot,
       openPanelSlot,
-      forgetDiscussionUrl: () => this.sessionDiscussionOpenUrls.delete(state.sessionKey.trim()),
+      forgetDiscussionUrl: () => this.sessionDiscussion.forgetOpenUrl(state.sessionKey.trim()),
       resizePanel: (columnId, size) => this.commitSidebarPanelResize(savedLayout, columnId, size),
       setPanelOpen: (open) => this.setChatSidePanelOpen(open, savedLayout),
     });
@@ -349,13 +395,32 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
             sessionKey: state.sessionKey,
             agentId: currentAgentId,
             presentation: {
-              owner: this,
+              owner: this.element,
               isPresented: () => this.visuallyPresented,
               preview: () => !this.presented && this.connectionGeneration === connectionGeneration,
             },
           };
     const avatar = resolveAssistantDisplayAvatar(chatProps);
     const region = renderSidebarRegion({
+      onRegionElementRef: (element) => {
+        this.sidebarRegionElement = element;
+        const release = this.registerDetailsElement("pane", element);
+        return () => {
+          release();
+          if (this.sidebarRegionElement === element) {
+            this.sidebarRegionElement = null;
+          }
+        };
+      },
+      onHeaderElementRef: (element) => this.registerDetailsElement("header", element),
+      onRegionViewRef: (element) => {
+        this.sidebarRegionView = element;
+        return () => {
+          if (this.sidebarRegionView === element) {
+            this.sidebarRegionView = null;
+          }
+        };
+      },
       presentationId: this.presentationId,
       conversationTab: { label: chatProps.assistantName, avatar },
       availableWidth: this.paneWidth,
@@ -364,11 +429,10 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
       layout: sidebarLayout,
       sideFocusLocked: sidebarLayout !== savedLayout,
       sideFocusManaged:
-        companionPresented.isPresented() && Boolean(this.sessionCompanionFocusRequest),
-      sideFocusOrigin: this.sideFocusOrigin,
+        companionPresented.isPresented() && Boolean(this.companionIntents.focusRequest),
+      sideFocusOrigin: this.companionIntents.sideFocusOrigin,
       panelDefinitions,
       narrow: this.paneWidth < SIDEBAR_NARROW_BREAKPOINT_PX,
-      requestUpdate: state.requestUpdate!,
     });
     return {
       region,

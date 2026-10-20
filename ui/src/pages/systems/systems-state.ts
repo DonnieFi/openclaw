@@ -6,6 +6,7 @@ import type { ApplicationContext } from "../../app/context.ts";
 import { gatewayPresentationScope } from "../../app/gateway-presentation-scope.ts";
 import { hasOperatorReadAccess } from "../../app/operator-access.ts";
 import { isDesktopPanelAvailable } from "../../app/panel-availability.ts";
+import { enableHostDesktop as enableHostDesktopConfig } from "../../components/desktop/host-desktop-setup.ts";
 import { t } from "../../i18n/index.ts";
 import { resolveEditableSnapshotConfig } from "../../lib/config/config-state-model.ts";
 import { formatUiError } from "../../lib/format-error.ts";
@@ -222,20 +223,15 @@ export function createSystems(context: ApplicationContext) {
     state.desktopSetupError = null;
     notify();
     try {
-      await runtimeConfig.ensureLoaded();
-      if (!isCurrent() || !canEnableHostDesktop()) {
-        return;
-      }
-      const patched = await runtimeConfig.patch({
-        raw: { desktop: { host: { enabled: true } } },
-        note: "systems: enable host desktop",
-        canDispatch: () => isCurrent() && canEnableHostDesktop(),
-      });
-      if (isCurrent() && !patched) {
-        state.desktopSetupError = runtimeConfig.state.lastError ?? t("systems.desktopSetupFailed");
-      }
-      if (isCurrent() && patched) {
+      const failure = await enableHostDesktopConfig(
+        runtimeConfig,
+        "systems: enable host desktop",
+        () => isCurrent() && canEnableHostDesktop(),
+      );
+      if (isCurrent() && failure === null) {
         await refresh();
+      } else if (isCurrent() && failure !== undefined) {
+        state.desktopSetupError = failure;
       }
     } catch (error) {
       if (isCurrent()) {
@@ -252,9 +248,7 @@ export function createSystems(context: ApplicationContext) {
   const telemetryHistory = (id: string) => (current() ? (telemetry.get(id) ?? []) : []);
 
   function notify(): void {
-    for (const listener of listeners) {
-      listener();
-    }
+    listeners.forEach((listener) => listener());
   }
 
   function projectRows(): void {
@@ -327,16 +321,14 @@ export function createSystems(context: ApplicationContext) {
     }
     active = presented;
     if (!presented) {
-      for (const unsubscribe of subscriptions) {
-        unsubscribe();
-      }
-      subscriptions = [];
+      subscriptions.splice(0).forEach((unsubscribe) => unsubscribe());
       cancelRefresh();
       cancelBackups();
       resetDesktopSetup();
       return;
     }
     subscriptions = [
+      // Gateway receipts cancel stale inventory, backup, and desktop work before connection or access changes settle.
       context.gateway.subscribe((snapshot) => {
         const changed = lifecycle.transition(snapshot);
         if (!current()) {
@@ -376,11 +368,11 @@ export function createSystems(context: ApplicationContext) {
           void refreshTelemetry();
         }
       }),
+      // Rebuild session-to-machine bindings synchronously for selection, telemetry, and shared inventory readers.
       context.sessions.subscribe(() => {
         projectRows();
         notify();
       }),
-      context.runtimeConfig.subscribe(() => notify()),
     ];
     if (lifecycle.transition(context.gateway.snapshot)) {
       telemetry.clear();

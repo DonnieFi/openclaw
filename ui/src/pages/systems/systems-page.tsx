@@ -1,13 +1,16 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { For, Show, createEffect, createMemo, onCleanup, onSettled } from "solid-js";
-import { DESKTOP_PANEL_TOGGLE_EVENT } from "../../components/panel-toggle-contract.ts";
+import { hostDesktopSetupCopy } from "../../components/desktop/host-desktop-setup.ts";
 import "../../components/sparkline-tile.tsx";
-import { Icon } from "../../components/solid/icon.tsx";
+import { DESKTOP_PANEL_TOGGLE_EVENT } from "../../components/panel-toggle-contract.ts";
 import "../../components/desktop/desktop-panel.ts";
+import { Icon } from "../../components/solid/icon.tsx";
 import { registerSystemsEnglish } from "../../i18n/locales/en-systems.ts";
 import { formatByteSize, formatTimeAgo } from "../../lib/format.ts";
 import { shouldHandleNavigationClick } from "../../lib/navigation-click.ts";
+import { projectRuntimeConfig } from "../../lib/reactive/domain-capabilities.ts";
 import { registerEnglishCatalog, t } from "../../lib/reactive/i18n.ts";
+import { listen } from "../../lib/reactive/listener.ts";
 import { projectOwner } from "../../lib/reactive/projection.ts";
 import {
   resolveSessionPreferredFace,
@@ -149,7 +152,12 @@ export function SystemsPage(props: { controller: Systems; presented: boolean }) 
   const source = createMemo(() => props.controller);
   const isPresented = createMemo(() => props.presented);
   const projection = createMemo(() => projectOwner(source(), (value) => value));
-  const controller = () => projection().read();
+  const config = createMemo(() => projectRuntimeConfig(source().context.runtimeConfig));
+  const controller = () => {
+    config().revision();
+    return projection().read();
+  };
+  // The systems owner starts and parks its Gateway polling with page visibility.
   createEffect(
     () => ({ controller: source(), presented: isPresented() }),
     ({ controller: active, presented }) => {
@@ -205,12 +213,12 @@ export function SystemsPage(props: { controller: Systems; presented: boolean }) 
     if (document.visibilityState !== "hidden") {
       timer = setInterval(tick, 15_000);
     }
-    document.addEventListener("visibilitychange", visibility);
-    window.addEventListener(DESKTOP_PANEL_TOGGLE_EVENT, desktopToggle);
+    const stopVisibility = listen(document, "visibilitychange", visibility);
+    const stopToggle = listen(window, DESKTOP_PANEL_TOGGLE_EVENT, desktopToggle);
     return () => {
       clearInterval(timer);
-      document.removeEventListener("visibilitychange", visibility);
-      window.removeEventListener(DESKTOP_PANEL_TOGGLE_EVENT, desktopToggle);
+      stopVisibility();
+      stopToggle();
     };
   });
   return (
@@ -326,29 +334,14 @@ function HostDesktopSetup(props: { controller: Systems; row: SystemsInventoryRow
   const enabled = () => controller().hostDesktopEnabled();
   const isMac = () => systemPlatform(row())?.startsWith("macOS") === true;
   const ready = () => setup()?.state === "ready" || setup()?.state === "managed";
-  const title = () =>
-    enabled()
-      ? "systems.desktopSetupEnabled"
-      : ([
-          ["managed", "systems.managedDesktopConfigured"],
-          ["ready", isMac() ? "systems.screenSharingDetected" : "systems.desktopDetected"],
-          ["needs-server", isMac() ? "systems.screenSharingNeeded" : "systems.desktopServerNeeded"],
-        ].find(([kind]) => kind === setup()?.state)?.[1] ?? "systems.desktopSetupAttention");
-  const hint = () =>
-    enabled()
-      ? "systems.desktopSetupConnecting"
-      : ready()
-        ? "systems.desktopSetupEnableHint"
-        : isMac() && setup()?.state === "needs-server"
-          ? "systems.screenSharingSetupHint"
-          : "systems.desktopServerSetupHint";
+  const copy = () => hostDesktopSetupCopy(setup()?.state, isMac(), enabled());
   return (
     <div class="systems-state" role="status">
       <span class="systems-state__icon" aria-hidden="true">
         <Icon name="monitor" />
       </span>
-      <h2>{t(title())}</h2>
-      <p>{t(hint())}</p>
+      <h2>{t(copy().title)}</h2>
+      <p>{t(copy().hint)}</p>
       {setup()?.state === "unsupported" && setup()!.detail ? <p>{setup()!.detail}</p> : null}
       {controller().state.desktopSetupError ? (
         <p class="systems-callout--error" role="alert">

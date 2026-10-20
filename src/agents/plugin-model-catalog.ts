@@ -10,6 +10,7 @@ import { stat } from "node:fs/promises";
 import path from "node:path";
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import { cloneEnvWithPlatformSemantics } from "../config/config-env-vars.js";
+import { resolveStateDir } from "../config/state-dir.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolvePathViaExistingAncestorSync } from "../infra/boundary-path.js";
 import { hasErrnoCode } from "../infra/errno.js";
@@ -171,7 +172,6 @@ function replacePersistedPluginModelCatalogEntries(
 }
 
 type PluginModelCatalogMigrationResult = {
-  detected: number;
   migrated: number;
   warnings: string[];
 };
@@ -414,7 +414,7 @@ export function migrateLegacyPluginModelCatalogs(params: {
           cause: directoryError,
         });
       }
-      return { detected: 0, migrated: 0, warnings };
+      return { migrated: 0, warnings };
     }
     if (
       params.expectedContents &&
@@ -426,7 +426,7 @@ export function migrateLegacyPluginModelCatalogs(params: {
       });
     }
     retireOrphanedPluginModelCatalogMigrations({ agentDir });
-    return { detected: 0, migrated: 0, warnings: [] };
+    return { migrated: 0, warnings: [] };
   }
 
   retireOrphanedPluginModelCatalogMigrations({
@@ -454,7 +454,7 @@ export function migrateLegacyPluginModelCatalogs(params: {
   }
 
   if (legacyCatalogs.length === 0) {
-    return { detected: 0, migrated: 0, warnings };
+    return { migrated: 0, warnings };
   }
 
   let migrated = 0;
@@ -536,7 +536,7 @@ export function migrateLegacyPluginModelCatalogs(params: {
     });
     migrated += 1;
   }
-  return { detected: legacyCatalogs.length, migrated, warnings };
+  return { migrated, warnings };
 }
 
 /** Replaces rebuildable provider catalogs in the existing per-agent SQLite cache. */
@@ -551,7 +551,6 @@ export async function replacePersistedPluginModelCatalogs(params: {
     env: cloneEnvWithPlatformSemantics(params.env ?? process.env),
   };
   options.path = resolvePathViaExistingAncestorSync(options.path);
-  const authSnapshot = params.authSnapshot && structuredClone(params.authSnapshot);
   const planned = new Map<string, string>();
   for (const [relativePath, contents] of Object.entries(params.pluginCatalogWrites)) {
     const pluginId = decodePluginModelCatalogRelativePathPluginId(relativePath);
@@ -574,7 +573,11 @@ export async function replacePersistedPluginModelCatalogs(params: {
     withPluginModelCatalogWorker(options, planned.size > 0, (scope) =>
       scope.execute({
         type: "catalog.replace",
-        input: { planned: [...planned], authSnapshot, env: options.env },
+        input: {
+          planned: [...planned],
+          authSnapshot: params.authSnapshot,
+          env: { ...options.env, OPENCLAW_STATE_DIR: resolveStateDir(options.env) },
+        },
       }),
     ),
   );
@@ -669,7 +672,7 @@ export function resolvePluginModelCatalogOwnerPluginId(params: {
     owners.modelCatalogProviders.get(providerId),
     owners.providers.get(providerId),
     owners.setupProviders.get(providerId),
-  ].find((entry): entry is readonly string[] => Array.isArray(entry) && entry.length > 0);
+  ].find((entry): entry is readonly string[] => Boolean(entry?.length));
   const pluginId = candidates?.length === 1 ? candidates[0] : undefined;
   if (!pluginId) {
     return undefined;

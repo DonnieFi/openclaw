@@ -3,7 +3,7 @@ import { buildConfigSchemaCore } from "./schema.js";
 import { validateConfigObjectRaw } from "./validation-core.js";
 import { OpenClawSchema } from "./zod-schema.js";
 
-describe("experimental database config", () => {
+describe("database config", () => {
   it.each([
     { source: "env", provider: "default", id: "OPENCLAW_DATABASE_DSN" },
     { source: "file", provider: "database", id: "/dsn" },
@@ -48,7 +48,7 @@ describe("experimental database config", () => {
     expect(OpenClawSchema.parse({ database }).database).toEqual(database);
     const hints = buildConfigSchemaCore().uiHints;
     expect(hints["database.postgres.connection"]?.sensitive).toBe(true);
-    expect(hints.database?.label).toContain("Experimental");
+    expect(hints.database?.label).toBe("Database");
     expect(hints.database?.docsUrl).toBe("https://docs.openclaw.ai/reference/database-engines");
   });
 
@@ -57,6 +57,9 @@ describe("experimental database config", () => {
     { engine: "sqlite" },
     { engine: "postgres" },
     { engine: "postgres", families: { agent: { engine: "postgres" } } },
+    { families: { agent: { engine: "postgres" } } },
+    { engine: "postgres", families: { state: { engine: "sqlite" } } },
+    { engine: "postgres", families: { workboard: { engine: "sqlite" } } },
     {
       families: {
         state: { engine: "postgres" },
@@ -91,28 +94,11 @@ describe("experimental database config", () => {
     { families: { state: "postgres" } },
     { families: { state: { engine: "unknown" } } },
     { families: { state: { engine: "postgres", postgres: { schemaPrefix: "state" } } } },
-    { families: { agent: { engine: "postgres" } } },
     { families: { agents: { engine: "sqlite" } } },
     { families: { quarantine: { engine: "sqlite" } } },
     { families: { "managed-update": { engine: "sqlite" } } },
     { families: { "package-activation": { engine: "sqlite" } } },
   ])("rejects invalid database config %j", (database) => {
     expect(OpenClawSchema.safeParse({ database }).success).toBe(false);
-  });
-
-  it.each([
-    { families: { agent: { engine: "postgres" } } },
-    { engine: "postgres", families: { state: { engine: "sqlite" } } },
-    { engine: "postgres", families: { workboard: { engine: "sqlite" } } },
-  ])("reports unproven mixed PostgreSQL agents at their config path: %j", (database) => {
-    expect(validateConfigObjectRaw({ database })).toMatchObject({
-      ok: false,
-      issues: [
-        {
-          path: "database.families.agent.engine",
-          message: expect.stringContaining("DATABASE_AGENT_MIXED_POSTGRES_UNSUPPORTED"),
-        },
-      ],
-    });
   });
 });

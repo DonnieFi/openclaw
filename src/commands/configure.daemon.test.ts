@@ -4,6 +4,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as runtimePaths from "../daemon/runtime-paths.js";
 import { maybeInstallDaemon } from "./configure.daemon.js";
 
+const runtime = vi.hoisted(() => ({ log: vi.fn(), error: vi.fn(), exit: vi.fn() }));
+vi.mock("../runtime.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../runtime.js")>();
+  return {
+    ...actual,
+    defaultRuntime: { ...actual.defaultRuntime, ...runtime },
+  };
+});
+
 const progressSetLabel = vi.hoisted(() => vi.fn());
 const loadConfig = vi.hoisted(() => vi.fn());
 const resolveGatewayInstallToken = vi.hoisted(() => vi.fn());
@@ -25,6 +34,7 @@ vi.mock("../process/exec.js", async (importOriginal) => ({
 const buildGatewayInstallPlan = vi.hoisted(() => vi.fn());
 const note = vi.hoisted(() => vi.fn());
 const serviceIsLoaded = vi.hoisted(() => vi.fn(async () => false));
+const serviceHasInstalledDefinition = vi.hoisted(() => vi.fn(async () => false));
 const serviceReadCommand = vi.hoisted(() => vi.fn());
 const serviceInstall = vi.hoisted(() => vi.fn(async () => {}));
 const serviceUninstall = vi.hoisted(() => vi.fn(async () => {}));
@@ -68,6 +78,7 @@ vi.mock("../daemon/service.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../daemon/service.js")>()),
   resolveGatewayService: vi.fn(() => ({
     isLoaded: serviceIsLoaded,
+    hasInstalledDefinition: serviceHasInstalledDefinition,
     readCommand: serviceReadCommand,
     install: serviceInstall,
     uninstall: serviceUninstall,
@@ -81,7 +92,6 @@ vi.mock("./systemd-linger.js", () => ({
 
 function runInstall(daemonRuntime?: Parameters<typeof maybeInstallDaemon>[0]["daemonRuntime"]) {
   return maybeInstallDaemon({
-    runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
     port: 18789,
     daemonRuntime,
   });
@@ -90,6 +100,7 @@ function runInstall(daemonRuntime?: Parameters<typeof maybeInstallDaemon>[0]["da
 describe("maybeInstallDaemon", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    runtime.exit.mockReset();
     readDaemonRuntimePinForInstall.mockReturnValue({ revision: "empty", stored: false });
     runExec.mockReset().mockResolvedValue({
       stdout: JSON.stringify({
@@ -101,6 +112,7 @@ describe("maybeInstallDaemon", () => {
       stderr: "",
     });
     serviceIsLoaded.mockResolvedValue(false);
+    serviceHasInstalledDefinition.mockResolvedValue(false);
     serviceReadCommand.mockResolvedValue(null);
     serviceInstall.mockResolvedValue(undefined);
     select.mockReset().mockResolvedValue("node");
@@ -148,15 +160,11 @@ describe("maybeInstallDaemon", () => {
       output: new PassThrough(),
     });
     select.mockResolvedValueOnce("reinstall").mockResolvedValueOnce(cancelled);
-    const runtime = {
-      log: vi.fn(),
-      error: vi.fn(),
-      exit: vi.fn(() => {
-        throw new Error("setup cancelled");
-      }),
-    };
+    runtime.exit.mockImplementationOnce(() => {
+      throw new Error("setup cancelled");
+    });
 
-    await expect(maybeInstallDaemon({ runtime, port: 18789 })).rejects.toThrow("setup cancelled");
+    await expect(maybeInstallDaemon({ port: 18789 })).rejects.toThrow("setup cancelled");
 
     expect(runtime.exit).toHaveBeenCalledWith(1);
     expect(serviceUninstall).not.toHaveBeenCalled();
@@ -240,6 +248,29 @@ describe("maybeInstallDaemon", () => {
     );
 
     expect(serviceInstall).not.toHaveBeenCalled();
+  });
+
+  it("offers the existing-service menu for an installed but disabled unit", async () => {
+    // systemd reports a stopped, disabled unit as not loaded, but its definition remains.
+    serviceHasInstalledDefinition.mockResolvedValue(true);
+    select.mockResolvedValueOnce("skip");
+
+    expect(await runInstall()).toBe("skipped");
+
+    expect(select).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "Gateway service already installed" }),
+    );
+    expect(serviceInstall).not.toHaveBeenCalled();
+    expect(serviceRestart).not.toHaveBeenCalled();
+  });
+
+  it("installs without the existing-service menu when no definition exists", async () => {
+    expect(await runInstall()).toBe("succeeded");
+
+    expect(select).not.toHaveBeenCalledWith(
+      expect.objectContaining({ message: "Gateway service already installed" }),
+    );
+    expect(serviceInstall).toHaveBeenCalledTimes(1);
   });
 
   it("shows restart scheduled when a loaded service defers restart handoff", async () => {

@@ -23,7 +23,7 @@ export function DetailView(
   );
   const hasDetailTabs = () => props.mode === "job" && Boolean(selectedJob());
   const showHistory = () => props.mode === "job" && props.detailTab === "history";
-  const conditionActivity = createMemo(() => {
+  const conditionActivity = () => {
     const job = selectedJob();
     return job?.trigger
       ? {
@@ -32,7 +32,7 @@ export function DetailView(
           lastFiredAtMs: job.state?.lastTriggerFireAtMs,
         }
       : undefined;
-  });
+  };
   return (
     <section class="cron-page cron-page--detail" data-panel-mode={props.mode}>
       <SettingsPage wide>
@@ -88,7 +88,7 @@ function DetailHeader(
   // summary describes unsaved edits, so the two never contradict each other.
   const nextRunAtMs = () => props.selectedJob?.state?.nextRunAtMs;
   const nextRunSuffix = () =>
-    typeof nextRunAtMs() === "number" && Number.isFinite(nextRunAtMs())
+    nextRunAtMs() !== undefined
       ? ` · ${t("cron.jobState.next")} ${formatRelativeTimestamp(nextRunAtMs())}`
       : "";
   const subtitle = () =>
@@ -120,7 +120,7 @@ function DetailHeader(
               type="button"
               class="btn btn--sm"
               data-test-id="cron-run-now"
-              disabled={props.busy}
+              disabled={props.busy || !props.connected}
               onClick={() => {
                 const job = props.selectedJob;
                 if (job) {

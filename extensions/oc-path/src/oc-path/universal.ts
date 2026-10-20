@@ -124,7 +124,6 @@ export function resolveOcPath(ast: OcAst, path: OcPath): OcMatch | null {
   if (isPattern(path)) {
     throw new OcPathError(
       `resolveOcPath received a wildcard pattern; use findOcPaths instead: ${formatOcPath(path)}`,
-      formatOcPath(path),
       "OC_PATH_WILDCARD_IN_RESOLVE",
     );
   }
@@ -575,7 +574,7 @@ function setYamlInsertion(ast: YamlAst, info: InsertionInfo, value: string): OcA
 
 function coerceYamlValue(value: string, current: unknown): unknown {
   if (typeof current === "number") {
-    if (!/^-?(?:0|[1-9]\d*)(?:\.\d+)?$/.test(value)) {
+    if (!/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(value)) {
       return undefined;
     }
     const n = Number(value);
