@@ -2,10 +2,8 @@
 
 Related: https://github.com/openclaw/openclaw/issues/162240
 
-This document describes the implemented Android HTTP Basic ingress contract.
-The [offline preview](design/proxy-login-preview.html) and its image boards are
-historical design artifacts, not runtime, accessibility, or security proof.
-Current test and device evidence belongs in the pull request.
+This document describes the Android HTTP Basic ingress contract. Test and device
+evidence belongs in the pull request.
 
 ## Scope and identity boundary
 
@@ -63,11 +61,9 @@ chat data. It does **not** replace the phone’s persistent device identity, rev
 Gateway-side device pairing, erase server history, or establish a different
 Gateway user. Re-adding with another proxy username can therefore reuse the same
 server-side pairing and retrieve any history the Gateway still authorizes.
-Server revocation is an administrator action. Changing the proxy username is
-only an ingress-credential change, not a switch to an isolated OpenClaw account.
-Even a new device key would not partition history within the same Gateway trust
-boundary. For separate users, connect to their separately isolated Gateways and
-enforce each user’s access at the proxy on every HTTP and WebSocket route.
+Server revocation is an administrator action. Changing the proxy username or
+device key does not partition history within one Gateway trust boundary. Enforce
+access to each isolated Gateway at the proxy on every HTTP and WebSocket route.
 
 ## Storage and transport owners
 
@@ -97,7 +93,8 @@ selecting that target. An editor opening cannot reuse a retired admission. Old
 media requests cannot borrow a replacement password. When setup also replaces
 Gateway authentication, the proxy write must succeed before clearing the old
 Gateway credentials, role tokens, cached chats, or composer drafts. A rejected
-proxy header or failed proxy commit leaves that existing state intact.
+proxy header or failed proxy commit leaves that existing state intact and
+surfaces an actionable onboarding error.
 
 Source icons use the existing `controlUi.linkPreview` RPC on the captured,
 authenticated operator WebSocket and consume only its bounded `faviconDataUrl`.
@@ -119,6 +116,7 @@ One shared proxy selection and credential form serves manual setup, QR/setup-cod
 review, and saved-Gateway editing. **None** remains the default. The destination
 is confirmed before credential-bearing I/O. QR/setup-code authentication and expiry
 remain separate from the proxy draft; proxy passwords are not embedded in codes.
+Expired scanned codes use the scan-error dialog so scanning can restart.
 
 Credential drafts stay in composition memory, never saved-state Bundles or
 navigation arguments. Saved passwords are not read back into the form. Cancel

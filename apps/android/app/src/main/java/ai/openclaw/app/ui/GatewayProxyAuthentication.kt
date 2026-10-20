@@ -30,6 +30,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import ai.openclaw.app.gateway.gatewayProxyDestination as canonicalGatewayProxyDestination
 
 internal fun gatewayProxyDestination(endpoint: GatewayEndpoint): String = "${if (endpoint.tlsEnabled) "https" else "http"}://${formatGatewayAuthority(endpoint.host, endpoint.port)}${endpoint.contextPath}"
 
@@ -54,10 +55,7 @@ internal fun GatewayProxyAuthentication(
   var basicSelected by remember(endpoint, configured) { mutableStateOf(configured) }
   val destinationSupported =
     remember(endpoint) {
-      runCatching {
-        ai.openclaw.app.gateway
-          .gatewayProxyDestination(endpoint)
-      }.isSuccess
+      runCatching { canonicalGatewayProxyDestination(endpoint) }.isSuccess
     }
   Column(Modifier.selectableGroup()) {
     for (basic in listOf(false, true)) {
@@ -129,10 +127,7 @@ internal fun GatewayProxyCredentialDialog(
   var passwordInput by remember(endpoint) { mutableStateOf("") }
   val destinationSupported =
     remember(endpoint) {
-      runCatching {
-        ai.openclaw.app.gateway
-          .gatewayProxyDestination(endpoint)
-      }.isSuccess
+      runCatching { canonicalGatewayProxyDestination(endpoint) }.isSuccess
     }
   FoldAwarePrompt(
     onDismissRequest = { if (!saving) onCancel() },

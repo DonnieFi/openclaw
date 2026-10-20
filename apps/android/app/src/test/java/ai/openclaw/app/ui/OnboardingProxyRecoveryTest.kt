@@ -1,10 +1,14 @@
 package ai.openclaw.app.ui
 
+import ai.openclaw.app.AndroidScreenshotFixture
+import ai.openclaw.app.AndroidScreenshotScene
 import ai.openclaw.app.GatewayConnectionDisplay
 import ai.openclaw.app.GatewayConnectionProblem
+import ai.openclaw.app.GatewayCredentials
 import ai.openclaw.app.MainViewModel
 import ai.openclaw.app.NodeApp
 import ai.openclaw.app.NodeRuntime
+import ai.openclaw.app.NodeRuntimeMode
 import ai.openclaw.app.SecurePrefs
 import ai.openclaw.app.bindNodeRuntimeTestFixture
 import ai.openclaw.app.closeNodeRuntimeTestFixture
@@ -12,14 +16,24 @@ import ai.openclaw.app.drainWithMainLooper
 import ai.openclaw.app.gateway.DeviceAuthStore
 import ai.openclaw.app.gateway.DeviceIdentityStore
 import ai.openclaw.app.gateway.GatewayEndpoint
+import ai.openclaw.app.gateway.GatewayProxyCredentials
+import ai.openclaw.app.gateway.GatewayProxySaveResult
 import ai.openclaw.app.gateway.GatewayTlsProbeFailure
 import ai.openclaw.app.gateway.GatewayTlsProbeResult
 import ai.openclaw.app.ui.design.ClawDesignTheme
 import android.content.Context
+import android.content.SharedPreferences
+import android.graphics.Bitmap
 import android.provider.Settings
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.StateRestorationTester
@@ -47,13 +61,153 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 import org.robolectric.util.ReflectionHelpers
+import java.io.File
+import java.util.Base64
 import java.util.UUID
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], qualifiers = "en-rUS-w360dp-h720dp-420dpi")
 class OnboardingProxyRecoveryTest {
   @get:Rule val composeRule = createComposeRule()
+
+  @Test
+  @GraphicsMode(GraphicsMode.Mode.NATIVE)
+  fun failedProxyCommitShowsActionableRecoveryWithoutReplacingSavedSecrets() = verifyRejectedProxySave(headerConflict = false)
+
+  @Test
+  @GraphicsMode(GraphicsMode.Mode.NATIVE)
+  fun conflictingProxyHeaderShowsActionableRecoveryWithoutReplacingSavedSecrets() = verifyRejectedProxySave(headerConflict = true)
+
+  private fun verifyRejectedProxySave(headerConflict: Boolean) {
+    val app = ApplicationProvider.getApplicationContext<NodeApp>()
+    MlKitContext.initializeIfNeeded(app)
+    val animatorScale = Settings.Global.getString(app.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE)
+    Settings.Global.putFloat(app.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 0f)
+    val backing = ProxyCommitFailingPreferences(app.getSharedPreferences("rejected-onboarding-proxy-${UUID.randomUUID()}", Context.MODE_PRIVATE))
+    val prefs = SecurePrefs(app, securePrefsOverride = backing)
+    prefs.setOnboardingCompleted(false)
+    AndroidScreenshotFixture.configure(AndroidScreenshotScene.Chat)
+    val runtime = NodeRuntime(app, prefs, NodeRuntimeMode.ScreenshotFixture)
+    runtime.prepareForGatewaySetup()
+    val previousRuntime = app.peekRuntime()
+    val models = ViewModelStore()
+    val mounted = mutableStateOf(true)
+    bindNodeRuntimeTestFixture(app, runtime)
+    val model = MainViewModel(app, prefs, SavedStateHandle())
+    models.put("rejected-onboarding-proxy", model)
+    val modelJob = model.viewModelScope.coroutineContext.job
+    try {
+      val endpoint = GatewayEndpoint.manual("gateway.invalid", 443, tlsEnabled = true)
+      val savedAuth = GatewayCredentials(token = "saved-token", bootstrapToken = "saved-setup", password = "saved-password")
+      prefs.saveGatewayCredentials(endpoint.stableId, savedAuth)
+      val deviceId = DeviceIdentityStore.withPrefs(app, prefs).loadOrCreate().deviceId
+      val tokens = DeviceAuthStore(prefs)
+      for (role in listOf("operator", "node")) {
+        assertTrue(tokens.saveToken(endpoint.stableId, deviceId, role, "saved-$role"))
+      }
+      if (headerConflict) {
+        prefs.saveGatewayCustomHeaders(endpoint.stableId, mapOf("Authorization" to "Bearer saved-header"))
+      } else {
+        assertEquals(GatewayProxySaveResult.SAVED, prefs.saveGatewayProxyCredentials(endpoint, GatewayProxyCredentials("saved-user", "saved-proxy")))
+        backing.failProxyCommits = true
+      }
+      val savedGateways = prefs.gatewayRegistry.entries.value
+      composeRule.setContent {
+        ClawDesignTheme(dark = true) {
+          if (mounted.value) Box(Modifier.fillMaxSize().testTag("rejected-proxy-proof")) { RootScreen(model) }
+        }
+      }
+      composeRule.onNodeWithText("Continue").performClick()
+      composeRule.onNodeWithText("Scan QR or setup code").performClick()
+      composeRule.onNodeWithText("Enter setup code").performClick()
+      val setup = Base64.getUrlEncoder().withoutPadding().encodeToString("""{"url":"wss://gateway.invalid","bootstrapToken":"replacement-setup"}""".toByteArray())
+      composeRule.onNode(hasSetTextAction() and hasText("Paste setup code")).performTextReplacement(setup)
+      composeRule.onNodeWithText("Use setup code").performClick()
+      composeRule.onNodeWithText("Connect to this Gateway?").assertIsDisplayed()
+      composeRule.onNodeWithText("HTTP Basic").performClick()
+      // An existing paired account locks the username; only replace its password.
+      if (headerConflict) composeRule.onNodeWithTag("proxy-username").performTextReplacement("replacement-user")
+      composeRule.onNodeWithTag("proxy-password").performTextReplacement("replacement-proxy")
+      composeRule.onNodeWithTag("proxy-save").performScrollTo().performClick()
+      composeRule.onNodeWithText("Connect").performClick()
+      val message = "Could not save proxy login. Check secure storage and existing proxy headers, then try again."
+      drainWithMainLooper { withTimeout(5_000) { model.gatewayConnectionDisplay.first { it.statusText == message } } }
+      composeRule.waitForIdle()
+      // Keep the wrong baseline screen too: a Connecting state is this regression, not a harness failure.
+      System.getenv("OPENCLAW_QR_PROOF_DIR")?.let { directory ->
+        val target = File(directory, if (headerConflict) "proxy-header-rejection.png" else "proxy-commit-rejection.png")
+        target.parentFile!!.mkdirs()
+        target.outputStream().use { output ->
+          assertTrue(
+            composeRule
+              .onNodeWithTag("rejected-proxy-proof")
+              .captureToImage()
+              .asAndroidBitmap()
+              .compress(Bitmap.CompressFormat.PNG, 100, output),
+          )
+        }
+      }
+      composeRule.onNodeWithText(message).assertIsDisplayed()
+      composeRule.onNodeWithText("Go back").assertIsDisplayed()
+      composeRule.onNodeWithText("Connecting Gateway").assertDoesNotExist()
+      composeRule.onNodeWithText("View details").performScrollTo().performClick()
+      composeRule.onNodeWithText("Error code: PROXY_AUTH_SAVE_FAILED", substring = true).assertIsDisplayed()
+      composeRule.onNodeWithText("Close").performClick()
+      composeRule.runOnIdle {
+        assertFalse(model.onboardingCompleted.value)
+        assertEquals(savedGateways, prefs.gatewayRegistry.entries.value)
+        assertEquals(savedAuth, prefs.loadGatewayCredentials(endpoint.stableId))
+        for (role in listOf("operator", "node")) assertEquals("saved-$role", tokens.loadToken(endpoint.stableId, deviceId, role))
+        assertEquals(if (headerConflict) null else "saved-proxy", prefs.loadGatewayProxyCredentials(endpoint)?.password)
+        if (headerConflict) assertEquals(mapOf("Authorization" to "Bearer saved-header"), prefs.loadGatewayCustomHeaders(endpoint.stableId))
+      }
+      composeRule.onNodeWithText("Go back").performClick()
+      composeRule.onNodeWithText("Enter setup code").assertIsDisplayed()
+    } finally {
+      try {
+        composeRule.runOnIdle { mounted.value = false }
+        models.clear()
+        drainWithMainLooper { withTimeout(5_000) { modelJob.cancelAndJoin() } }
+        closeNodeRuntimeTestFixture(runtime)
+      } finally {
+        bindNodeRuntimeTestFixture(app, previousRuntime)
+        Settings.Global.putString(app.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, animatorScale)
+        AndroidScreenshotFixture.configure(AndroidScreenshotScene.Home)
+      }
+    }
+  }
+
+  /** Fail the real secure-preferences commit without publishing the attempted replacement. */
+  private class ProxyCommitFailingPreferences(
+    private val delegate: SharedPreferences,
+  ) : SharedPreferences by delegate {
+    var failProxyCommits = false
+
+    override fun edit(): SharedPreferences.Editor {
+      val editor = delegate.edit()
+      var touchesProxy = false
+      return object : SharedPreferences.Editor by editor {
+        override fun putString(
+          key: String?,
+          value: String?,
+        ): SharedPreferences.Editor {
+          touchesProxy = touchesProxy || key.orEmpty().startsWith("gateway.proxy.basic.")
+          editor.putString(key, value)
+          return this
+        }
+
+        override fun remove(key: String?): SharedPreferences.Editor {
+          touchesProxy = touchesProxy || key.orEmpty().startsWith("gateway.proxy.basic.")
+          editor.remove(key)
+          return this
+        }
+
+        override fun commit(): Boolean = if (failProxyCommits && touchesProxy) false else editor.commit()
+      }
+    }
+  }
 
   @Test
   fun restoredRecoveryReopensProxyLoginWithoutReplacingGatewayAuth() {

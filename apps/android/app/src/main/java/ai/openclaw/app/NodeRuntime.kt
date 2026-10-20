@@ -3395,17 +3395,30 @@ class NodeRuntime internal constructor(
     }
   }
 
-  private fun persistGatewayConfigOrReportFailure(persistConfig: () -> Unit): Boolean =
-    try {
-      persistConfig()
-      true
-    } catch (_: IllegalArgumentException) {
-      setStandaloneGatewayStatus("Could not save proxy login. Confirm the HTTPS destination and try again.")
-      false
-    } catch (_: IllegalStateException) {
-      setStandaloneGatewayStatus("Could not save proxy login. Check secure storage and existing proxy headers, then try again.")
-      false
-    }
+  private fun persistGatewayConfigOrReportFailure(persistConfig: () -> Unit): Boolean {
+    val message =
+      try {
+        persistConfig()
+        return true
+      } catch (_: IllegalArgumentException) {
+        "Could not save proxy login. Confirm the HTTPS destination and try again."
+      } catch (_: IllegalStateException) {
+        "Could not save proxy login. Check secure storage and existing proxy headers, then try again."
+      }
+    setStandaloneGatewayStatus(
+      message,
+      GatewayConnectionProblem(
+        code = "PROXY_AUTH_SAVE_FAILED",
+        message = message,
+        reason = null,
+        requestId = null,
+        recommendedNextStep = null,
+        pauseReconnect = true,
+        retryable = false,
+      ),
+    )
+    return false
+  }
 
   private suspend fun connectGateway(
     endpoint: GatewayEndpoint,

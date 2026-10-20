@@ -138,7 +138,7 @@ class GatewaySessionCustomHeadersTest {
     val proxyAuthorization = "Basic c3ludGhldGljOnByb3h5"
     val server =
       MockWebServer().apply {
-        useHttps(tls.first, false)
+        useHttps(tls.socketFactory, false)
         dispatcher =
           object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
@@ -217,7 +217,7 @@ class GatewaySessionCustomHeadersTest {
         token = "gateway-secret".takeIf { authField == "token" },
         bootstrapToken = null,
         password = "gateway-secret".takeIf { authField == "password" },
-        tls = GatewayTlsParams(expectedFingerprint = tls.second.takeIf { authField == "password" }, requireSystemTrust = true),
+        tls = GatewayTlsParams(expectedFingerprint = tls.fingerprint.takeIf { authField == "password" }, requireSystemTrust = true),
         options =
           GatewayConnectOptions(
             role = "operator",
@@ -799,8 +799,8 @@ class GatewaySessionCustomHeadersTest {
     }
 
   private class SourceTlsFixture(
-    val first: SSLSocketFactory,
-    val second: String,
+    val socketFactory: SSLSocketFactory,
+    val fingerprint: String,
     val certificate: java.security.cert.Certificate,
   )
 
@@ -860,9 +860,9 @@ class GatewaySessionCustomHeadersTest {
             MockWebServer().apply {
               useHttps(
                 when (scenario) {
-                  "untrusted-ca", "pinned-untrusted-ca" -> untrusted.first
-                  "wrong-hostname", "pinned-wrong-hostname" -> wrongHostname.first
-                  else -> trusted.first
+                  "untrusted-ca", "pinned-untrusted-ca" -> untrusted.socketFactory
+                  "wrong-hostname", "pinned-wrong-hostname" -> wrongHostname.socketFactory
+                  else -> trusted.socketFactory
                 },
                 false,
               )
@@ -952,8 +952,8 @@ class GatewaySessionCustomHeadersTest {
                 GatewayTlsParams(
                   expectedFingerprint =
                     when (scenario) {
-                      "pinned-wrong-hostname" -> wrongHostname.second
-                      "pinned-untrusted-ca" -> untrusted.second
+                      "pinned-wrong-hostname" -> wrongHostname.fingerprint
+                      "pinned-untrusted-ca" -> untrusted.fingerprint
                       "pin-mismatch" -> "aa".repeat(32)
                       else -> null
                     },
@@ -994,7 +994,7 @@ class GatewaySessionCustomHeadersTest {
       val tls = sourceFaviconTls()
       val server =
         MockWebServer().apply {
-          useHttps(tls.first, false)
+          useHttps(tls.socketFactory, false)
           enqueue(MockResponse().setResponseCode(401).setHeader("WWW-Authenticate", "Basic realm=\"gateway\""))
           start()
         }
@@ -1026,7 +1026,7 @@ class GatewaySessionCustomHeadersTest {
               permissions = emptyMap(),
               client = GatewayClientInfo("openclaw-android-test", "Android Test", "test", "android", "node", "test", "android", "test"),
             ),
-          tls = GatewayTlsParams(expectedFingerprint = tls.second),
+          tls = GatewayTlsParams(expectedFingerprint = tls.fingerprint),
         )
         val observed = withTimeout(TEST_TIMEOUT_MS) { failure.await() }
         assertEquals("PROXY_AUTH_REQUIRED", observed.first.code)

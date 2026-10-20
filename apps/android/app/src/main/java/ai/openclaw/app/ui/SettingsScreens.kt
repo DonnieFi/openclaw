@@ -31,6 +31,7 @@ import ai.openclaw.app.chat.ChatPendingToolCall
 import ai.openclaw.app.currentAppLanguage
 import ai.openclaw.app.currentSystemLanguageTag
 import ai.openclaw.app.gateway.GatewayEndpoint
+import ai.openclaw.app.gateway.GatewayProxyCredentials
 import ai.openclaw.app.gateway.GatewayProxySaveResult
 import ai.openclaw.app.gatewayExecApprovalTextForDisplay
 import ai.openclaw.app.gatewayTalkSetupDescription
@@ -1552,7 +1553,7 @@ private fun GatewaySettingsScreen(
 
   pairedGateways.firstOrNull { it.stableId == pendingProxyStableId }?.let { entry ->
     val endpoint =
-      ai.openclaw.app.gateway.GatewayEndpoint(
+      GatewayEndpoint(
         stableId = entry.stableId,
         name = entry.displayName,
         host = entry.host.orEmpty(),
@@ -1561,7 +1562,7 @@ private fun GatewaySettingsScreen(
         contextPath = entry.contextPath,
       )
 
-    fun saveProxyLogin(credentials: ai.openclaw.app.gateway.GatewayProxyCredentials?) {
+    fun saveProxyLogin(credentials: GatewayProxyCredentials?) {
       proxySaving = true
       proxySaveFailure = null
       renameScope.launch {

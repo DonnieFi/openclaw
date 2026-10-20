@@ -19,6 +19,8 @@ class GatewayProxyCredentials(
   override fun toString(): String = "GatewayProxyCredentials([redacted])"
 }
 
+private val unsafeProxyPathEncoding = Regex("%(?:2e|2f|5c|25|00|0a|0d)", RegexOption.IGNORE_CASE)
+
 private fun isProxyControlCharacter(value: Char): Boolean = value.code < 0x20 || value.code == 0x7f
 
 /**
@@ -56,7 +58,7 @@ internal fun gatewayProxyDestination(endpoint: GatewayEndpoint): HttpUrl {
   require(
     !path.contains('\\') && !path.contains("//") &&
       path.split('/').none { it == "." || it == ".." } &&
-      !Regex("%(?:2e|2f|5c|25|00|0a|0d)", RegexOption.IGNORE_CASE).containsMatchIn(path),
+      !unsafeProxyPathEncoding.containsMatchIn(path),
   ) { "Confirm an unambiguous Gateway destination before configuring proxy login." }
   val destination =
     HttpUrl
@@ -90,7 +92,7 @@ internal class GatewayBasicProxyAuthorization(
 
   override fun requireCurrent(request: Request) {
     val url = request.url
-    val safePath = !Regex("%(?:2e|2f|5c|25|00|0a|0d)", RegexOption.IGNORE_CASE).containsMatchIn(url.encodedPath)
+    val safePath = !unsafeProxyPathEncoding.containsMatchIn(url.encodedPath)
     if (!isCurrent() || !url.isHttps || url.host != destination.host || url.port != destination.port ||
       url.username.isNotEmpty() || url.password.isNotEmpty() || !safePath ||
       (url.encodedPath != mount && !url.encodedPath.startsWith("$mount/"))

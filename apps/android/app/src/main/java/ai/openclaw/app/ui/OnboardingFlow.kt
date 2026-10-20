@@ -678,17 +678,23 @@ fun OnboardingFlow(
           passwordInput = password,
         )
       if (plan == null) {
-        val endpointError =
-          decodeGatewaySetupCode(trimmed)
-            ?.let { parseGatewayEndpointResult(it.url).error }
-        setupErrorCode =
-          if (decodeGatewaySetupCode(trimmed)?.expiresAtMs?.let { it <= System.currentTimeMillis() } == true) {
+        val setup = decodeGatewaySetupCode(trimmed)
+        val endpointError = setup?.let { parseGatewayEndpointResult(it.url).error }
+        val errorCode =
+          if (setup?.expiresAtMs?.let { it <= System.currentTimeMillis() } == true) {
             OnboardingErrorCode.SetupCodeExpired
           } else {
             endpointError?.let {
               onboardingErrorCode(it, GatewayEndpointInputSource.SETUP_CODE)
             } ?: OnboardingErrorCode.SetupCodeRejected
           }
+        when (inputSource) {
+          OnboardingGatewayInputSource.SetupScanner,
+          OnboardingGatewayInputSource.SetupGallery,
+          -> showSetupScanError(errorCode)
+
+          else -> setupErrorCode = errorCode
+        }
         return
       }
       connectGateway(plan = plan, inputSource = inputSource)

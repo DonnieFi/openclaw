@@ -307,6 +307,43 @@ class SetupQrSelectionTest {
     }
   }
 
+  @Test
+  fun onboardingExpiredGalleryCodeShowsErrorThenAcceptsAnotherImage() {
+    runtime.prepareForGatewaySetup()
+    val savedGateways = prefs.gatewayRegistry.entries.value
+    val handoff = model.gatewayConnectionHandoff.value
+    composeRule.setContent {
+      activity = requireNotNull(LocalActivity.current) as ComponentActivity
+      if (mounted.value) {
+        ClawDesignTheme(dark = true) {
+          Box(Modifier.fillMaxSize().testTag("onboarding-qr-proof")) { OnboardingFlow(model) }
+        }
+      }
+    }
+    composeRule.onNodeWithText("Continue").performClick()
+    composeRule.onNodeWithText("Scan QR or setup code").performClick()
+    val expired = Base64.getUrlEncoder().withoutPadding().encodeToString("""{"url":"wss://expired.invalid","bootstrapToken":"expired-setup","expiresAtMs":1}""".toByteArray())
+    chooseImage(expired, scroll = false)
+    // Export before the assertion so the original's silently unchanged setup screen is retained.
+    capture("onboarding-expired-gallery")
+    composeRule.onNodeWithText("Setup code expired. Generate a fresh code with openclaw qr.").assertIsDisplayed()
+    composeRule.onNodeWithText("Choose another image").assertIsEnabled()
+    composeRule.runOnIdle {
+      assertEquals(savedGateways, prefs.gatewayRegistry.entries.value)
+      assertEquals(handoff, model.gatewayConnectionHandoff.value)
+      assertFalse(tlsAttempt.isCompleted)
+    }
+    chooseImage(setupCode("wss://replacement.invalid/openclaw"), action = "Choose another image")
+    composeRule.onNodeWithText("QR code not accepted").assertDoesNotExist()
+    composeRule.onNodeWithText("Connect to this Gateway?").assertIsDisplayed()
+    composeRule.onNodeWithText("https://replacement.invalid:443/openclaw").assertIsDisplayed()
+    composeRule.runOnIdle {
+      assertEquals(savedGateways, prefs.gatewayRegistry.entries.value)
+      assertEquals(handoff, model.gatewayConnectionHandoff.value)
+      assertFalse(tlsAttempt.isCompleted)
+    }
+  }
+
   private fun chooseImage(
     vararg rawValues: String?,
     action: String = "Choose from gallery",
