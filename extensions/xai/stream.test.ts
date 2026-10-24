@@ -149,7 +149,7 @@ describe("xai stream wrappers", () => {
   });
 
   it("applies the Grok OAuth proxy contract to simple completions", () => {
-    let capturedHeaders: Record<string, string> | undefined;
+    let capturedHeaders: ModelRequestHeaders | undefined;
     let capturedPayload: Record<string, unknown> | undefined;
     const baseStreamFn: StreamFn = (model, _context, options) => {
       capturedHeaders = options?.headers;
@@ -180,7 +180,7 @@ describe("xai stream wrappers", () => {
   });
 
   it("leaves simple completions to the public xAI endpoint unchanged", () => {
-    let capturedHeaders: Record<string, string> | undefined;
+    let capturedHeaders: ModelRequestHeaders | undefined;
     const baseStreamFn: StreamFn = (_model, _context, options) => {
       capturedHeaders = options?.headers;
       return {} as ReturnType<StreamFn>;
