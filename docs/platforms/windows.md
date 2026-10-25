@@ -207,7 +207,9 @@ openclaw gateway status --json
 Windows PowerShell with an effective execution policy of Restricted resolves a
 bare `openclaw` command to npm's `openclaw.ps1` shim and stops before OpenClaw
 starts. Leave the execution policy unchanged. The install also includes
-`openclaw.cmd` in that same directory. For the default npm prefix:
+`openclaw.cmd` in that same directory. This is npm's global shim, not the
+desktop app launcher at `%USERPROFILE%\.openclaw\bin\openclaw.cmd`. For the
+default npm prefix:
 
 ```powershell
 & "$env:APPDATA\npm\openclaw.cmd" --version
