@@ -24,6 +24,9 @@ import { resolveControlUiLinks } from "./onboard-helpers.js";
 
 const CONTROL_UI_DOCUMENT_REQUEST_TIMEOUT_MS = 2_000;
 const CONTROL_UI_DOCUMENT_ERROR_MAX_BYTES = 2_048;
+// One hung probe must not abandon handoff, but persistent timeouts must not
+// consume the multi-minute asset-build deadline used by dashboard and wizard callers.
+const CONTROL_UI_DOCUMENT_TIMEOUT_ATTEMPTS = 3;
 
 /** One canonical target keeps advertised identity, local browser delivery, and document probes distinct. */
 export async function resolveControlUiHandoffTarget(params: {
@@ -160,6 +163,10 @@ type ControlUiDocumentReadiness =
   | { ready: true; tlsFingerprint?: string }
   | { ready: false; reason: string; status?: number };
 
+function isControlUiDocumentRequestTimeout(error: unknown): boolean {
+  return error instanceof Error && error.name === "TimeoutError";
+}
+
 /** Wait only for an explicitly preparing dashboard; fail immediately for terminal HTTP states. */
 export async function waitForControlUiDocument(params: {
   url: string;
@@ -199,6 +206,7 @@ export async function waitForControlUiDocument(params: {
   }
 
   let pendingReported = false;
+  let timeoutAttempts = 0;
   const origin = new URL(params.url).origin;
   const requestDocument = async (method: "HEAD" | "GET", remainingMs: number) =>
     await fetchConfiguredLocalOriginWithSsrFGuard({
@@ -282,6 +290,14 @@ export async function waitForControlUiDocument(params: {
       }
       await sleep(Math.min(pendingDelayMs, Math.max(0, deadline - Date.now())));
     } catch (error) {
+      const retryTimeout =
+        isControlUiDocumentRequestTimeout(error) &&
+        timeoutAttempts < CONTROL_UI_DOCUMENT_TIMEOUT_ATTEMPTS - 1 &&
+        deadline - Date.now() > 0;
+      if (retryTimeout) {
+        timeoutAttempts += 1;
+        continue;
+      }
       return {
         ready: false,
         reason: `Control UI dashboard is unavailable: ${error instanceof Error ? error.message : String(error)}`,

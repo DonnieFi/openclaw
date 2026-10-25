@@ -186,6 +186,27 @@ it.each(["ready", "timeout", "immediate"])("handles preparing dashboards: %s", a
   expect(ready.release).toHaveBeenCalledTimes(outcome === "ready" ? 1 : 0);
 });
 
+it("accepts the HTML document after a timed-out document request", async () => {
+  const timeout = new Error("request timed out");
+  timeout.name = "TimeoutError";
+  const ready = guardedResponse();
+  const fetch = mockFetch().mockRejectedValueOnce(timeout).mockResolvedValueOnce(ready);
+  await expect(probe()).resolves.toEqual({ ready: true });
+  expect(fetch.mock.calls.map(([request]) => request.init?.method)).toEqual(["HEAD", "HEAD"]);
+  expect(ready.release).toHaveBeenCalledOnce();
+});
+
+it("stops retrying persistent document request timeouts", async () => {
+  const timeout = new Error("request timed out");
+  timeout.name = "TimeoutError";
+  const fetch = mockFetch().mockRejectedValue(timeout);
+  await expect(probe({ timeoutMs: 60_000 })).resolves.toEqual({
+    ready: false,
+    reason: "Control UI dashboard is unavailable: request timed out",
+  });
+  expect(fetch).toHaveBeenCalledTimes(3);
+});
+
 it.each(["fails", "becomes HTML"])("keeps HTTP failure: diagnostic %s", async (outcome) => {
   const head = guardedResponse(503, {});
   const fetch = mockFetch().mockResolvedValueOnce(head);
