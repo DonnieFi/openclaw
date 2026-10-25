@@ -200,6 +200,32 @@ openclaw doctor
 openclaw gateway status --json
 ```
 
+<a id="powershell-execution-policy" />
+
+### PowerShell refuses to run `openclaw.ps1`
+
+Windows PowerShell with an effective execution policy of Restricted resolves a
+bare `openclaw` command to npm's `openclaw.ps1` shim and stops before OpenClaw
+starts. Leave the execution policy unchanged. The install also includes
+`openclaw.cmd` in that same directory. For the default npm prefix:
+
+```powershell
+& "$env:APPDATA\npm\openclaw.cmd" --version
+& "$env:APPDATA\npm\openclaw.cmd" doctor --generate-gateway-token
+```
+
+If the error names a different `openclaw.ps1` path, that directory is the npm
+prefix. Run the `openclaw.cmd` beside it:
+
+```powershell
+$shim = (Get-Command openclaw.ps1).Source
+& (Join-Path (Split-Path $shim) "openclaw.cmd") doctor --generate-gateway-token
+```
+
+Doctor can ask to pause the managed Gateway while it reviews repairs, and it
+restores the previous service state when it finishes. Restart the Gateway
+after a new token so existing clients reconnect with that secret.
+
 Local `read`, `write`, and `edit` tools accept Git Bash (`/f/...`), Cygwin
 (`/cygdrive/f/...`), and WSL-style (`/mnt/f/...`) drive paths when the Gateway runs
 natively on Windows. These paths resolve to the corresponding Windows drive.
