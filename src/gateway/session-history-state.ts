@@ -278,7 +278,7 @@ export class SessionHistorySseState {
       // boundary. Copy the flag only when this append itself carried it.
       // A visible user consumes the flag without carrying it.
       const attachedPendingBoundary = nextProjection.messages.some(
-        (message) => asOptionalRecord(message.__openclaw)?.turnBoundary === true,
+        (projected) => asOptionalRecord(projected["__openclaw"])?.turnBoundary === true,
       );
       if (attachedPendingBoundary) {
         const firstAdded = attachOpenClawTranscriptMeta(addedMessages[0], {

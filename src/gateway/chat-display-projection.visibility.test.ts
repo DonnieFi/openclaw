@@ -189,9 +189,12 @@ it.each([
     __openclaw: { seq: 5 },
   };
   const answer = assistantTextMessage("Disk usage crossed 95 percent.", 4);
-  for (const toolRow of [toolResult, toolEnvelope]) {
+  for (const [toolRow, seq] of [
+    [toolResult, 3],
+    [toolEnvelope, 5],
+  ] as const) {
     expect(projectChatDisplayMessages([hidden, toolRow, answer])).toEqual([
-      { ...toolRow, __openclaw: { ...toolRow.__openclaw, turnBoundary: true } },
+      { ...toolRow, __openclaw: { seq, turnBoundary: true } },
       answer,
     ]);
   }
@@ -207,7 +210,7 @@ it("starts a new turn after a hidden exec completion so the earlier answer stays
   const followUp = assistantTextMessage("should I fix points 1-4?", 4);
   expect(projectChatDisplayMessages([earlier, completion, followUp])).toEqual([
     earlier,
-    { ...followUp, __openclaw: { ...followUp.__openclaw, turnBoundary: true } },
+    { ...followUp, __openclaw: { seq: 4, turnBoundary: true } },
   ]);
 });
 

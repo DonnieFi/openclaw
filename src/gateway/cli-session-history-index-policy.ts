@@ -340,43 +340,65 @@ function compareImportedCliHistoryRows(a: CliHistoryOrderRow, b: CliHistoryOrder
   return a.id - b.id;
 }
 
+function isLocalCliHistoryRow<T extends CliHistoryOrderRow>(
+  row: T,
+): row is T & { local_seq: number } {
+  return row.local_seq !== null;
+}
+
+function attachCliHistoryImport<T extends CliHistoryOrderRow>(
+  imported: T,
+  anchor: T | undefined,
+  before: T[],
+  afterLocal: Map<number, T[]>,
+): void {
+  if (!anchor) {
+    before.push(imported);
+    return;
+  }
+  const attached = afterLocal.get(anchor.id);
+  if (attached) {
+    attached.push(imported);
+    return;
+  }
+  afterLocal.set(anchor.id, [imported]);
+}
+
 /**
- * Local rows stay in transcript order. A pairwise timestamp sort is not a
- * valid order once a later local row carries an earlier timestamp: the
- * comparator cycles and import placement depends on the sort algorithm.
- * Each unmatched import is spliced after the last local row at or before
- * its timestamp, and imports that share that spot stay in timestamp order.
+ * Locals stay in transcript order. Each import follows the latest local at
+ * or before its timestamp. Dated imports and timestamp-sorted locals advance
+ * together so placement stays one pass.
  */
 export function orderCliHistoryRows<T extends CliHistoryOrderRow>(rows: readonly T[]): T[] {
   const locals = rows
-    .filter((row) => row.local_seq !== null)
-    .toSorted((a, b) => a.local_seq! - b.local_seq! || a.id - b.id);
+    .filter(isLocalCliHistoryRow)
+    .toSorted((a, b) => a.local_seq - b.local_seq || a.id - b.id);
   const imports = rows
     .filter((row) => row.local_seq === null)
     .toSorted(compareImportedCliHistoryRows);
+  const byTime = locals
+    .filter((row): row is T & { local_seq: number; timestamp: number } => row.timestamp !== null)
+    .toSorted((a, b) => a.timestamp - b.timestamp || a.local_seq - b.local_seq || a.id - b.id);
   const before: T[] = [];
   const afterLocal = new Map<number, T[]>();
+  let timeIndex = 0;
+  let anchor: (typeof byTime)[number] | undefined;
   for (const imported of imports) {
-    let anchor: T | undefined;
     if (imported.timestamp === null) {
-      anchor = locals.at(-1);
-    } else {
-      for (const local of locals) {
-        if (local.timestamp !== null && local.timestamp <= imported.timestamp) {
-          anchor = local;
-        }
-      }
-    }
-    if (!anchor) {
-      before.push(imported);
+      attachCliHistoryImport(imported, locals.at(-1), before, afterLocal);
       continue;
     }
-    const attached = afterLocal.get(anchor.id);
-    if (attached) {
-      attached.push(imported);
-    } else {
-      afterLocal.set(anchor.id, [imported]);
+    for (;;) {
+      const candidate = byTime[timeIndex];
+      if (candidate === undefined || candidate.timestamp > imported.timestamp) {
+        break;
+      }
+      timeIndex += 1;
+      if (!anchor || candidate.local_seq > anchor.local_seq) {
+        anchor = candidate;
+      }
     }
+    attachCliHistoryImport(imported, anchor, before, afterLocal);
   }
   const ordered = [...before];
   for (const local of locals) {

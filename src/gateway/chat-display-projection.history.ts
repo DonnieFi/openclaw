@@ -6,7 +6,6 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import { isOpenClawRuntimeContextCustomMessage } from "../agents/internal-runtime-context.js";
 import { isHeartbeatOkResponse, isHeartbeatUserMessage } from "../auto-reply/heartbeat-filter.js";
 import { HEARTBEAT_PROMPT } from "../auto-reply/heartbeat.js";
-import { isToolCallContentType, isToolResultContentType } from "../chat/tool-content.js";
 import {
   isCompletionReportInputProvenance,
   isCronExecutionInputProvenance,
@@ -32,6 +31,7 @@ import {
   isProjectedForwardedMessage,
   isForwardedUserMessage,
   isCronRunMessage,
+  userMessageStartsDisplayTurn,
   type RoleContentMessage,
 } from "./chat-display-projection.helpers.js";
 import { mapChatDisplayMessages } from "./chat-display-projection.map.js";
@@ -436,8 +436,11 @@ export function isHeartbeatHistoryTurnBoundaryMessage(message: unknown): boolean
   return roleContent?.role === "user" && isHeartbeatUserMessage(roleContent, HEARTBEAT_PROMPT);
 }
 
-/** A hidden exec completion starts the follow-up turn. It is not part of the answer it followed. */
-export function isExecCompletionHistoryTurnBoundaryMessage(message: unknown): boolean {
+/** Hidden heartbeat or exec input that must keep the next reply in its own turn. */
+export function isProjectedHistoryTurnBoundaryMessage(message: unknown): boolean {
+  if (isHeartbeatHistoryTurnBoundaryMessage(message)) {
+    return true;
+  }
   const record = readRecord(message);
   if (!record || isForwardedUserMessage(record)) {
     return false;
@@ -448,24 +451,6 @@ export function isExecCompletionHistoryTurnBoundaryMessage(message: unknown): bo
     roleContent?.role === "user" &&
     provenance?.kind === "internal_system" &&
     provenance.sourceTool === "exec"
-  );
-}
-
-function isHiddenInputHistoryTurnBoundary(
-  message: Record<string, unknown>,
-  heartbeatUser: boolean,
-): boolean {
-  return (
-    (heartbeatUser && !isForwardedUserMessage(message)) ||
-    isExecCompletionHistoryTurnBoundaryMessage(message)
-  );
-}
-
-/** Hidden input just before a history page that must keep the next reply in its own turn. */
-export function isProjectedHistoryTurnBoundaryMessage(message: unknown): boolean {
-  return (
-    isHeartbeatHistoryTurnBoundaryMessage(message) ||
-    isExecCompletionHistoryTurnBoundaryMessage(message)
   );
 }
 
@@ -485,28 +470,6 @@ function attachProjectedTurnBoundary(message: Record<string, unknown>): Record<s
 
 function canCarryProjectedTurnBoundary(message: RoleContentMessage | null): boolean {
   return Boolean(message && message.role !== "system" && message.role !== "custom");
-}
-
-const TOOL_MESSAGE_ENVELOPE_FIELDS = [
-  "toolCallId",
-  "tool_call_id",
-  "toolUseId",
-  "tool_use_id",
-  "toolName",
-  "tool_name",
-] as const;
-
-/** Plain user text starts a turn. A tool-shaped user row does not, so it must carry the boundary. */
-function userMessageStartsDisplayTurn(message: Record<string, unknown>): boolean {
-  if (TOOL_MESSAGE_ENVELOPE_FIELDS.some((field) => typeof message[field] === "string")) {
-    return false;
-  }
-  return !Array.isArray(message.content)
-    ? true
-    : !message.content.some((block) => {
-        const type = readRecord(block)?.type;
-        return isToolCallContentType(type) || isToolResultContentType(type);
-      });
 }
 
 function openclawAssistantModel(message: Record<string, unknown>): string | undefined {
@@ -623,7 +586,7 @@ export function filterVisibleProjectedHistoryMessages(
     }
     if (shouldHideProjectedHistoryMessage(current, currentRoleContent, heartbeatUser)) {
       changed = true;
-      pendingTurnBoundary ||= isHiddenInputHistoryTurnBoundary(current, heartbeatUser);
+      pendingTurnBoundary ||= isProjectedHistoryTurnBoundaryMessage(current);
       continue;
     }
     const mirrorSourceId = readRecord(current.openclawDeliveryMirror)?.sourceAssistantMessageId;
