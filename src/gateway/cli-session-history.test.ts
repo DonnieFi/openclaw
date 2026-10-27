@@ -650,6 +650,50 @@ describe("cli session history", () => {
     expect(contents(new CliSessionHistoryIndex())).toEqual(expected);
     expect(contents(new MemoryCliSessionHistoryIndex())).toEqual(expected);
   });
+
+  it("splices unmatched imports in timestamp order without moving local rows", () => {
+    const localTimestamps = [200, 300, 0, 400, 500, 600];
+    const localMessages = localTimestamps.map((timestamp) => ({
+      role: "assistant",
+      content: `local ${timestamp}`,
+      timestamp,
+    }));
+    const imported = [150, 100].map((timestamp) => ({
+      role: "assistant",
+      content: `import ${timestamp}`,
+      timestamp,
+    }));
+    const contents = (index: CliHistoryIndex) => {
+      try {
+        index.appendLocal(
+          localMessages.map((message, position) => ({ message, seq: position + 1 })),
+        );
+        for (const message of imported) {
+          index.appendImported(message);
+        }
+        index.finish();
+        return Array.from(index.rows(0, index.count), (row) => {
+          const message =
+            row.local_seq === null ? index.message(row.id) : localMessages[row.local_seq - 1];
+          return readRecord(message).content;
+        });
+      } finally {
+        index.close();
+      }
+    };
+    const expected = [
+      "local 200",
+      "local 300",
+      "local 0",
+      "import 100",
+      "import 150",
+      "local 400",
+      "local 500",
+      "local 600",
+    ];
+    expect(contents(new CliSessionHistoryIndex())).toEqual(expected);
+    expect(contents(new MemoryCliSessionHistoryIndex())).toEqual(expected);
+  });
 });
 
 it("keeps lone surrogates distinct from replacement characters in SQLite match keys", () => {

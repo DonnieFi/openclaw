@@ -325,18 +325,64 @@ export function mergeCliHistoryRow(
   return false;
 }
 
-export function compareCliHistoryRows(
-  a: Pick<HistoryRow, "id" | "local_seq" | "timestamp">,
-  b: Pick<HistoryRow, "id" | "local_seq" | "timestamp">,
-): number {
-  // Local rows stay in transcript order. A completion can be recorded after the
-  // answer it followed while carrying the earlier time the process finished.
-  if (a.local_seq !== null && b.local_seq !== null && a.local_seq !== b.local_seq) {
-    return a.local_seq - b.local_seq;
+type CliHistoryOrderRow = Pick<HistoryRow, "id" | "local_seq" | "timestamp">;
+
+function compareImportedCliHistoryRows(a: CliHistoryOrderRow, b: CliHistoryOrderRow): number {
+  if (a.timestamp !== null && b.timestamp !== null && a.timestamp !== b.timestamp) {
+    return a.timestamp - b.timestamp;
   }
-  return a.timestamp !== null && b.timestamp !== null && a.timestamp !== b.timestamp
-    ? a.timestamp - b.timestamp
-    : a.id - b.id;
+  if (a.timestamp === null && b.timestamp !== null) {
+    return 1;
+  }
+  if (a.timestamp !== null && b.timestamp === null) {
+    return -1;
+  }
+  return a.id - b.id;
+}
+
+/**
+ * Local rows stay in transcript order. A pairwise timestamp sort is not a
+ * valid order once a later local row carries an earlier timestamp: the
+ * comparator cycles and import placement depends on the sort algorithm.
+ * Each unmatched import is spliced after the last local row at or before
+ * its timestamp, and imports that share that spot stay in timestamp order.
+ */
+export function orderCliHistoryRows<T extends CliHistoryOrderRow>(rows: readonly T[]): T[] {
+  const locals = rows
+    .filter((row) => row.local_seq !== null)
+    .toSorted((a, b) => a.local_seq! - b.local_seq! || a.id - b.id);
+  const imports = rows
+    .filter((row) => row.local_seq === null)
+    .toSorted(compareImportedCliHistoryRows);
+  const before: T[] = [];
+  const afterLocal = new Map<number, T[]>();
+  for (const imported of imports) {
+    let anchor: T | undefined;
+    if (imported.timestamp === null) {
+      anchor = locals.at(-1);
+    } else {
+      for (const local of locals) {
+        if (local.timestamp !== null && local.timestamp <= imported.timestamp) {
+          anchor = local;
+        }
+      }
+    }
+    if (!anchor) {
+      before.push(imported);
+      continue;
+    }
+    const attached = afterLocal.get(anchor.id);
+    if (attached) {
+      attached.push(imported);
+    } else {
+      afterLocal.set(anchor.id, [imported]);
+    }
+  }
+  const ordered = [...before];
+  for (const local of locals) {
+    ordered.push(local, ...(afterLocal.get(local.id) ?? []));
+  }
+  return ordered;
 }
 
 export type CliHistoryIndex = {
