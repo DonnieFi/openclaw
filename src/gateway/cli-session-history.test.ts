@@ -9,6 +9,9 @@ import type { AgentMessage } from "../agents/runtime/index.js";
 import { sanitizeTranscriptMessage } from "../agents/transcript-sanitize.js";
 import type { SessionEntry } from "../config/sessions.js";
 import { getCliSessionBinding } from "../config/sessions/cli-session-binding.js";
+import { MemoryCliSessionHistoryIndex } from "./cli-session-history-index-memory.js";
+import type { CliHistoryIndex } from "./cli-session-history-index-policy.js";
+import { CliSessionHistoryIndex } from "./cli-session-history-index.worker.js";
 import { mergeCliHistoryWithLookupStats } from "./cli-session-history-lookup.test-support.js";
 import {
   readClaudeCliSessionMessagesAsync,
@@ -486,13 +489,17 @@ describe("cli session history", () => {
       name: "does not assign identities backward across nonchronological rows",
       localMessages: [answer(window * 2), answer(0)],
       importedMessages: [answer(0, "first"), answer(window * 2, "second")],
-      expected: [answer(0, "first"), answer(window * 2), answer(window * 2, "second")],
+      // Expanded history keeps local transcript order. The earlier import still
+      // binds to the timestamp-0 local, not the local row written first.
+      expected: [answer(window * 2), answer(0, "first"), answer(window * 2, "second")],
     },
     {
       name: "shares order across identity-specific indexes",
       localMessages: [answer(window * 2), answer(0)],
       importedMessages: [answer(0), answer(window * 2, "later", null)],
-      expected: [answer(0), answer(window * 2), answer(window * 2, "later", null)],
+      // Local transcript order wins once history expands. The other cli
+      // identity stays a separate row.
+      expected: [answer(window * 2), answer(0), answer(window * 2, "later", null)],
     },
     {
       name: "preserves local candidates after an unmatched import",
@@ -604,6 +611,44 @@ describe("cli session history", () => {
       "first transcript row",
       "second transcript row",
     ]);
+  });
+
+  it("keeps a backdated exec completion after the answer it followed when an import expands history", () => {
+    const localMessages = [
+      { role: "assistant", content: "long final answer", timestamp: 200 },
+      {
+        role: "user",
+        content: "Exec completed",
+        timestamp: 100,
+        provenance: { kind: "internal_system", sourceTool: "exec" },
+      },
+      { role: "assistant", content: "short follow-up", timestamp: 300 },
+    ];
+    const imported = { role: "assistant", content: "unmatched cli import", timestamp: 50 };
+    const contents = (index: CliHistoryIndex) => {
+      try {
+        index.appendLocal(
+          localMessages.map((message, position) => ({ message, seq: position + 1 })),
+        );
+        index.appendImported(imported);
+        index.finish();
+        return Array.from(index.rows(0, index.count), (row) => {
+          const message =
+            row.local_seq === null ? index.message(row.id) : localMessages[row.local_seq - 1];
+          return readRecord(message).content;
+        });
+      } finally {
+        index.close();
+      }
+    };
+    const expected = [
+      "unmatched cli import",
+      "long final answer",
+      "Exec completed",
+      "short follow-up",
+    ];
+    expect(contents(new CliSessionHistoryIndex())).toEqual(expected);
+    expect(contents(new MemoryCliSessionHistoryIndex())).toEqual(expected);
   });
 });
 

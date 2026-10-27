@@ -435,6 +435,39 @@ export function isHeartbeatHistoryTurnBoundaryMessage(message: unknown): boolean
   return roleContent?.role === "user" && isHeartbeatUserMessage(roleContent, HEARTBEAT_PROMPT);
 }
 
+/** A hidden exec completion starts the follow-up turn. It is not part of the answer it followed. */
+export function isExecCompletionHistoryTurnBoundaryMessage(message: unknown): boolean {
+  const record = readRecord(message);
+  if (!record || isForwardedUserMessage(record)) {
+    return false;
+  }
+  const roleContent = asRoleContentMessage(record);
+  const provenance = normalizeInputProvenance(record.provenance);
+  return (
+    roleContent?.role === "user" &&
+    provenance?.kind === "internal_system" &&
+    provenance.sourceTool === "exec"
+  );
+}
+
+function isHiddenInputHistoryTurnBoundary(
+  message: Record<string, unknown>,
+  heartbeatUser: boolean,
+): boolean {
+  return (
+    (heartbeatUser && !isForwardedUserMessage(message)) ||
+    isExecCompletionHistoryTurnBoundaryMessage(message)
+  );
+}
+
+/** Hidden input just before a history page that must keep the next reply in its own turn. */
+export function isProjectedHistoryTurnBoundaryMessage(message: unknown): boolean {
+  return (
+    isHeartbeatHistoryTurnBoundaryMessage(message) ||
+    isExecCompletionHistoryTurnBoundaryMessage(message)
+  );
+}
+
 function attachProjectedTurnBoundary(message: Record<string, unknown>): Record<string, unknown> {
   const metadata = readRecord(message["__openclaw"]);
   if (metadata?.turnBoundary === true) {
@@ -567,7 +600,7 @@ export function filterVisibleProjectedHistoryMessages(
     }
     if (shouldHideProjectedHistoryMessage(current, currentRoleContent, heartbeatUser)) {
       changed = true;
-      pendingTurnBoundary ||= heartbeatUser && !isForwardedUserMessage(current);
+      pendingTurnBoundary ||= isHiddenInputHistoryTurnBoundary(current, heartbeatUser);
       continue;
     }
     const mirrorSourceId = readRecord(current.openclawDeliveryMirror)?.sourceAssistantMessageId;
@@ -577,7 +610,12 @@ export function filterVisibleProjectedHistoryMessages(
       changed = true;
       continue;
     }
-    if (pendingTurnBoundary && canCarryProjectedTurnBoundary(currentRoleContent)) {
+    if (pendingTurnBoundary && currentRoleContent?.role === "user") {
+      // A visible user already starts the next turn. Do not stamp that user,
+      // and drop the pending boundary so this turn's assistant stays with them.
+      pendingTurnBoundary = false;
+      visible.push(current);
+    } else if (pendingTurnBoundary && canCarryProjectedTurnBoundary(currentRoleContent)) {
       visible.push(attachProjectedTurnBoundary(current));
       pendingTurnBoundary = false;
       changed = true;

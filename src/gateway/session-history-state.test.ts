@@ -388,6 +388,24 @@ describe("SessionHistorySseState", () => {
     });
   });
 
+  test("lets a visible user consume a hidden exec boundary without stamping it", async () => {
+    const state = newState([assistantTextMessage("long final answer", 2)], {
+      rawTranscriptSeq: 3,
+      turnBoundaryPending: true,
+    });
+
+    const userAppend = (
+      await state.prepareInlineMessage({
+        message: userTextMessage("A real follow-up question", 4),
+        messageSeq: 4,
+      })
+    )();
+    expect(userAppend?.message?.["__openclaw"]?.turnBoundary).toBeUndefined();
+
+    const assistantAppend = await appendAssistantText(state, "should I fix points 1-4?", 5);
+    expect(assistantAppend?.message?.["__openclaw"]?.turnBoundary).toBeUndefined();
+  });
+
   test("does not append heartbeat or internal-only SSE messages", async () => {
     const state = newState([assistantTextMessage("already visible", 1)]);
 

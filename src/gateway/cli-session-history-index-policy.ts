@@ -326,9 +326,14 @@ export function mergeCliHistoryRow(
 }
 
 export function compareCliHistoryRows(
-  a: Pick<HistoryRow, "id" | "timestamp">,
-  b: Pick<HistoryRow, "id" | "timestamp">,
+  a: Pick<HistoryRow, "id" | "local_seq" | "timestamp">,
+  b: Pick<HistoryRow, "id" | "local_seq" | "timestamp">,
 ): number {
+  // Local rows stay in transcript order. A completion can be recorded after the
+  // answer it followed while carrying the earlier time the process finished.
+  if (a.local_seq !== null && b.local_seq !== null && a.local_seq !== b.local_seq) {
+    return a.local_seq - b.local_seq;
+  }
   return a.timestamp !== null && b.timestamp !== null && a.timestamp !== b.timestamp
     ? a.timestamp - b.timestamp
     : a.id - b.id;

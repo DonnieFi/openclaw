@@ -161,6 +161,20 @@ it.each([
   expect(completion).toEqual(original);
 });
 
+it("starts a new turn after a hidden exec completion so the earlier answer stays its own reply", () => {
+  const earlier = assistantTextMessage("long final answer", 2);
+  const completion = {
+    ...userTextMessage("Exec completed (amber-ri, code 0) :: output", 3),
+    timestamp: 100,
+    provenance: { kind: "internal_system", sourceTool: "exec" },
+  };
+  const followUp = assistantTextMessage("should I fix points 1-4?", 4);
+  expect(projectChatDisplayMessages([earlier, completion, followUp])).toEqual([
+    earlier,
+    { ...followUp, __openclaw: { ...followUp.__openclaw, turnBoundary: true } },
+  ]);
+});
+
 it.each(["no_r", "NO_R", "No_Repl"])("keeps ordinary %s replies visible", (text) => {
   const messages = [
     assistantTextMessage(text, 1),

@@ -377,10 +377,10 @@ export class CliSessionHistoryIndex {
         }
       });
     }
-    // Preserve the existing stable comparator even for mixed/missing timestamps.
+    // Local rows keep transcript order. Unmatched imports still interleave by timestamp.
     const order = executeSqliteQuerySync(
       this.database,
-      this.db.selectFrom("messages").select(["id", "timestamp"]).orderBy("id"),
+      this.db.selectFrom("messages").select(["id", "local_seq", "timestamp"]).orderBy("id"),
     ).rows;
     if (this.expanded) {
       order.sort(compareCliHistoryRows);
