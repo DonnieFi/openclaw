@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
 import { extractFunctionBody } from "./install-ps1.test-support.js";
@@ -101,5 +102,48 @@ runWithPowerShell.each(["valid", "missing-head", "broken-gitfile", "subdirectory
       scenario,
     ]);
     expect(result.status, result.stdout + result.stderr).toBe(0);
+  },
+);
+runWithPowerShell(
+  "starts a batch shim through System32 cmd.exe without using it as the process image",
+  () => {
+    const root = mkdtempSync(join(tmpdir(), "openclaw-install-ps1-cmd-"));
+    const scriptPath = join(root, "launch.ps1");
+    try {
+      mkdirSync(join(root, "System32"), { recursive: true });
+      writeFileSync(join(root, "System32", "cmd.exe"), "");
+      const functions = [
+        "Get-TrustedWindowsCmdExe",
+        "Format-InteractiveCmdCommandLine",
+        "Resolve-InteractiveOpenClawLaunch",
+      ]
+        .map((name) => `function ${name} {\n${body(name)}}`)
+        .join("\n");
+      writeFileSync(
+        scriptPath,
+        [
+          functions,
+          "$env:SystemRoot = $args[0]",
+          "$shim = Resolve-InteractiveOpenClawLaunch -CommandPath 'C:\\Users\\Ada Lovelace\\AppData\\Roaming\\npm\\openclaw.cmd' -Arguments @('onboard')",
+          "if (-not $shim) { throw 'missing cmd launch' }",
+          "Write-Output ('FILE=' + $shim.FilePath)",
+          "Write-Output ('LINE=' + $shim.CommandLine)",
+          "$exe = Resolve-InteractiveOpenClawLaunch -CommandPath 'C:\\Tools\\openclaw.exe' -Arguments @('onboard')",
+          "Write-Output ('EXE=' + $exe.FilePath)",
+          "Write-Output ('EXELINE=' + [string]$exe.CommandLine)",
+        ].join("\n"),
+      );
+      const result = runPowerShell(["-File", scriptPath, root]);
+      const output = `${result.stdout}\n${result.stderr}`;
+      expect(result.status, output).toBe(0);
+      expect(output).toContain(`FILE=${join(root, "System32", "cmd.exe")}`);
+      expect(output).toContain(
+        'LINE=/d /s /c ""C:\\Users\\Ada Lovelace\\AppData\\Roaming\\npm\\openclaw.cmd" "onboard""',
+      );
+      expect(output).toContain("EXE=C:\\Tools\\openclaw.exe");
+      expect(output).not.toContain("EXELINE=/d");
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
   },
 );

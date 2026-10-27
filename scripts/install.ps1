@@ -1118,6 +1118,111 @@ function Invoke-OpenClawCommand {
     }
 }
 
+function Get-TrustedWindowsCmdExe {
+    if ([string]::IsNullOrWhiteSpace($env:SystemRoot)) {
+        return $null
+    }
+
+    $candidate = Join-Path (Join-Path $env:SystemRoot "System32") "cmd.exe"
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+        return $candidate
+    }
+    return $null
+}
+
+function Format-InteractiveCmdCommandLine {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$CommandPath,
+        [string[]]$Arguments = @()
+    )
+
+    $quoted = New-Object System.Collections.Generic.List[string]
+    foreach ($token in @($CommandPath) + @($Arguments)) {
+        if ([string]::IsNullOrEmpty($token)) {
+            continue
+        }
+        if ($token -match '[&|<>%\r\n]') {
+            throw "openclaw setup command cannot be passed through cmd.exe safely."
+        }
+        $escaped = $token.Replace('"', '""')
+        $tail = 0
+        while ($tail -lt $escaped.Length -and $escaped[$escaped.Length - 1 - $tail] -eq '\') {
+            $tail++
+        }
+        if ($tail -gt 0) {
+            $escaped = $escaped.Substring(0, $escaped.Length - $tail) + ('\' * ($tail * 2))
+        }
+        $quoted.Add('"' + $escaped + '"')
+    }
+    return '"' + ($quoted -join ' ') + '"'
+}
+
+function Resolve-InteractiveOpenClawLaunch {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$CommandPath,
+        [string[]]$Arguments = @()
+    )
+
+    $extension = [System.IO.Path]::GetExtension($CommandPath)
+    if ($extension -match '^\.(cmd|bat)$') {
+        $cmdExe = Get-TrustedWindowsCmdExe
+        if (-not $cmdExe) {
+            return $null
+        }
+        # -NoNewWindow uses CreateProcess, which cannot execute a batch shim.
+        # cmd.exe /d /s /c keeps onboarding attached to this console.
+        return [pscustomobject]@{
+            FilePath = $cmdExe
+            CommandLine = "/d /s /c " + (Format-InteractiveCmdCommandLine -CommandPath $CommandPath -Arguments $Arguments)
+            ArgumentList = $null
+        }
+    }
+
+    return [pscustomobject]@{
+        FilePath = $CommandPath
+        CommandLine = $null
+        ArgumentList = @($Arguments)
+    }
+}
+
+function Write-OpenClawSetupRecovery {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$CommandPath,
+        [string[]]$Arguments
+    )
+
+    $shownArgs = (@($Arguments) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join " "
+    $quotedPath = "'" + ($CommandPath.Replace("'", "''")) + "'"
+    $shown = if ([string]::IsNullOrWhiteSpace($shownArgs)) { "& $quotedPath" } else { "& $quotedPath $shownArgs" }
+    Write-Host "Setup did not start. Run:" -ForegroundColor Yellow
+    Write-Host "  $shown" -ForegroundColor Cyan
+}
+
+function Start-AttachedCommandLine {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath,
+        [Parameter(Mandatory = $true)]
+        [string]$Arguments
+    )
+
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $FilePath
+    $startInfo.Arguments = $Arguments
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $false
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+    if (-not $process.Start()) {
+        throw "openclaw setup process did not start."
+    }
+    $null = $process.WaitForExit()
+    return $process.ExitCode
+}
+
 function Invoke-InteractiveOpenClawCommand {
     param(
         [Parameter(ValueFromRemainingArguments = $true)]
@@ -1129,7 +1234,31 @@ function Invoke-InteractiveOpenClawCommand {
         throw "openclaw command not found on PATH."
     }
 
-    $process = Start-Process -FilePath $commandPath -ArgumentList $Arguments -NoNewWindow -Wait -PassThru
+    $launch = Resolve-InteractiveOpenClawLaunch -CommandPath $commandPath -Arguments $Arguments
+    if (-not $launch) {
+        Write-OpenClawSetupRecovery -CommandPath $commandPath -Arguments $Arguments
+        throw "openclaw $($Arguments -join ' ') could not start because cmd.exe was not found."
+    }
+
+    if ($launch.CommandLine) {
+        try {
+            $exitCode = Start-AttachedCommandLine -FilePath $launch.FilePath -Arguments $launch.CommandLine
+        } catch {
+            Write-OpenClawSetupRecovery -CommandPath $commandPath -Arguments $Arguments
+            throw
+        }
+        if ($exitCode -ne 0) {
+            throw "openclaw $($Arguments -join ' ') failed with exit code $exitCode."
+        }
+        return
+    }
+
+    try {
+        $process = Start-Process -FilePath $launch.FilePath -ArgumentList $launch.ArgumentList -NoNewWindow -Wait -PassThru
+    } catch {
+        Write-OpenClawSetupRecovery -CommandPath $commandPath -Arguments $Arguments
+        throw
+    }
     if ($process.ExitCode -ne 0) {
         throw "openclaw $($Arguments -join ' ') failed with exit code $($process.ExitCode)."
     }
