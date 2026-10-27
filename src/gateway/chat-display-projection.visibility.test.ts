@@ -161,6 +161,42 @@ it.each([
   expect(completion).toEqual(original);
 });
 
+it.each([
+  [
+    "heartbeat",
+    {
+      role: "user",
+      content: [{ type: "text", text: HEARTBEAT_PROMPT }],
+    },
+  ],
+  [
+    "exec completion",
+    {
+      ...userTextMessage("Exec completed (amber-ri, code 0) :: output", 2),
+      provenance: { kind: "internal_system", sourceTool: "exec" },
+    },
+  ],
+])("keeps a %s boundary on a tool-shaped user row", (_name, hidden) => {
+  const toolResult = {
+    role: "user",
+    content: [{ type: "tool_result", tool_use_id: "tool-1", content: "done" }],
+    __openclaw: { seq: 3 },
+  };
+  const toolEnvelope = {
+    role: "user",
+    content: [{ type: "text", text: "done" }],
+    toolCallId: "tool-1",
+    __openclaw: { seq: 5 },
+  };
+  const answer = assistantTextMessage("Disk usage crossed 95 percent.", 4);
+  for (const toolRow of [toolResult, toolEnvelope]) {
+    expect(projectChatDisplayMessages([hidden, toolRow, answer])).toEqual([
+      { ...toolRow, __openclaw: { ...toolRow.__openclaw, turnBoundary: true } },
+      answer,
+    ]);
+  }
+});
+
 it("starts a new turn after a hidden exec completion so the earlier answer stays its own reply", () => {
   const earlier = assistantTextMessage("long final answer", 2);
   const completion = {
