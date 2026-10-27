@@ -126,3 +126,14 @@ runWithWindowsPowerShell(
     runHandoffFixture("launch");
   },
 );
+runWithPowerShell("restores a conflicted pull before continuing a Git install", () => {
+  const result = runPowerShell([
+    "-File",
+    "test/scripts/install-git-pull.ps1",
+    "-InstallerPath",
+    join(process.cwd(), SCRIPT_PATH),
+    "-FixtureRoot",
+    join(harness.createTempDir("openclaw-install-pull-"), "fixture"),
+  ]);
+  expect(result.status, result.stdout + result.stderr).toBe(0);
+});
