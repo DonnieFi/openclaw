@@ -161,57 +161,37 @@ it.each([
   expect(completion).toEqual(original);
 });
 
+const toolRow = (seq: number, envelope: boolean) => ({
+  role: "user",
+  content: envelope
+    ? [{ type: "text", text: "done" }]
+    : [{ type: "tool_result", tool_use_id: "tool-1", content: "done" }],
+  ...(envelope ? { toolCallId: "tool-1" } : {}),
+  __openclaw: { seq },
+});
+const heartbeatHidden = { role: "user", content: [{ type: "text", text: HEARTBEAT_PROMPT }] };
+const execHidden = {
+  ...userTextMessage("Exec completed (amber-ri, code 0) :: output", 2),
+  provenance: { kind: "internal_system", sourceTool: "exec" },
+};
+const boundaryAnswer = assistantTextMessage("Disk usage crossed 95 percent.", 4);
+
 it.each([
-  [
-    "heartbeat",
-    {
-      role: "user",
-      content: [{ type: "text", text: HEARTBEAT_PROMPT }],
-    },
-  ],
-  [
-    "exec completion",
-    {
-      ...userTextMessage("Exec completed (amber-ri, code 0) :: output", 2),
-      provenance: { kind: "internal_system", sourceTool: "exec" },
-    },
-  ],
-])("keeps a %s boundary on a tool-shaped user row", (_name, hidden) => {
-  const toolResult = {
-    role: "user",
-    content: [{ type: "tool_result", tool_use_id: "tool-1", content: "done" }],
-    __openclaw: { seq: 3 },
-  };
-  const toolEnvelope = {
-    role: "user",
-    content: [{ type: "text", text: "done" }],
-    toolCallId: "tool-1",
-    __openclaw: { seq: 5 },
-  };
-  const answer = assistantTextMessage("Disk usage crossed 95 percent.", 4);
-  for (const [toolRow, seq] of [
-    [toolResult, 3],
-    [toolEnvelope, 5],
-  ] as const) {
-    expect(projectChatDisplayMessages([hidden, toolRow, answer])).toEqual([
-      { ...toolRow, __openclaw: { seq, turnBoundary: true } },
-      answer,
-    ]);
-  }
+  ["heartbeat", heartbeatHidden, false, 3],
+  ["heartbeat", heartbeatHidden, true, 5],
+  ["exec completion", execHidden, false, 3],
+  ["exec completion", execHidden, true, 5],
+] as const)("keeps a %s boundary on a tool-shaped user row", (_name, hidden, envelope, seq) => {
+  const row = toolRow(seq, envelope);
+  const shown = projectChatDisplayMessages([hidden, row, boundaryAnswer]);
+  expect(shown).toEqual([{ ...row, __openclaw: { seq, turnBoundary: true } }, boundaryAnswer]);
 });
 
 it("starts a new turn after a hidden exec completion so the earlier answer stays its own reply", () => {
   const earlier = assistantTextMessage("long final answer", 2);
-  const completion = {
-    ...userTextMessage("Exec completed (amber-ri, code 0) :: output", 3),
-    timestamp: 100,
-    provenance: { kind: "internal_system", sourceTool: "exec" },
-  };
   const followUp = assistantTextMessage("should I fix points 1-4?", 4);
-  expect(projectChatDisplayMessages([earlier, completion, followUp])).toEqual([
-    earlier,
-    { ...followUp, __openclaw: { seq: 4, turnBoundary: true } },
-  ]);
+  const shown = projectChatDisplayMessages([earlier, { ...execHidden, timestamp: 100 }, followUp]);
+  expect(shown).toEqual([earlier, { ...followUp, __openclaw: { seq: 4, turnBoundary: true } }]);
 });
 
 it.each(["no_r", "NO_R", "No_Repl"])("keeps ordinary %s replies visible", (text) => {

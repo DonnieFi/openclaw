@@ -306,14 +306,9 @@ it("keeps the earlier answer visible when a late exec completion starts the foll
   const messages = [
     message("user", "Review the change", 1),
     message("assistant", "long final answer", 3),
-    message("assistant", "should I fix points 1-4?", 4, {
-      __openclaw: { turnBoundary: true },
-    }),
+    message("assistant", "should I fix points 1-4?", 4, { __openclaw: { turnBoundary: true } }),
   ];
-  const items = projected(messages);
-  expect(visible(items)).toEqual(messages);
-  expect(work(items)).toEqual([]);
-  expect(items.filter((item) => item.kind === "work-group")).toHaveLength(0);
+  expectHistory(messages, [0, 1, 2], []);
 });
 
 it("keeps independent-run trailing activity with its owner", () => {

@@ -109,6 +109,42 @@ function readImportedHistory(
   });
 }
 
+function historyRow(token: string) {
+  const [role, content, timestamp, flag] = token.split("::");
+  return {
+    role,
+    content,
+    timestamp: Number(timestamp),
+    ...(flag ? { provenance: { kind: "internal_system", sourceTool: flag } } : {}),
+  };
+}
+
+// Rows are role::content::timestamp[::sourceTool]. A second instance is a reload.
+function expectIndexOrder(localSpec: string, importedSpec: string, expected: string) {
+  const localMessages = localSpec.split(" | ").map(historyRow);
+  const importedMessages = importedSpec.split(" | ").map(historyRow);
+  const want = expected.split(" | ");
+  const contents = (index: CliHistoryIndex) => {
+    try {
+      index.appendLocal(localMessages.map((message, position) => ({ message, seq: position + 1 })));
+      importedMessages.forEach((message) => index.appendImported(message));
+      index.finish();
+      return Array.from(
+        index.rows(0, index.count),
+        (entry) =>
+          readRecord(
+            entry.local_seq === null ? index.message(entry.id) : localMessages[entry.local_seq - 1],
+          ).content,
+      );
+    } finally {
+      index.close();
+    }
+  };
+  for (const Open of [CliSessionHistoryIndex, MemoryCliSessionHistoryIndex]) {
+    expect([contents(new Open()), contents(new Open())]).toEqual([want, want]);
+  }
+}
+
 const nativeImage = {
   type: "image",
   source: { type: "base64", media_type: "image/png", data: "x" },
@@ -394,36 +430,26 @@ describe("cli session history", () => {
     expect(merged).toEqual([exact, answer(timestamp), answer(timestamp)]);
   });
 
-  it.each(["edited", "unchanged", "image"])(
+  it.each(["edited", "unchanged", "image"] as const)(
     "keeps drift-note order after an %s exact identity",
     (change) => {
-      const laterNote = CLAUDE_RESUME_DRIFT_NOTES[1];
       const earlierLocal = user("Original ask", 1_000);
       const exactMeta = cliMeta(change === "image" ? "image-user" : "exact-user");
       const exactLocal =
         change === "image"
           ? imageTurn("local-image-order", "Original ask", 1_001, "order")
           : user(change === "edited" ? "Edited ask" : "Original ask", 1_001, exactMeta);
-      const laterImport = user(`${laterNote}\n\nOriginal ask`, 1_003, {
+      const laterImport = user(`${CLAUDE_RESUME_DRIFT_NOTES[1]}\n\nOriginal ask`, 1_003, {
         ...exactMeta,
         externalId: "later-user",
       });
-
-      const merged = merge(
-        [earlierLocal, exactLocal],
-        [
-          user(
-            change !== "unchanged"
-              ? `${CLAUDE_RESUME_DRIFT_NOTES[0]}\n\nOriginal ask${change === "image" ? `\n\n${imagePrompt("local-image-order")}` : ""}`
-              : "Original ask",
-            1_002,
-            exactMeta,
-          ),
-          laterImport,
-        ],
-      );
-
-      expect(merged).toEqual([
+      const exactText =
+        change === "unchanged"
+          ? "Original ask"
+          : `${CLAUDE_RESUME_DRIFT_NOTES[0]}\n\nOriginal ask${change === "image" ? `\n\n${imagePrompt("local-image-order")}` : ""}`;
+      expect(
+        merge([earlierLocal, exactLocal], [user(exactText, 1_002, exactMeta), laterImport]),
+      ).toEqual([
         earlierLocal,
         change === "image"
           ? { ...exactLocal, __openclaw: { ...exactLocal["__openclaw"], ...exactMeta } }
@@ -477,84 +503,40 @@ describe("cli session history", () => {
     expect(JSON.stringify(messages)).not.toContain("synthetic-reseed");
   });
 
+  // "name || local | imported | expected". Token is stamp[:externalId[:cli]].
+  // Stamps: e omitted, 0, 1, w = 5m, w2, w3. cli "-" is null; otherwise the default session.
   const window = 5 * 60 * 1000;
-  it.each([
-    {
-      name: "keeps local order across overlapping inclusive timestamp windows",
-      localMessages: [answer(0), answer(window)],
-      importedMessages: [answer(window, "first"), answer(window, "second")],
-      expected: [answer(0, "first"), answer(window, "second")],
-    },
-    {
-      name: "does not assign identities backward across nonchronological rows",
-      localMessages: [answer(window * 2), answer(0)],
-      importedMessages: [answer(0, "first"), answer(window * 2, "second")],
-      // Expanded history keeps local transcript order. The earlier import still
-      // binds to the timestamp-0 local, not the local row written first.
-      expected: [answer(window * 2), answer(0, "first"), answer(window * 2, "second")],
-    },
-    {
-      name: "shares order across identity-specific indexes",
-      localMessages: [answer(window * 2), answer(0)],
-      importedMessages: [answer(0), answer(window * 2, "later", null)],
-      // Local transcript order wins once history expands. The other cli
-      // identity stays a separate row.
-      expected: [answer(window * 2), answer(0), answer(window * 2, "later", null)],
-    },
-    {
-      name: "preserves local candidates after an unmatched import",
-      localMessages: [answer(window * 2)],
-      importedMessages: [answer(0), answer(window * 2, "later", null)],
-      expected: [answer(0), answer(window * 2, "later", null)],
-    },
-    {
-      name: "keeps the order floor monotonic after an earlier exact identity",
-      localMessages: [answer(0, "exact", null), answer(window), answer(window * 3)],
-      importedMessages: [
-        answer(window * 3),
-        answer(0, "exact", null),
-        answer(window, "later", null),
-      ],
-      expected: [
-        answer(0, "exact", null),
-        answer(window),
-        answer(window, "later", null),
-        answer(window * 3),
-      ],
-    },
-    {
-      name: "preserves repeated identityless imports without local history",
-      localMessages: [],
-      importedMessages: [answer(0), answer(0)],
-      expected: [answer(0), answer(0)],
-    },
-    {
-      name: "orders timestamp-less imports across both candidate pools",
-      localMessages: [answer(0), answer()],
-      importedMessages: [answer(undefined, "first", null), answer(undefined, "second", null)],
-      expected: [answer(0, "first", null), answer(undefined, "second", null)],
-    },
-    {
-      name: "breaks equal predecessor timestamp ties using local order",
-      localMessages: [answer(0), answer(0)],
-      importedMessages: [answer(1, "first"), answer(1, "second")],
-      expected: [answer(0, "first"), answer(0, "second")],
-    },
-    {
-      name: "retains timestamped matches after a timestamp-less fallback",
-      localMessages: [answer(), answer(window * 2)],
-      importedMessages: [answer(0), answer(window * 2, "later", null)],
-      expected: [answer(), answer(window * 2, "later", null)],
-    },
-    {
-      name: "prefers timestamped matches before timestamp-less fallbacks",
-      localMessages: [answer(), answer(window)],
-      importedMessages: [answer(window, "timestamped"), answer(undefined, "timestamp-less")],
-      expected: [answer(), answer(window, "timestamped"), answer(undefined, "timestamp-less")],
-    },
-  ])("$name", ({ localMessages, importedMessages, expected }) => {
-    expect(merge(localMessages, importedMessages)).toEqual(expected);
-  });
+  const stamp = { e: undefined, "0": 0, "1": 1, w: window, w2: window * 2, w3: window * 3 };
+  const answers = (spec: string) =>
+    spec
+      .split(" ")
+      .filter(Boolean)
+      .map((token) => {
+        const [key, externalId, cli] = token.split(":");
+        if (!Object.hasOwn(stamp, key ?? "")) {
+          throw new Error(`unknown history stamp ${key}`);
+        }
+        const time = stamp[(key ?? "e") as keyof typeof stamp];
+        return answer(time, externalId || undefined, cli === "-" ? null : undefined);
+      });
+  for (const spec of [
+    "keeps local order across overlapping inclusive timestamp windows || 0 w | w:first w:second | 0:first w:second",
+    "does not assign identities backward across nonchronological rows || w2 0 | 0:first w2:second | w2 0:first w2:second", // local transcript order; the earlier import binds to the timestamp-0 local, not the row written first
+    "shares order across identity-specific indexes || w2 0 | 0 w2:later:- | w2 0 w2:later:-", // local transcript order once history expands; the other cli identity stays a separate row
+    "preserves local candidates after an unmatched import || w2 | 0 w2:later:- | 0 w2:later:-",
+    "keeps the order floor monotonic after an earlier exact identity || 0:exact:- w w3 | w3 0:exact:- w:later:- | 0:exact:- w w:later:- w3",
+    "preserves repeated identityless imports without local history ||  | 0 0 | 0 0",
+    "orders timestamp-less imports across both candidate pools || 0 e | e:first:- e:second:- | 0:first:- e:second:-",
+    "breaks equal predecessor timestamp ties using local order || 0 0 | 1:first 1:second | 0:first 0:second",
+    "retains timestamped matches after a timestamp-less fallback || e w2 | 0 w2:later:- | e w2:later:-",
+    "prefers timestamped matches before timestamp-less fallbacks || e w | w:timestamped e:timestamp-less | e w:timestamped e:timestamp-less",
+  ]) {
+    const [name, body] = spec.split(" || ");
+    it(name ?? spec, () => {
+      const parts = (body ?? "").split(" | ").map(answers);
+      expect(merge(parts[0] ?? [], parts[1] ?? [])).toEqual(parts[2]);
+    });
+  }
 
   it("consumes repeated-text histories with bounded indexed candidate lookups", () => {
     const timestamp = Date.parse("2026-09-01T10:00:00Z");
@@ -613,89 +595,24 @@ describe("cli session history", () => {
     ]);
   });
 
-  it("keeps a backdated exec completion after the answer it followed when an import expands history", () => {
-    const localMessages = [
-      { role: "assistant", content: "long final answer", timestamp: 200 },
-      {
-        role: "user",
-        content: "Exec completed",
-        timestamp: 100,
-        provenance: { kind: "internal_system", sourceTool: "exec" },
-      },
-      { role: "assistant", content: "short follow-up", timestamp: 300 },
-    ];
-    const imported = { role: "assistant", content: "unmatched cli import", timestamp: 50 };
-    const contents = (index: CliHistoryIndex) => {
-      try {
-        index.appendLocal(
-          localMessages.map((message, position) => ({ message, seq: position + 1 })),
-        );
-        index.appendImported(imported);
-        index.finish();
-        return Array.from(index.rows(0, index.count), (row) => {
-          const message =
-            row.local_seq === null ? index.message(row.id) : localMessages[row.local_seq - 1];
-          return readRecord(message).content;
-        });
-      } finally {
-        index.close();
-      }
-    };
-    const expected = [
-      "unmatched cli import",
-      "long final answer",
-      "Exec completed",
-      "short follow-up",
-    ];
-    expect(contents(new CliSessionHistoryIndex())).toEqual(expected);
-    expect(contents(new MemoryCliSessionHistoryIndex())).toEqual(expected);
-  });
-
-  it("splices unmatched imports in timestamp order without moving local rows", () => {
-    const localTimestamps = [200, 300, 0, 400, 500, 600];
-    const localMessages = localTimestamps.map((timestamp) => ({
-      role: "assistant",
-      content: `local ${timestamp}`,
-      timestamp,
-    }));
-    const imported = [150, 100].map((timestamp) => ({
-      role: "assistant",
-      content: `import ${timestamp}`,
-      timestamp,
-    }));
-    const contents = (index: CliHistoryIndex) => {
-      try {
-        index.appendLocal(
-          localMessages.map((message, position) => ({ message, seq: position + 1 })),
-        );
-        for (const message of imported) {
-          index.appendImported(message);
-        }
-        index.finish();
-        return Array.from(index.rows(0, index.count), (row) => {
-          const message =
-            row.local_seq === null ? index.message(row.id) : localMessages[row.local_seq - 1];
-          return readRecord(message).content;
-        });
-      } finally {
-        index.close();
-      }
-    };
-    const expected = [
-      "local 200",
-      "local 300",
-      "local 0",
-      "import 100",
-      "import 150",
-      "local 400",
-      "local 500",
-      "local 600",
-    ];
-    expect(contents(new CliSessionHistoryIndex())).toEqual(expected);
-    expect(contents(new MemoryCliSessionHistoryIndex())).toEqual(expected);
+  // Reporter order, then an earlier unmatched import. Exec remains in the index.
+  it.each([
+    [
+      "keeps a backdated exec completion after the answer it followed when an import expands history",
+      "user::Review the change::150 | assistant::long final answer::250 | user::Exec completed::180::exec | assistant::short follow-up::300",
+      "assistant::unmatched cli import::50",
+      "unmatched cli import | Review the change | long final answer | Exec completed | short follow-up",
+    ],
+    [
+      "splices unmatched imports in timestamp order without moving local rows",
+      "assistant::local 200::200 | assistant::local 300::300 | assistant::local 0::0 | assistant::local 400::400 | assistant::local 500::500 | assistant::local 600::600",
+      "assistant::import 150::150 | assistant::import 100::100",
+      "local 200 | local 300 | local 0 | import 100 | import 150 | local 400 | local 500 | local 600",
+    ],
+  ])("%s", (_name, localSpec, importedSpec, expected) => {
+    expectIndexOrder(localSpec, importedSpec, expected);
   });
 });
-
 it("keeps lone surrogates distinct from replacement characters in SQLite match keys", () => {
   const local = { role: "assistant", content: "\ud800" };
   const imported = { role: "assistant", content: "\ufffd" };
