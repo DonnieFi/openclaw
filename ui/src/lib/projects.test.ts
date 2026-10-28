@@ -97,9 +97,10 @@ describe("registered project catalog", () => {
     const invalidated = h.store.snapshot;
     failed.reject(new Error("catalog unavailable"));
     await refresh;
-    expect(invalidated).toEqual({ result: null, ready: false });
+    expect(invalidated).toEqual({ result: null, ready: false, error: null });
     expect(listener).toHaveBeenCalledTimes(3);
-    expect(h.store.snapshot).toEqual({ result: null, ready: false });
+    expect(h.store.snapshot).toMatchObject({ result: null, ready: true });
+    expect(h.store.snapshot.error).toEqual(new Error("catalog unavailable"));
     const replacement = { ...project, originUrl: "https://github.com/replacement/clawsweeper.git" };
     await h.replace([replacement]);
     expect(h.store.snapshot.result?.projects).toEqual([replacement]);
