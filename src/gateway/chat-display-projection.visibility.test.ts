@@ -16,8 +16,8 @@ const userTextMessage = (text: string, seq = 1) => ({
   content: [{ type: "text", text }],
   __openclaw: { seq },
 });
-const internalMessage = (text: string, sourceTool: string) => ({
-  ...userTextMessage(text),
+const internalMessage = (text: string, sourceTool: string, seq = 1) => ({
+  ...userTextMessage(text, seq),
   provenance: { kind: "internal_system", sourceTool },
 });
 const mediaMessage = (text: string, seq: number, url: string) => ({
@@ -162,56 +162,35 @@ it.each([
 });
 
 it.each([
-  [
-    "heartbeat",
-    {
-      role: "user",
-      content: [{ type: "text", text: HEARTBEAT_PROMPT }],
-    },
-  ],
-  [
-    "exec completion",
-    {
-      ...userTextMessage("Exec completed (amber-ri, code 0) :: output", 2),
-      provenance: { kind: "internal_system", sourceTool: "exec" },
-    },
-  ],
+  ["heartbeat", { role: "user", content: [{ type: "text", text: HEARTBEAT_PROMPT }] }],
+  ["exec completion", internalMessage("Exec completed (amber-ri, code 0) :: output", "exec", 2)],
 ])("keeps a %s boundary on a tool-shaped user row", (_name, hidden) => {
   const toolResult = {
     role: "user",
     content: [{ type: "tool_result", tool_use_id: "tool-1", content: "done" }],
     __openclaw: { seq: 3 },
   };
-  const toolEnvelope = {
-    role: "user",
-    content: [{ type: "text", text: "done" }],
-    toolCallId: "tool-1",
-    __openclaw: { seq: 5 },
-  };
+  const toolEnvelope = { ...userTextMessage("done", 5), toolCallId: "tool-1" };
   const answer = assistantTextMessage("Disk usage crossed 95 percent.", 4);
-  for (const [toolRow, seq] of [
-    [toolResult, 3],
-    [toolEnvelope, 5],
-  ] as const) {
-    expect(projectChatDisplayMessages([hidden, toolRow, answer])).toEqual([
-      { ...toolRow, __openclaw: { seq, turnBoundary: true } },
-      answer,
-    ]);
+  for (const toolRow of [toolResult, toolEnvelope]) {
+    expectProjection(
+      [hidden, toolRow, answer],
+      [{ ...toolRow, __openclaw: { ...toolRow["__openclaw"], turnBoundary: true } }, answer],
+    );
   }
 });
 
 it("starts a new turn after a hidden exec completion so the earlier answer stays its own reply", () => {
   const earlier = assistantTextMessage("long final answer", 2);
   const completion = {
-    ...userTextMessage("Exec completed (amber-ri, code 0) :: output", 3),
+    ...internalMessage("Exec completed (amber-ri, code 0) :: output", "exec", 3),
     timestamp: 100,
-    provenance: { kind: "internal_system", sourceTool: "exec" },
   };
   const followUp = assistantTextMessage("should I fix points 1-4?", 4);
-  expect(projectChatDisplayMessages([earlier, completion, followUp])).toEqual([
-    earlier,
-    { ...followUp, __openclaw: { seq: 4, turnBoundary: true } },
-  ]);
+  expectProjection(
+    [earlier, completion, followUp],
+    [earlier, { ...followUp, __openclaw: { seq: 4, turnBoundary: true } }],
+  );
 });
 
 it.each(["no_r", "NO_R", "No_Repl"])("keeps ordinary %s replies visible", (text) => {
