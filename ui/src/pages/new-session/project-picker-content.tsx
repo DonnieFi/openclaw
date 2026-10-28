@@ -348,13 +348,17 @@ export function ProjectPickerContent(props: ProjectChipProps) {
               })}
             />
           </label>
-          <Show when={!props.params.place.browser.projectsLoading && projectCatalogError()}>
+          <Show when={projectCatalogError()}>
             <div class="new-session-page__project-error" role="alert">
               {formatUiError(projectCatalogError())}
               <button
                 type="button"
                 class="btn btn--sm"
-                disabled={props.params.submitting || props.params.pendingPlacement}
+                disabled={
+                  props.params.submitting ||
+                  props.params.pendingPlacement ||
+                  props.params.place.browser.projectsLoading
+                }
                 onClick={() => void props.params.place.browser.refreshProjects()}
               >
                 {t("common.retry")}

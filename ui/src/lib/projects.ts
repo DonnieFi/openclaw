@@ -107,11 +107,12 @@ export function projectsForGateway(gateway: ApplicationGateway): ProjectCatalog 
           if (!connection.isCurrent(scope)) {
             return;
           }
-          // A rejected list must settle. Leaving ready false keeps the picker
-          // loading and hides registered projects with no explanation or retry.
+          // ready means a successful list. Preference restore treats that as
+          // the authoritative catalog and would drop a saved project if a
+          // failed first read were marked ready.
           snapshot = {
             result: snapshot.result,
-            ready: true,
+            ready: snapshot.ready && snapshot.result !== null,
             error,
           };
         },
